@@ -2,14 +2,16 @@
 
 ## Skill workflow
 
-The skill should document the installed CLI and MCP entry points, a workspace permission check, and a short edit loop. Package the skill alongside the CLI and keep the skill independent of any particular coding agent.
+Package the [SlopGuard skill](../skills/slopguard/SKILL.md) alongside the CLI. It is the sole skill an agent needs to start the daemon, use all configured checkers, read reports and submit status changes. Keep provider routing and scheduling in the daemon.
 
 1. Start from the checkout the agent is about to edit. Resolve the workspace through the CLI and start or reuse the daemon. Connect the MCP stdio bridge and read the effective policy, provider readiness and discovered build contexts.
 2. Capture a baseline for the intended scope. If inspection is pending, pin the revision and report the baseline as incomplete until the required checks finish.
-3. Make edits normally. Let the watcher drive cheap checks and impacted tests. Query findings since the baseline and use explicit checks for targets or rules that require deeper coverage.
-4. Before reporting completion, request a checkpoint with the scope and required checkers. Wait for the returned jobs, then report new findings and failed tests alongside pending, stale or blocked coverage. A newer relevant revision requires revalidation.
+3. Make edits normally. Let the watcher drive cheap checks and impacted tests. Query findings since the baseline and inspect verification needs when edited symbols affect callers, implementations or observable values. Use explicit checks for targets or rules that require deeper coverage.
+4. Before reporting completion, request a checkpoint with the scope and required checkers. Wait for the returned jobs, then report new findings, failed tests and relevant verification gaps alongside pending, stale or blocked coverage. A newer relevant revision requires revalidation. Use the [validated results reader](result-publication.md) when consuming the on-disk projection.
 
 The skill treats findings as evidence. It may explain why it believes a finding is a false positive. It may change shared checker policy, suppressions or dictionary entries when authorized. An interrupted skill session closes its bridge and releases temporary session overrides. Other sessions and shared jobs remain active.
+
+Before a working-tree transition initiated by the agent, request withdrawal of the current report. Complete the transition lease after the Git command returns and wait for reconciliation before using findings from the new checkout state.
 
 ## Tool contracts
 
@@ -17,7 +19,7 @@ Use documented JSON schemas with finite budgets and named checker IDs. Scopes ac
 
 | Tool | Inputs and result |
 | --- | --- |
-| `workspace_status` | Returns workspace identity, current revision, watcher and execution status, limits, and pending work. |
+| `workspace_status` | Returns workspace identity, Git context, current revision, publication epoch and status, watcher and execution status, limits, and pending work. |
 | `list_checkers` | Returns checker IDs, versions, triggers, permissions, prerequisites, rule coverage and available target contexts. |
 | `get_config` | Returns effective settings and their origin. Redacts sensitive user-owned execution settings. |
 | `configure_checker` | Applies schema-validated typed settings or resets an override. Supports `enabled`, `manual_only` and `disabled`. Defaults to a session override. Shared writes require authority and an expected configuration revision. Returns the new effective configuration and invalidated reports. |
@@ -25,9 +27,14 @@ Use documented JSON schemas with finite budgets and named checker IDs. Scopes ac
 | `get_run` | Returns progress and per-checker outcomes for a job group, including cache use, effective scope and coverage. |
 | `cancel_run` | Withdraws a session's request. A shared job can continue for other waiting sessions. Reports any work that already completed. |
 | `capture_baseline` | Pins report and workspace revisions for a scope. Returns a baseline ID with checker coverage and expiry. |
-| `get_findings` | Filters by scope, severity, checker, revision or baseline. Returns findings, related spans, status, provenance and coverage. |
+| `get_findings` | Filters by scope, severity, checker, revision or baseline. Returns findings, related spans, file or commit scope, provenance and coverage. Current queries validate the publication context. Historical queries identify the requested revision. |
+| `mark_result` | Takes a report token, target version, request ID, status and short reason. Targets the report, an affected path in that report or a finding ID. Returns the accepted mark version and any queued follow-up job, or a conflict if the target has changed. |
 | `checkpoint` | Resolves required checkers and contexts and queues work for stale or missing coverage. Returns job IDs and per-context verification status. |
 | `explain_test_selection` | Returns the path-to-project-to-test selection evidence, exclusions, fallbacks and deferred projects for a run or revision. |
+| `trace_symbol` | Takes a symbol ID or file position, target context, direction and budget. Returns incoming and outgoing call chains, typed usages, implementations, value origins or destinations, and any unresolved traversal frontier. |
+| `get_verification_needs` | Returns applicable check categories for a change set, their source or artifact links, evidence state, and any missing or uncertain coverage. Accepts an optional baseline, target filter and evidence category filter. |
+| `begin_workspace_transition` | Withdraws the current report and returns an expiring lease after publication is paused. Reports an explicit failure if the report could not be withdrawn. |
+| `end_workspace_transition` | Releases the caller's lease and requests Git and input reconciliation. Returns reconciliation status and the new publication epoch. |
 | `list_spelling_terms` | Lists scoped, paginated whitelist entries with their origin, spelling, matching mode and reason. |
 | `update_spelling_terms` | Adds or removes validated entries atomically with an expected configuration revision. Supports session or authorized repository scope. Returns affected scopes and invalidates only spelling work for those scopes. |
 

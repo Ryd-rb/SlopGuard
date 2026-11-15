@@ -19,12 +19,13 @@ Each adapter declares required inputs, supported target contexts, execution perm
 | Repository invariants | Provide declarative rules for forbidden APIs, required cancellation forwarding, expected DI registrations or required integration seams. Use typed symbol signatures for semantic rules and typed config for exceptions. |
 | Spelling | Split PascalCase, camelCase, acronyms and snake_case in identifiers. Check comments and docs under their own policy. Exclude URLs, hashes, generated code and string literals by default. Report the unknown token and bounded suggestions from a versioned local dictionary, with user and repository whitelists. |
 | Test outcomes | Report passed, failed, skipped, zero discovered, build failure, adapter failure and unavailable coverage by runtime and target. Attach the failing test identity and a bounded diagnostic excerpt. Preserve first failures across explicitly requested reruns. |
+| Verification needs | Use incoming and outgoing calls, implementations and value flow around modified symbols to identify which test or operational checks might be needed. Compare those needs with current, scoped evidence and explain each gap. |
 
 Provider contracts are based on their own documentation. [Sonar C# analyzer package](https://packages.nuget.org/packages/SonarAnalyzer.CSharp), [SonarScanner workflow](https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/scanners/sonarscanner-for-dotnet/using), [JetBrains InspectCode](https://www.jetbrains.com/help/resharper/InspectCode.html), [Microsoft package reporting](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-package-list)
 
 ## Duplication detection
 
-Index Roslyn tokens in methods, constructors, accessors, local functions, lambdas and sufficiently large statement runs. Start with a minimum of 40 substantive tokens. Ignore comments and trivia, exclude generated files by default, and index two representations.
+Index Roslyn tokens in methods, constructors, accessors, local functions, lambdas and sufficiently large statement runs. Persist fingerprints in the [shared codebase index](semantic-index.md). Start with a minimum of 40 substantive tokens. Ignore comments and trivia, exclude generated files by default, and index two representations.
 
 - **Exact token match** preserves identifiers and literal values. Report 1.0 only after comparing the token spans.
 - **Renamed or edited match** normalizes local identifiers consistently within a fragment and buckets configurable literal types. Preserve operators, control flow and resolved member identities when available. Label the normalization and show whether symbol resolution was available.
@@ -35,7 +36,7 @@ Update postings for changed files and remove deleted postings and affected resul
 
 ## Related test discovery and execution
 
-Discover candidate test projects under the workspace from solution membership, evaluated project properties, project references and installed adapters. Support projects outside solutions. Group test IDs by target framework and adapter. Treat naming conventions and framework attributes as discovery hints. Obtain runnable test identities from the runner for the corresponding build, and cache them against test assembly and configuration inputs. Honor repository settings and distinguish unit projects from integration and end-to-end projects through project policy and test metadata. Surface unclassified or intentionally excluded coverage.
+Discover candidate test projects under the workspace from solution membership, evaluated project properties, project references and installed adapters. Support projects outside solutions. Group test IDs by target framework and adapter. Treat naming conventions and framework attributes as discovery hints. Obtain runnable test identities from the runner for the corresponding build, and store them in the shared index against test assembly and configuration inputs. Honor repository settings and distinguish unit projects from integration and end-to-end projects through project policy and test metadata. Surface unclassified or intentionally excluded coverage.
 
 For each batch containing confirmed C# additions, edits, deletions or renames, select tests in this order.
 
@@ -46,3 +47,5 @@ For each batch containing confirmed C# additions, edits, deletions or renames, s
 Use VSTest for compatible test projects in SDK-style and classic Windows workspaces. Use Microsoft.Testing.Platform when selected by compatible projects and SDK settings. Resolve runner-specific filters and output formats through adapters for xUnit, NUnit and MSTest. Add explicit adapters for legacy runners when fixtures demonstrate the need. Reuse a build only when the relevant input and output graph matches, including generated sources and adapter binaries. Otherwise request the minimum necessary build and apply restore policy. [dotnet test and runner selection](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-test), [Microsoft.Testing.Platform migration](https://learn.microsoft.com/dotnet/core/testing/migrating-vstest-microsoft-testing-platform)
 
 Startup inventory, metadata-only events and tool outputs never trigger automatic tests by themselves. Metadata changes can invalidate discovery, and a later C# batch uses refreshed discovery. MCP can request explicit tests against the current workspace even when no C# file changed. Reports identify triggering paths, selected and omitted test projects, any filters, reason for selection, toolchain, elapsed time and the source revision the results actually covered.
+
+The [verification checker](verification.md) uses the same symbol and test edges to identify missing or stale evidence. Its catalog covers unit tests through post-release checks. A recommendation does not schedule a test outside the automatic unit-test policy.

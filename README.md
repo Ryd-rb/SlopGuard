@@ -14,6 +14,9 @@ After an edit, the agent can ask these questions.
 | C# inspection | Use the repository’s compiler and analyzers, local Sonar C# rules, and optional JetBrains InspectCode. Make tool and rule coverage visible. |
 | Duplication | Find exact and near copies across a checkout, with both source ranges, matched token counts and a reproducible similarity score. |
 | Automated tests | Discover tests in the checkout. Run impacted tests automatically after a C# source change, including additions and deletions. Allow explicit runs through MCP. |
+| Verification gaps | Trace modified symbols, callers, implementations and value flows to recommend relevant tests and operational checks. Distinguish static reachability from observed coverage. |
+| Shared index | Reuse semantic and test evidence across checkers, with a bounded memory budget and an incremental disk cache. |
+| Current reports | Publish current findings from all checkers in `.slopguard/results.json` with file and commit attribution. Withdraw reports when branch or input context changes. |
 | Agent controls | Request or cancel checks, inspect results and coverage, change checker settings, and maintain a scoped spelling whitelist. |
 | Compatibility | Run the daemon on .NET 10. Analyze C# projects targeting .NET Framework 4.6 through 4.8.1, .NET Core, .NET 5–10, and .NET Standard using the applicable toolchain. |
 
@@ -21,7 +24,14 @@ After an edit, the agent can ask these questions.
 
 - [Daemon architecture](docs/architecture.md) covers watching, change tracking, scheduling, compatibility, trust and resource use.
 - [Checker and test design](docs/checkers.md) covers the rule catalog, similarity scoring, and test discovery and selection.
+- [Shared semantic index](docs/semantic-index.md) covers incremental symbol, call and value-flow tracking.
+- [Verification needs](docs/verification.md) covers test gaps and detection of pre-production, deploy, release and post-release checks.
+- [Current report publication](docs/result-publication.md) covers attribution, stale output invalidation and disk limits.
 - [MCP and agent skill](docs/mcp.md) defines the agent workflow, tool contracts and policy boundaries.
+- [SlopGuard skill draft](skills/slopguard/SKILL.md) is the single agent entry point for starting the daemon, reading reports and marking results.
+- [Repository layout](docs/repository-layout.md) covers the buildable .NET solution and the boundaries for adding languages.
 - [Delivery and acceptance](docs/delivery.md) defines the implementation order, fixtures and measurable acceptance criteria.
 
-This initial repository contains the specification. The daemon, checkers and agent skill are planned deliverables.
+The repository contains the specification, skill draft and .NET 10 solution scaffold. The CLI currently exposes `--help`. Daemon startup, checkers and MCP tools are pending implementation.
+
+Released under the [MIT License](LICENSE).
