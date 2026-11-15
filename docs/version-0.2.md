@@ -15,12 +15,12 @@ Validate SDK-style .NET 10 first, then an older installed SDK selected by `globa
 
 ## Work from a confirmed delta
 
-1. The watcher withdraws invalid current output and reconciles affected paths. The result is a bounded batch of additions, edits, deletions or moves with old and new source fingerprints. Source events with identical contents and membership collapse into one batch. A path move counts when it changes a C# path or membership. Metadata, report output and startup inventory have zero automatic test triggers.
+1. The watcher withdraws invalid current output and reconciles affected paths. Commit a bounded batch of additions, edits, deletions or moves with old and new source fingerprints and any resulting test intents. An unchanged save creates no delta. A C# path move counts even if the bytes match. Metadata, report output and startup inventory create zero new automatic test intents. [Source reconciliation and automatic test intents](source-reconciliation.md)
 2. Publish syntax findings from the reconciled batch. In parallel, put dirty project contexts and affected test projects in a heavy-work queue. Keep undelivered C# changes across superseded jobs so a later metadata event or save cannot erase a pending test obligation.
 3. For each affected project context, evaluate the graph and obtain the compilation inputs. Update the shared index and publish diagnostics or a specific blocker. Resolve related test projects from the old and new graph, then consult the execution profile, runner and budget before admitting work.
 4. Record test outcomes and verification gaps. If the source, configuration or Git context changes during the run, retain any completed outcome as historical evidence in the bounded cache. Revalidate the current inputs before including it in `.slopguard`.
 
-A branch transition replaces the publication epoch, including a switch between branches at the same commit. A same-commit switch with unchanged C# inputs triggers zero automatic tests. A stable reconciliation that confirms a C# path or content delta can trigger related tests. Returning to an earlier branch can reuse matching indexed facts. Jobs from the old epoch lose publication authority.
+A branch transition replaces the publication epoch, including a switch between branches at the same commit. A same-commit switch with unchanged C# inputs creates zero new automatic test intents. Revalidate any already committed intents against the new context. A stable reconciliation that confirms a C# path or content delta can trigger related tests. Returning to an earlier branch can reuse matching indexed facts. Jobs from the old epoch lose publication authority.
 
 For example, an edit to `src/SlopGuard.Core/SourceChecker.cs` reaches the daemon and C# provider through project references. The graph reaches `SlopGuard.IntegrationTests` through both. Publish syntax first, then compiler findings for affected contexts. Show the integration suite once in the selection explanation as manual-only. For self-hosting, add an eligible unit-test project around 0.2’s deterministic scheduler and impact rules. An edit to one of those rules then drives a real automatic run in SlopGuard’s own checkout.
 
@@ -61,7 +61,7 @@ Use evaluated test-project properties and runner discovery to confirm runnable t
 
 The first automatic mode runs whole affected unit-test projects. Static call paths can explain or prioritize candidates. Narrow test filters require later validation against runner and impact evidence. Reuse a build only when the target, configuration, compiler inputs, relevant outputs and adapter match. Record zero discovered, adapter failure, cancelled, timed out and build failure separately from passed and failed tests. Report when build and test results come from a live checkout with pre-run and post-run verification. Such evidence carries less certainty than a verified immutable input snapshot.
 
-Expose typed reasons per selected project, including the triggering path, project dependency chain and fallback. Keep testing disabled at startup and when only a project, config or coverage input changes. An explicit MCP request can run the configured scope independently of the watch trigger.
+Expose typed reasons per selected project, including the triggering path, project dependency chain and fallback. Establishing the startup baseline and changes limited to project, config or coverage inputs create zero new automatic test intents. An explicit MCP request can run the configured scope independently of the watch trigger.
 
 ## Verification, reporting and agent marks
 
@@ -86,14 +86,14 @@ Validate each mark against the report epoch and target version, and apply its id
 - Use typed job IDs and report scope. Coalesce jobs with identical inputs and effective policy. Keep queued and running cancellation distinct, supervise time and resource limits, and discard publication rights on an epoch change. Schedule the latest unverified change batch after supersession.
 - Include a wire and report schema version in daemon status. An unversioned 0.1 status is recognizable. A 0.2 client encountering 0.1 can report how to stop the older daemon and start the verified build. Keep the old syntax mode available for rollback and keep cache formats versioned outside the report directory.
 
-Implement in this order. First separate the watcher and report publisher from the job coordinator and move source inventory to the shared store. Then add workspace evaluation, compiler diagnostics and symbol queries. Add test selection and one runner before validating other runner combinations. Finish coverage imports, marks, transition leases and the skill update before switching the self-hosted daemon.
+Implement in this order. First separate the watcher and report publisher from the job coordinator and move source inventory to the shared store. Verify durable test intents with a deterministic selector and runner. Then add workspace evaluation, compiler diagnostics and symbol queries. Add evaluated test selection and one real runner before validating other runner combinations. Finish coverage imports, marks, transition leases and the skill update before switching the self-hosted daemon.
 
 ## Acceptance before self-hosting
 
 | Gate | Evidence required |
 | --- | --- |
 | Context accuracy | Conditional compile items, linked sources and duplicate names in multiple targets bind correctly. Verify the old SDK and failure cases by exact toolchain. Cold rebuild and warm update agree for the same inputs. |
-| Trigger correctness | A related whole unit-test project runs after source add, edit, delete or move. Startup, unchanged saves, metadata-only edits and a same-commit branch switch with unchanged sources produce zero automatic runs. |
+| Trigger correctness | A related whole unit-test project runs after source add, edit, delete or move. Startup, unchanged saves, metadata-only edits and a same-commit branch switch with unchanged sources produce zero new automatic test intents. Previously committed intents survive replanning and restart. |
 | Outcome accuracy | An obsolete result is withdrawn during a checkout or concurrent edit. A blocked toolchain, missing restore, failed test, zero discovery and stale coverage each report their own state. |
 | Agent protocol | Concurrent marks on one target conflict cleanly. Identical replays return the original receipt. Marks on disjoint targets can both succeed. A terminated worker or agent does not leave a file lock or publish an old revision's report. |
 | Bounded operation | Compare warm edit latency and idle CPU and memory against 0.1 on representative repositories. Log process-tree memory, cache reuse after restart and syntax latency while a heavy job runs. Demonstrate the configured report, index and queue limits under a repeated edit and branch-switch workload. |
