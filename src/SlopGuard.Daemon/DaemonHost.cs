@@ -32,7 +32,6 @@ public static class DaemonHost
 
     private static async Task RunOwnedAsync(Workspace workspace, ISourceChecker checker, CancellationToken cancellationToken)
     {
-        new ReportFile(workspace).Withdraw();
         var git = await GitContext.DiscoverAsync(workspace.Root, cancellationToken);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var monitor = new WorkspaceMonitor(workspace, git, checker);

@@ -2,6 +2,12 @@
 
 The first [0.2 implementation slice](version-0.2.md) turns watcher notifications into durable source changes. A source scanner supplies observations, a coordinator commits them and records outstanding test work, and the report exporter projects the current snapshot. Project evaluation and test execution consume the committed work independently. The syntax pass can publish while those consumers are pending.
 
+## Current implementation
+
+The development daemon records syntax inventory and test intents in `SlopGuard/state/<workspace-id>/inventory.sqlite3` under the user's local application data directory. The database stores verified fingerprints, last-known fingerprints for uncertain paths, and the enumeration frontier. Source facts and pending work share one transaction. The single writer uses a rollback journal and a 64 MiB database page cap. The journal fits inside the checkout's larger database and journal allowance. [SQLite rollback journaling](https://sqlite.org/lockingv3.html)
+
+The existing `revision` field is the daemon's invalidation sequence. The additive `committedRevision` field identifies the durable observation and advances across restarts. `pendingTestIntents` gives the detailed count, trigger revision range and any workspace fallback marker. At most 2,048 detailed intents are retained. Additional causes extend one fallback marker. A replacement root retires the previous pending records and publishes the retirement revision and reason. Database write failures appear as `recordingError` while the durable revision stays at the prior commit. The test scheduler consumes these records in the next stage.
+
 ## Confirm a change
 
 | Identity | Purpose |

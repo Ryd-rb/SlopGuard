@@ -18,4 +18,7 @@ public sealed record Finding(
 public sealed record WorkspaceReport(
     int SchemaVersion, string Producer, string Root, Guid Epoch, long Revision,
     string? Branch, string? Commit, string Checker, string Language,
-    int FileCount, bool Partial, bool FindingsTruncated, IReadOnlyList<Finding> Findings);
+    int FileCount, bool Partial, bool FindingsTruncated, IReadOnlyList<Finding> Findings)
+{
+    public long CommittedRevision { get; init; }
+}

@@ -14,26 +14,50 @@ public sealed class Workspace
     internal static StringComparer PathComparer { get; } =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-    public Workspace(string root)
+    public Workspace(string root) : this(root, Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData,
+            Environment.SpecialFolderOption.DoNotVerify), "SlopGuard", "state"))
+    {
+    }
+
+    internal Workspace(string root, string stateDirectory)
     {
         Root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-        // Resolve alias directories before deriving the singleton key.
-        var directory = new DirectoryInfo(Root);
-        if (!directory.Exists)
-            throw new DirectoryNotFoundException(Root);
-        for (DirectoryInfo? part = directory; part is not null; part = part.Parent)
-        {
-            if (part.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                throw new IOException($"Use the workspace's physical path instead of '{part.FullName}'.");
-        }
+        CheckDirectory(Root);
 
         var identity = OperatingSystem.IsWindows() ? Root.ToUpperInvariant() : Root;
         var bytes = Encoding.UTF8.GetBytes($"{Environment.UserName}\0{identity}");
         InstanceName = $"SlopGuard-{Convert.ToHexString(SHA256.HashData(bytes))[..32]}";
+        if (!Path.IsPathFullyQualified(stateDirectory))
+            throw new IOException("SlopGuard could not resolve the per-user state directory.");
+        StateDirectory = Path.GetFullPath(Path.Combine(stateDirectory, InstanceName));
+        var relativeState = Path.GetRelativePath(Root, StateDirectory);
+        if (!Path.IsPathRooted(relativeState) && relativeState.Split(Path.DirectorySeparatorChar)[0] != "..")
+            throw new IOException("SlopGuard state requires a location outside the checkout.");
     }
 
     public string Root { get; }
     public string InstanceName { get; }
+    internal string StateDirectory { get; }
+    internal string InventoryPath => Path.Combine(StateDirectory, "inventory.sqlite3");
+
+    internal static void CheckDirectory(string path, bool allowMissing = false)
+    {
+        for (var part = new DirectoryInfo(path); part is not null; part = part.Parent)
+        {
+            FileAttributes flags;
+            try
+            {
+                flags = File.GetAttributes(part.FullName);
+            }
+            catch (IOException ex) when (allowMissing && ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                continue;
+            }
+            if ((flags & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != FileAttributes.Directory)
+                throw new IOException($"Use a physical directory instead of '{part.FullName}'.");
+        }
+    }
 
     internal bool IsIncluded(string fullPath)
     {

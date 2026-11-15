@@ -6,195 +6,254 @@ namespace SlopGuard.Daemon;
 
 internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
 {
-    private const int MaxFiles = 20_000;
+    internal const int MaxFiles = 20_000;
+    internal const int MaxPathCharacters = 2_000_000;
     private const int MaxIndexedDiagnostics = 4_000;
     private const int MaxReportedDiagnostics = 2_000;
     private const int MaxSourceBytes = 1_048_576;
-    private const int MaxIndexedPathCharacters = 2_000_000;
+    private const int MaxVisitedEntries = 200_000;
 
-    private readonly Dictionary<string, Entry> files = new(Workspace.PathComparer);
-    private int indexedDiagnostics;
-    private int indexedPathCharacters;
-    private bool fileLimitReached;
-
-    internal async Task RefreshAsync(string[] paths, bool fullScan, CancellationToken cancellationToken)
+    internal async Task<SourceScan> ScanAsync(
+        string[]? paths, SourceScan? prior, CancellationToken cancellationToken)
     {
-        if (!fullScan)
+        var files = new Dictionary<string, SyntaxEntry>(Workspace.PathComparer);
+        var unknown = new HashSet<string>(Workspace.PathComparer);
+        if (paths is not null && prior is not null)
         {
+            foreach (var entry in prior.Files)
+                files.Add(entry.Key, entry.Value);
             foreach (var path in paths)
-                await RefreshFileAsync(path, cancellationToken);
-            return;
+                files.Remove(workspace.Relative(path));
         }
 
-        var seen = new HashSet<string>(Workspace.PathComparer);
-        fileLimitReached = false;
-        var pathCharacters = 0;
-        foreach (var path in EnumerateSources())
+        var pathCharacters = files.Keys.Sum(path => path.Length);
+        var diagnosticCount = files.Values.Sum(entry => entry.Diagnostics.Count);
+        var candidates = paths ?? EnumerateSources(unknown);
+        foreach (var path in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (seen.Count == MaxFiles || pathCharacters + path.Length > MaxIndexedPathCharacters)
+            var relative = workspace.Relative(path);
+            if (files.Count >= MaxFiles || pathCharacters + relative.Length > MaxPathCharacters)
             {
-                fileLimitReached = true;
+                MarkUnknown(unknown, "");
                 break;
             }
-            seen.Add(path);
-            pathCharacters += path.Length;
+
+            try
+            {
+                var digest = await ReadSourceAsync(path, paths is not null, cancellationToken);
+                if (digest is null)
+                    continue;
+                var (hash, bytes) = digest.Value;
+                SyntaxEntry entry;
+                if (prior is not null && prior.Files.TryGetValue(relative, out var cached) &&
+                    cached.Digest == hash && !cached.Truncated)
+                {
+                    entry = cached;
+                }
+                else
+                {
+                    using var stream = new MemoryStream(bytes, writable: false);
+                    using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                    var source = await reader.ReadToEndAsync(cancellationToken);
+                    var analysis = checker.Analyze(source, cancellationToken);
+                    entry = new SyntaxEntry(hash, analysis.Diagnostics, analysis.Truncated);
+                }
+
+                var remaining = MaxIndexedDiagnostics - diagnosticCount;
+                if (entry.Diagnostics.Count > remaining)
+                    entry = entry with { Diagnostics = entry.Diagnostics.Take(remaining).ToArray(), Truncated = true };
+                files.Add(relative, entry);
+                diagnosticCount += entry.Diagnostics.Count;
+                pathCharacters += relative.Length;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                MarkUnknown(unknown, relative);
+            }
         }
 
-        foreach (var path in files.Keys.Where(path => !seen.Contains(path)).ToArray())
-            Remove(path);
-        foreach (var path in seen)
-            await RefreshFileAsync(path, cancellationToken);
+        return new SourceScan(files, unknown);
     }
 
-    internal WorkspaceReport CreateReport(Guid epoch, long revision, GitRevision git)
+    internal WorkspaceReport CreateReport(SourceScan scan, Guid epoch, long revision, long committedRevision,
+        GitRevision git)
     {
         var findings = new List<Finding>();
         // Reserve room for report metadata and conservatively charge for JSON escaping.
         var byteBudget = ReportFile.MaximumBytes - 1_048_576;
-        foreach (var (path, entry) in files.OrderBy(pair => pair.Key, Workspace.PathComparer))
+        var diagnosticCount = 0;
+        var truncated = false;
+        foreach (var (path, entry) in scan.Files.OrderBy(pair => pair.Key, Workspace.PathComparer))
         {
-            var relativePath = workspace.Relative(path);
+            truncated |= entry.Truncated;
+            diagnosticCount += entry.Diagnostics.Count;
             foreach (var diagnostic in entry.Diagnostics)
             {
                 if (findings.Count == MaxReportedDiagnostics)
                     break;
-                var cost = 256 + 6 * (relativePath.Length + diagnostic.Rule.Length + diagnostic.Message.Length);
+                var cost = 256 + 6 * (path.Length + diagnostic.Rule.Length + diagnostic.Message.Length);
                 if (cost > byteBudget)
                     continue;
                 byteBudget -= cost;
-                findings.Add(new Finding(relativePath, entry.Digest!, diagnostic.Rule,
+                findings.Add(new Finding(path, entry.Digest, diagnostic.Rule,
                     diagnostic.Message, diagnostic.Line, diagnostic.Column));
             }
-            if (findings.Count == MaxReportedDiagnostics)
-                break;
         }
 
         return new WorkspaceReport(ReportFile.SchemaVersion, ReportFile.Producer, workspace.Root, epoch, revision,
-            git.Branch, git.Commit, checker.Id, checker.Language, files.Count,
-            fileLimitReached || files.Values.Any(entry => entry.Digest is null),
-            indexedDiagnostics > findings.Count || files.Values.Any(entry => entry.Truncated), findings);
+            git.Branch, git.Commit, checker.Id, checker.Language, scan.Files.Count,
+            scan.Partial, truncated || diagnosticCount > findings.Count, findings)
+        {
+            CommittedRevision = committedRevision
+        };
     }
 
-    private IEnumerable<string> EnumerateSources()
+    private IEnumerable<string> EnumerateSources(HashSet<string> unknown)
     {
-        var pending = new Stack<IEnumerator<string>>();
+        var stack = new Stack<(string Directory, IEnumerator<string> Entries)>();
+        Push(workspace.Root);
+        var visited = 0;
         try
         {
-            pending.Push(Directory.EnumerateFileSystemEntries(workspace.Root).GetEnumerator());
-            while (pending.TryPeek(out var children))
+            while (stack.TryPeek(out var current))
             {
-                if (!children.MoveNext())
+                if (!MoveNext(current))
                 {
-                    pending.Pop().Dispose();
+                    stack.Pop().Entries.Dispose();
                     continue;
                 }
+                if (++visited > MaxVisitedEntries)
+                {
+                    MarkUnknown(unknown, "");
+                    yield break;
+                }
 
-                var path = children.Current;
+                var path = current.Entries.Current;
                 if (!workspace.IsIncluded(path))
                     continue;
-                var flags = Attributes(path);
-                if (flags is null || (flags.Value & FileAttributes.ReparsePoint) != 0)
+
+                FileAttributes flags;
+                try
+                {
+                    flags = File.GetAttributes(path);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    MarkUnknown(unknown, workspace.Relative(path));
                     continue;
-                if ((flags.Value & FileAttributes.Directory) != 0)
-                    pending.Push(Directory.EnumerateFileSystemEntries(path).GetEnumerator());
+                }
+                if ((flags & FileAttributes.ReparsePoint) != 0)
+                    MarkUnknown(unknown, workspace.Relative(path));
+                else if ((flags & FileAttributes.Directory) != 0)
+                    Push(path);
                 else if (checker.Matches(path))
                     yield return path;
             }
         }
         finally
         {
-            foreach (var enumerator in pending)
-                enumerator.Dispose();
+            foreach (var current in stack)
+                current.Entries.Dispose();
+        }
+
+        void Push(string path)
+        {
+            try
+            {
+                stack.Push((path, Directory.EnumerateFileSystemEntries(path).GetEnumerator()));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                MarkUnknown(unknown, path == workspace.Root ? "" : workspace.Relative(path));
+            }
+        }
+
+        bool MoveNext((string Directory, IEnumerator<string> Entries) current)
+        {
+            try
+            {
+                return current.Entries.MoveNext();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                MarkUnknown(unknown, current.Directory == workspace.Root ? "" : workspace.Relative(current.Directory));
+                return false;
+            }
         }
     }
 
-    private async Task RefreshFileAsync(string path, CancellationToken cancellationToken)
-    {
-        var flags = Attributes(path);
-        if (flags is null || (flags.Value & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0
-            || HasLinkedAncestor(path))
-        {
-            Remove(path);
-            return;
-        }
-        if ((files.Count == MaxFiles || indexedPathCharacters + path.Length > MaxIndexedPathCharacters)
-            && !files.ContainsKey(path))
-        {
-            fileLimitReached = true;
-            return;
-        }
-
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete, bufferSize: 16_384, useAsync: true);
-        var length = stream.Length;
-        if (length > MaxSourceBytes)
-        {
-            Set(path, new Entry(null, [], false));
-            return;
-        }
-
-        var bytes = new byte[(int)length];
-        await stream.ReadExactlyAsync(bytes, cancellationToken);
-        if (stream.Length != length)
-            throw new IOException("A source file changed during analysis.");
-        var digest = Convert.ToHexString(SHA256.HashData(bytes));
-        if (files.TryGetValue(path, out var existing) && existing.Digest == digest && !existing.Truncated)
-            return;
-
-        // StreamReader detects byte order marks for legacy C# files as well as UTF-8.
-        using var textStream = new MemoryStream(bytes, writable: false);
-        using var reader = new StreamReader(textStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-        var text = await reader.ReadToEndAsync(cancellationToken);
-        var analysis = checker.Analyze(text, cancellationToken);
-        var allowance = MaxIndexedDiagnostics - indexedDiagnostics + (existing?.Diagnostics.Count ?? 0);
-        var diagnostics = analysis.Diagnostics.Take(allowance).ToArray();
-        Set(path, new Entry(digest, diagnostics, analysis.Truncated || diagnostics.Length < analysis.Diagnostics.Count));
-    }
-
-    private bool HasLinkedAncestor(string path)
-    {
-        for (var parent = Path.GetDirectoryName(path); parent is not null
-                && !Workspace.PathComparer.Equals(parent, workspace.Root); parent = Path.GetDirectoryName(parent))
-        {
-            if ((Attributes(parent) & FileAttributes.ReparsePoint) != 0)
-                return true;
-        }
-        return false;
-    }
-
-    private static FileAttributes? Attributes(string path)
+    private async Task<(string Hash, byte[] Bytes)?> ReadSourceAsync(
+        string path, bool targeted, CancellationToken cancellationToken)
     {
         try
         {
-            return File.GetAttributes(path);
+            if (targeted)
+            {
+                for (var parent = Path.GetDirectoryName(path); parent is not null &&
+                     !Workspace.PathComparer.Equals(parent, workspace.Root); parent = Path.GetDirectoryName(parent))
+                {
+                    if ((File.GetAttributes(parent) & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException("A source ancestor is a link.");
+                }
+            }
+
+            var flags = File.GetAttributes(path);
+            if ((flags & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("The source is a link.");
+            if ((flags & FileAttributes.Directory) != 0)
+                return null;
+
+            var before = File.GetLastWriteTimeUtc(path);
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete, bufferSize: 16_384, useAsync: true);
+            var length = stream.Length;
+            if (length > MaxSourceBytes)
+                throw new IOException("The source exceeds the read budget.");
+
+            var bytes = new byte[(int)length];
+            await stream.ReadExactlyAsync(bytes, cancellationToken);
+            if (stream.Length != length || File.GetLastWriteTimeUtc(path) != before)
+                throw new IOException("A source file changed during analysis.");
+            return (Convert.ToHexString(SHA256.HashData(bytes)), bytes);
         }
-        catch (FileNotFoundException)
+        catch (IOException ex) when (targeted && ex is FileNotFoundException or DirectoryNotFoundException)
         {
             return null;
         }
-        catch (DirectoryNotFoundException)
+    }
+
+    private static void MarkUnknown(HashSet<string> scopes, string path)
+    {
+        const int maxScopes = 512;
+        if (scopes.Contains(""))
+            return;
+        if (path.Length == 0 || path.Length > 2_048 || scopes.Count == maxScopes)
         {
-            return null;
+            scopes.Clear();
+            scopes.Add("");
+            return;
+        }
+        scopes.Add(path);
+    }
+}
+
+internal sealed record SyntaxEntry(string Digest, IReadOnlyList<Diagnostic> Diagnostics, bool Truncated);
+
+internal sealed record SourceScan(Dictionary<string, SyntaxEntry> Files, HashSet<string> UncertainScopes)
+{
+    internal bool Partial => UncertainScopes.Count != 0;
+
+    internal static bool IsUncertain(HashSet<string> scopes, string path)
+    {
+        while (true)
+        {
+            if (scopes.Contains(path))
+                return true;
+            if (path.Length == 0)
+                return false;
+            var separator = path.LastIndexOf('/');
+            path = separator < 0 ? "" : path[..separator];
         }
     }
-
-    private void Set(string path, Entry entry)
-    {
-        Remove(path);
-        files.Add(path, entry);
-        indexedDiagnostics += entry.Diagnostics.Count;
-        indexedPathCharacters += path.Length;
-    }
-
-    private void Remove(string path)
-    {
-        if (files.Remove(path, out var old))
-        {
-            indexedDiagnostics -= old.Diagnostics.Count;
-            indexedPathCharacters -= path.Length;
-        }
-    }
-
-    private sealed record Entry(string? Digest, IReadOnlyList<Diagnostic> Diagnostics, bool Truncated);
 }

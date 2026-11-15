@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="../SlopGuard.Core/SlopGuard.Core.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+    <InternalsVisibleTo Include="SlopGuard.IntegrationTests" />
   </ItemGroup>
 </Project>

@@ -48,4 +48,8 @@ dotnet run --no-build --project src/SlopGuard.Cli -- stop
 
 Version 0.1 runs incremental Roslyn syntax checks, publishes `.slopguard/results.json` with file and Git attribution, and exposes status, findings and rechecks over MCP. It parses files using the current C# grammar without evaluating the project's framework, defines or references. The report's commit is the checked-out base of the scanned working tree. Treat a pending, degraded or partial report as incomplete. The [delivery plan](docs/delivery.md) tracks semantic diagnostics, test execution and status marks.
 
+## Development build
+
+The first 0.2 stage adds a per-checkout SQLite inventory and queues durable test intents after confirmed C# changes. Stop the checkout's existing daemon before starting the development build. Use `status` or MCP `workspace_status` to inspect `committedRevision`, `pendingTestIntents` and `recordingError`. Intents remain in `awaiting_selection` until the test scheduler is implemented. [Source reconciliation](docs/source-reconciliation.md#current-implementation)
+
 Released under the [MIT License](LICENSE).
