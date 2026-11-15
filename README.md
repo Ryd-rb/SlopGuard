@@ -28,10 +28,22 @@ After an edit, the agent can ask these questions.
 - [Verification needs](docs/verification.md) covers test gaps and detection of pre-production, deploy, release and post-release checks.
 - [Current report publication](docs/result-publication.md) covers attribution, stale output invalidation and disk limits.
 - [MCP and agent skill](docs/mcp.md) defines the agent workflow, tool contracts and policy boundaries.
-- [SlopGuard skill draft](skills/slopguard/SKILL.md) is the single agent entry point for starting the daemon, reading reports and marking results.
+- [SlopGuard skill](skills/slopguard/SKILL.md) is the single agent entry point for the current CLI and MCP tools.
 - [Repository layout](docs/repository-layout.md) covers the buildable .NET solution and the boundaries for adding languages.
 - [Delivery and acceptance](docs/delivery.md) defines the implementation order, fixtures and measurable acceptance criteria.
 
-The repository contains the specification, skill draft and .NET 10 solution scaffold. The CLI currently exposes `--help`. Daemon startup, checkers and MCP tools are pending implementation.
+## Use version 0.1
+
+Build with the .NET 10 SDK. Git workspaces require Git on `PATH`. The commands below use the built CLI from the checkout.
+
+```sh
+dotnet build SlopGuard.slnx
+dotnet run --no-build --project src/SlopGuard.Cli -- start
+dotnet run --no-build --project src/SlopGuard.Cli -- status
+dotnet run --no-build --project src/SlopGuard.Cli -- results
+dotnet run --no-build --project src/SlopGuard.Cli -- stop
+```
+
+Version 0.1 runs incremental Roslyn syntax checks, publishes `.slopguard/results.json` with file and Git attribution, and exposes status, findings and rechecks over MCP. It parses files using the current C# grammar without evaluating the project's framework, defines or references. The report's commit is the checked-out base of the scanned working tree. Treat a pending, degraded or partial report as incomplete. The [delivery plan](docs/delivery.md) tracks semantic diagnostics, test execution and status marks.
 
 Released under the [MIT License](LICENSE).

@@ -5,4 +5,7 @@
     <Project Path="src/SlopGuard.Daemon/SlopGuard.Daemon.csproj" />
     <Project Path="src/SlopGuard.Providers.CSharp/SlopGuard.Providers.CSharp.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SlopGuard.IntegrationTests/SlopGuard.IntegrationTests.csproj" />
+  </Folder>
 </Solution>

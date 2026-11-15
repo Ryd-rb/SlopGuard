@@ -1,12 +1,11 @@
 ---
 name: slopguard
-description: Start and use the SlopGuard daemon when editing C# in a SlopGuard-enabled checkout. Check findings and test evidence, and request rechecks, deeper analysis or cleanup.
+description: Start SlopGuard in the checkout being edited and inspect current C# syntax findings. Use when making or reviewing C# changes in a SlopGuard-enabled checkout.
 ---
 
 # SlopGuard
 
-1. Run `slopguard start --root <checkout>`. If needed, connect using `slopguard mcp --root <checkout>`. Use that connection for all checkers. Read `workspace_status` and capture a baseline for the files or projects in scope.
-2. SlopGuard publishes `.slopguard/results.json`. Read it through `slopguard results --root <checkout>` or query `get_findings` over MCP. Use the returned revision and file or commit scope. Missing output may mean reconciliation or checks are pending. Check status before treating it as a clean run.
-3. Mark the report, an affected file, or a finding with `mark_result`, using the report token, target version and a short reason. Use `acknowledged` when reviewed, `fix_in_progress` while editing, `recheck_requested` after a fix, `needs_analysis` for deeper inspection, `suspected_false_positive` for review, or `cleanup_requested` for apparently obsolete results. Treat the report file as read-only. On a conflict, reread and reapply the mark only if it still fits.
-4. Before changing branches or rewriting the working tree, call `begin_workspace_transition`. Release the lease with `end_workspace_transition` after Git exits, then read the refreshed status.
-5. Before reporting completion, run `checkpoint` for the edited scope. Report current findings, test failures and unresolved verification gaps.
+1. Run `slopguard start --root <checkout>`. The MCP entry point is `slopguard mcp --root <checkout>` and starts the same daemon if needed. If developing SlopGuard itself, use the local build from its README when the command is unavailable.
+2. Read the daemon-owned `.slopguard/results.json` through `slopguard results --root <checkout>` or MCP `get_findings`. Check the file paths, Git context and revision. A pending, degraded or partial run is incomplete. Use `workspace_status` to see why.
+3. The watcher rechecks edits and Git changes. Use `slopguard recheck --root <checkout>` or MCP `run_checks` for an explicit refresh, then read the new revision. Treat the report as read-only.
+4. Before reporting completion, review current findings and run the repository's build and tests. Version 0.1 checks syntax. Use MCP `list_checkers` to confirm available coverage.

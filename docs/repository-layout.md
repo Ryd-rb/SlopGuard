@@ -1,6 +1,6 @@
 # Repository layout
 
-The .NET 10 solution builds four projects. The CLI currently exposes a help command and the class library projects establish ownership boundaries. Each library gains code when its first feature lands.
+The .NET 10 solution builds four production projects and a C# integration test project.
 
 | Path | Ownership |
 | --- | --- |
@@ -13,7 +13,7 @@ The .NET 10 solution builds four projects. The CLI currently exposes a help comm
 
 The daemon and C# provider both depend on Core. The CLI will compose the daemon, MCP bridge and built-in providers. Keep the Core project free of compiler, test runner, storage and transport dependencies. Introduce separate persistence, protocol or worker projects when an implemented component needs its own dependencies, process or release boundary.
 
-As runtime features land, put test projects under `tests/`. Name unit-test projects after their assemblies, such as `tests/SlopGuard.Core.Tests`, and put cross-process tests in `tests/SlopGuard.IntegrationTests`. Keep synthetic test workspaces under `tests/fixtures/<provider>/`, with shared Git and filesystem cases in a workspace folder. Keep independently versioned configuration or protocol schemas under `schemas/` when clients begin consuming them.
+Put test projects under `tests/`. Name unit-test projects after their assemblies, such as `tests/SlopGuard.Core.Tests`, and put daemon lifecycle tests in `tests/SlopGuard.IntegrationTests`. Keep reusable synthetic test workspaces under `tests/fixtures/<provider>/`, with shared Git and filesystem cases in a workspace folder. Keep independently versioned configuration or protocol schemas under `schemas/` when clients begin consuming them.
 
 ## Adding more languages
 
@@ -23,11 +23,11 @@ As runtime features land, put test projects under `tests/`. Name unit-test proje
 - Use the language’s own compatible tooling from its isolated worker. Roslyn symbols and C# project references stay private to the C# adapter. New built-in adapters follow `src/SlopGuard.Providers.<Language>`. Stabilize the contracts with a second language before exposing a public plugin API.
 - Keep `.slopguard/results.json`, status marks and the skill uniform across languages. Distinguish findings by provider, language and build context. The agent keeps one set of commands.
 
-## Build the scaffold
+## Build and test
 
 ```sh
 dotnet build SlopGuard.slnx
-dotnet run --project src/SlopGuard.Cli -- --help
+dotnet test SlopGuard.slnx
 ```
 
 The SDK selected for this repository builds SlopGuard itself. The C# adapter will resolve SDKs and targeting packs separately for each checkout it analyzes. [SDK version selection](https://learn.microsoft.com/en-us/dotnet/core/tools/global-json), [Solution CLI](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-sln)
