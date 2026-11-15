@@ -1,6 +1,6 @@
 # Repository layout
 
-The .NET 10 solution builds three production projects and a C# integration test project.
+The .NET 10 solution builds three production projects, a C# integration test project and a worker fixture executable.
 
 | Path | Ownership |
 | --- | --- |

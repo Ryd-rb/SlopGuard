@@ -31,6 +31,7 @@ public sealed class Workspace
         if (!Path.IsPathFullyQualified(stateDirectory))
             throw new IOException("SlopGuard could not resolve the per-user state directory.");
         StateDirectory = Path.GetFullPath(Path.Combine(stateDirectory, InstanceName));
+        UserStateDirectory = Path.GetDirectoryName(StateDirectory)!;
         var relativeState = Path.GetRelativePath(Root, StateDirectory);
         if (!Path.IsPathRooted(relativeState) && relativeState.Split(Path.DirectorySeparatorChar)[0] != "..")
             throw new IOException("SlopGuard state requires a location outside the checkout.");
@@ -39,7 +40,18 @@ public sealed class Workspace
     public string Root { get; }
     public string InstanceName { get; }
     internal string StateDirectory { get; }
+    internal string UserStateDirectory { get; }
     internal string InventoryPath => Path.Combine(StateDirectory, "inventory.sqlite3");
+
+    internal static void CreatePrivateDirectory(string path)
+    {
+        CheckDirectory(path, allowMissing: true);
+        if (OperatingSystem.IsWindows())
+            Directory.CreateDirectory(path);
+        else
+            Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        CheckDirectory(path);
+    }
 
     internal static void CheckDirectory(string path, bool allowMissing = false)
     {

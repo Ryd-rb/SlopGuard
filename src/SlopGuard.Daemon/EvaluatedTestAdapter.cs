@@ -7,8 +7,8 @@ internal sealed class EvaluatedTestAdapter(ProjectEvaluator evaluator, IEnumerab
 {
     private readonly HashSet<string> approved = unitProjects.ToHashSet(Workspace.PathComparer);
 
-    public Task<ProjectGraph> EvaluateAsync(CancellationToken cancellationToken) =>
-        evaluator.EvaluateAsync(cancellationToken);
+    public Task<ProjectGraph> EvaluateAsync(WorkerLease worker, CancellationToken cancellationToken) =>
+        evaluator.EvaluateAsync(worker, cancellationToken);
 
     public Task<TestSelection> SelectAsync(TestSelectionInput input, CancellationToken cancellationToken)
     {
@@ -48,7 +48,7 @@ internal sealed class EvaluatedTestAdapter(ProjectEvaluator evaluator, IEnumerab
         return Task.FromResult(new TestSelection(complete && selected.Count == targets.Length, targets));
     }
 
-    public Task<TestOutcome> RunAsync(TestAttempt attempt, CancellationToken cancellationToken) =>
+    public Task<TestOutcome> RunAsync(TestAttempt attempt, WorkerLease worker, CancellationToken cancellationToken) =>
         run(attempt, cancellationToken);
 
     private sealed class GraphIndex(ProjectGraph graph)

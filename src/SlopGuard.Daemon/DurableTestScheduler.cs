@@ -3,9 +3,12 @@ using Microsoft.Data.Sqlite;
 
 namespace SlopGuard.Daemon;
 
-internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceMonitor workspace, ITestAdapter adapter)
+internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceMonitor workspace, ITestAdapter adapter,
+    Workspace checkout)
 {
     private readonly Channel<bool> changes = Channel.CreateBounded<bool>(1);
+    private readonly WorkerAdmission workers = new(checkout);
+    private static readonly TimeSpan AdmissionRetry = TimeSpan.FromMilliseconds(250);
     private bool recovered;
     private long evaluatedRevision;
     private TestAttemptReceipt? latest;
@@ -22,7 +25,16 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
             {
                 delay = await AdvanceAsync(cancellationToken);
             }
-            catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
+            catch (UnauthorizedAccessException ex)
+            {
+                workspace.UpdateScheduler(new TestSchedulerStatus("blocked_policy", latest, Error: ex.Message));
+                delay = null;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                delay = TimeSpan.Zero;
+            }
+            catch (Exception ex) when (ex is SqliteException or IOException)
             {
                 workspace.UpdateScheduler(new TestSchedulerStatus("degraded", latest, Error: ex.Message));
                 delay = TimeSpan.FromSeconds(1);
@@ -41,14 +53,34 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
             workspace.UpdateScheduler(new TestSchedulerStatus("pending_reconciliation", latest));
             return null;
         }
+        if (!recovered && !workers.CanRecover())
+        {
+            workspace.UpdateScheduler(new TestSchedulerStatus("waiting_recovery", latest), fence);
+            return AdmissionRetry;
+        }
         var projects = adapter as IEvaluatedTestAdapter;
         if (projects is not null && evaluatedRevision != fence.Revision)
         {
             if (!await workspace.VerifyScheduleAsync(fence, cancellationToken))
                 return null;
-            workspace.UpdateScheduler(new TestSchedulerStatus("evaluating", latest), fence);
-            var graph = await projects.EvaluateAsync(cancellationToken);
-            if (!await workspace.VerifyScheduleAsync(fence, cancellationToken))
+            var evaluationGrant = ExecutionProfile.Read(checkout, fence.RootIdentity);
+            var request = workers.TryAcquire(evaluationGrant, new WorkerRequirements(ExecutionOperation.Evaluate, true, []));
+            if (request.Lease is null)
+            {
+                workspace.UpdateScheduler(new TestSchedulerStatus(request.Waiting!, latest), fence);
+                return AdmissionRetry;
+            }
+            ProjectGraph graph;
+            await using (var worker = request.Lease)
+            {
+                if (!await workspace.VerifyScheduleAsync(fence, cancellationToken))
+                    return null;
+                workspace.UpdateScheduler(new TestSchedulerStatus("evaluating", latest), fence);
+                graph = await RunGuardedAsync(fence, worker, token => projects.EvaluateAsync(worker, token), cancellationToken);
+                worker.Revalidate();
+            }
+            if (!await workspace.VerifyScheduleAsync(fence, cancellationToken) ||
+                !ProfileIsCurrent(fence, evaluationGrant.Revision))
                 return null;
             var recorded = inventory.RecordProjects(fence, graph, () => workspace.ScheduleIsCurrent(fence));
             if (recorded is null)
@@ -70,10 +102,20 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
 
         workspace.UpdateScheduler(new TestSchedulerStatus("selecting", latest), fence, work.Pending);
         var selected = await adapter.SelectAsync(work.Input, cancellationToken);
+        var grant = ExecutionProfile.Read(checkout, fence.RootIdentity);
+        grant.Require(new WorkerRequirements(ExecutionOperation.Test, false, []));
+        selected = selected with
+        {
+            Targets = selected.Targets.Select(target => target with
+            {
+                InputFingerprint = TestCause.Hash(target.InputFingerprint + grant.Revision)
+            }).ToArray()
+        };
         var selection = new ValidatedSelection(work, selected);
         if (!await workspace.VerifyScheduleAsync(fence, cancellationToken))
             return null;
-        var pending = inventory.ResolveExisting(work, selection, () => workspace.ScheduleIsCurrent(fence));
+        var pending = inventory.ResolveExisting(work, selection,
+            () => workspace.ScheduleIsCurrent(fence) && ProfileIsCurrent(fence, grant.Revision));
         if (pending is null)
             return null;
         if (pending.State == "none")
@@ -91,15 +133,32 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
             if (outstanding.Length == 0)
                 continue;
             hasOutstandingTarget = true;
-            var admission = inventory.Admit(fence, target with { CauseIds = Array.AsReadOnly(outstanding) }, DateTimeOffset.UtcNow,
-                () => workspace.ScheduleIsCurrent(fence));
+            var requirements = adapter.Requirements(target);
+            requirements = requirements with { Operations = requirements.Operations | ExecutionOperation.Test };
+            var request = workers.TryAcquire(grant, requirements);
+            if (request.Lease is null)
+            {
+                workspace.UpdateScheduler(new TestSchedulerStatus(request.Waiting!, latest), fence, pending);
+                return AdmissionRetry;
+            }
+            TestAdmission admission;
+            TestOutcome outcome = TestOutcome.Cancelled;
+            await using (var worker = request.Lease)
+            {
+                worker.Revalidate();
+                admission = inventory.Admit(fence, target with { CauseIds = Array.AsReadOnly(outstanding) },
+                    worker, DateTimeOffset.UtcNow, () => workspace.ScheduleIsCurrent(fence));
+                if (admission.Attempt is { } running)
+                {
+                    latest = new TestAttemptReceipt(running.Id, running.Number, fence.Revision, fence.Epoch,
+                        target.Id, "running", null, null);
+                    workspace.UpdateScheduler(new TestSchedulerStatus("running", latest), fence, pending);
+                    outcome = await RunAttemptAsync(running, worker, cancellationToken);
+                }
+            }
             if (admission.Attempt is { } attempt)
             {
-                latest = new TestAttemptReceipt(attempt.Id, attempt.Number, fence.Revision, fence.Epoch,
-                    target.Id, "running", null, null);
-                workspace.UpdateScheduler(new TestSchedulerStatus("running", latest), fence, pending);
-                var outcome = await RunAttemptAsync(attempt, cancellationToken);
-                await RecordOutcomeAsync(attempt, outcome, work, selection, cancellationToken);
+                await RecordOutcomeAsync(attempt, outcome, work, selection, requirements, cancellationToken);
                 return TimeSpan.Zero;
             }
             if (admission.RetryAt is { } retry && (nextRetry is null || retry < nextRetry))
@@ -114,20 +173,14 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
         return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
 
-    private async Task<TestOutcome> RunAttemptAsync(TestAttempt attempt, CancellationToken cancellationToken)
+    private async Task<TestOutcome> RunAttemptAsync(TestAttempt attempt, WorkerLease worker, CancellationToken cancellationToken)
     {
         if (!await workspace.VerifyScheduleAsync(attempt.Fence, cancellationToken))
             return TestOutcome.Cancelled;
 
-        using var watch = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        using var runner = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var invalidated = WaitUntilInvalidAsync(attempt.Fence, watch.Token);
         try
         {
-            var completion = adapter.RunAsync(attempt, runner.Token);
-            if (await Task.WhenAny(completion, invalidated) == invalidated)
-                await runner.CancelAsync();
-            return await completion;
+            return await RunGuardedAsync(attempt.Fence, worker, token => adapter.RunAsync(attempt, worker, token), cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -140,6 +193,22 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
         catch (Exception ex) when (ex is IOException or TimeoutException)
         {
             return TestOutcome.RetryableFailure;
+        }
+    }
+
+    private async Task<T> RunGuardedAsync<T>(ScheduleFence fence, WorkerLease worker,
+        Func<CancellationToken, Task<T>> run, CancellationToken cancellationToken)
+    {
+        worker.Revalidate();
+        using var watch = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var runner = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var invalidated = WaitUntilInvalidAsync(fence, worker, watch.Token);
+        try
+        {
+            var completion = run(runner.Token);
+            if (await Task.WhenAny(completion, invalidated) == invalidated)
+                await runner.CancelAsync();
+            return await completion;
         }
         finally
         {
@@ -156,12 +225,13 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
     }
 
     private async Task RecordOutcomeAsync(TestAttempt attempt, TestOutcome outcome, TestWork work,
-        ValidatedSelection selection, CancellationToken cancellationToken)
+        ValidatedSelection selection, WorkerRequirements requirements, CancellationToken cancellationToken)
     {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var verified = await workspace.VerifyScheduleAsync(attempt.Fence, cancellationToken);
+            var verified = await workspace.VerifyScheduleAsync(attempt.Fence, cancellationToken) &&
+                ProfileIsCurrent(attempt.Fence, attempt.ProfileRevision, requirements);
             try
             {
                 var (pending, receipt) = inventory.Finish(attempt, outcome, work, selection, DateTimeOffset.UtcNow,
@@ -181,10 +251,35 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
         }
     }
 
-    private async Task WaitUntilInvalidAsync(ScheduleFence fence, CancellationToken cancellationToken)
+    private bool ProfileIsCurrent(ScheduleFence fence, string expected, WorkerRequirements? requirements = null)
+    {
+        try
+        {
+            var grant = ExecutionProfile.Read(checkout, fence.RootIdentity);
+            if (requirements is not null)
+                grant.Require(requirements with { OutputRoots = ExecutionProfile.NormalizeRoots(checkout, requirements.OutputRoots) });
+            return grant.Revision == expected;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private async Task WaitUntilInvalidAsync(ScheduleFence fence, WorkerLease worker, CancellationToken cancellationToken)
     {
         while (workspace.ScheduleIsCurrent(fence))
-            await changes.Reader.ReadAsync(cancellationToken);
+        {
+            try
+            {
+                worker.Revalidate();
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                return;
+            }
+            await WaitAsync(AdmissionRetry, cancellationToken);
+        }
     }
 
     private async Task WaitAsync(TimeSpan? delay, CancellationToken cancellationToken)

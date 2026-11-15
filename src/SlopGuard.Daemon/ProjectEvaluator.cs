@@ -23,6 +23,27 @@ public sealed class ProjectEvaluator(Workspace workspace)
     // Calling this API explicitly grants project evaluation for the supplied workspace.
     public async Task<ProjectGraph> EvaluateAsync(CancellationToken cancellationToken = default)
     {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10))
+            return await EvaluateAsync(null, cancellationToken);
+        try
+        {
+            var grant = new ExecutionGrant("explicit-evaluation", RootIdentity.Read(workspace.Root),
+                ExecutionOperation.Evaluate, [], FromProfile: false);
+            var request = new WorkerAdmission(workspace).TryAcquire(grant,
+                new WorkerRequirements(ExecutionOperation.Evaluate, true, []));
+            if (request.Lease is null)
+                return new ProjectGraph([], [new ProjectEvaluationIssue(".", request.Waiting!)]);
+            await using var worker = request.Lease;
+            return await EvaluateAsync(worker, cancellationToken);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException ex)
+        {
+            throw new IOException("The evaluation worker reservation could not be recorded.", ex);
+        }
+    }
+
+    internal async Task<ProjectGraph> EvaluateAsync(WorkerLease? worker, CancellationToken cancellationToken)
+    {
         var rootIdentity = RootIdentity.Read(workspace.Root);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(45));
@@ -46,7 +67,7 @@ public sealed class ProjectEvaluator(Workspace workspace)
                     throw new IOException("The workspace was replaced during project evaluation.");
                 try
                 {
-                    var outer = await QueryAsync(dotnet, path, null, token);
+                    var outer = await QueryAsync(dotnet, path, null, worker, token);
                     var frameworks = Value(outer.Properties, "TargetFrameworks")
                         .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                     if (frameworks.Length == 0)
@@ -64,7 +85,7 @@ public sealed class ProjectEvaluator(Workspace workspace)
                             continue;
                         }
                         var result = Value(outer.Properties, "TargetFramework") == framework
-                            ? outer : await QueryAsync(dotnet, path, framework, token);
+                            ? outer : await QueryAsync(dotnet, path, framework, worker, token);
                         var target = CreateTarget(path, framework, result);
                         if (target is null)
                         {
@@ -101,7 +122,7 @@ public sealed class ProjectEvaluator(Workspace workspace)
                 {
                     issues.Add(new ProjectEvaluationIssue(workspace.Relative(path), "evaluation_failed"));
                 }
-                catch (UnauthorizedAccessException)
+                catch (UnauthorizedAccessException) when (worker is null)
                 {
                     issues.Add(new ProjectEvaluationIssue(workspace.Relative(path), "evaluation_inaccessible"));
                 }
@@ -327,7 +348,8 @@ public sealed class ProjectEvaluator(Workspace workspace)
     private static JsonElement.ArrayEnumerator Items(JsonElement element, string name) =>
         element.GetProperty(name).EnumerateArray();
 
-    private async Task<Evaluation> QueryAsync(string dotnet, string path, string? framework, CancellationToken token)
+    private async Task<Evaluation> QueryAsync(string dotnet, string path, string? framework, WorkerLease? worker,
+        CancellationToken token)
     {
         Workspace.CheckDirectory(Path.GetDirectoryName(path)!);
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
@@ -347,17 +369,15 @@ public sealed class ProjectEvaluator(Workspace workspace)
             info.ArgumentList.Add("-property:TargetFramework=" + framework);
         info.Environment["DOTNET_NOLOGO"] = "1";
         info.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
-        using var process = Process.Start(info) ?? throw new IOException("The project evaluator could not start.");
         using var command = CancellationTokenSource.CreateLinkedTokenSource(token);
         command.CancelAfter(TimeSpan.FromSeconds(10));
         try
         {
-            var stdout = ReadBoundedAsync(process.StandardOutput, MaxMetadataBytes, command);
-            var stderr = ReadBoundedAsync(process.StandardError, 32_768, command);
-            await Task.WhenAll(stdout, stderr, process.WaitForExitAsync(command.Token));
-            if (process.ExitCode != 0)
+            var result = worker is null ? await RunExplicitAsync(info, command)
+                : await worker.RunAsync(info, MaxMetadataBytes, command.Token);
+            if (result.ExitCode != 0)
                 throw new IOException("MSBuild project evaluation failed.");
-            using var json = JsonDocument.Parse(await stdout);
+            using var json = JsonDocument.Parse(result.StandardOutput);
             var root = json.RootElement;
             var properties = root.GetProperty("Properties").Clone();
             var items = root.GetProperty("Items").Clone();
@@ -374,6 +394,18 @@ public sealed class ProjectEvaluator(Workspace workspace)
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
         {
             throw new IOException("MSBuild evaluation output is invalid.", ex);
+        }
+    }
+
+    private static async Task<WorkerResult> RunExplicitAsync(ProcessStartInfo info, CancellationTokenSource command)
+    {
+        using var process = Process.Start(info) ?? throw new IOException("The project evaluator could not start.");
+        try
+        {
+            var stdout = ReadBoundedAsync(process.StandardOutput, MaxMetadataBytes, command);
+            var stderr = ReadBoundedAsync(process.StandardError, 32_768, command);
+            await Task.WhenAll(stdout, stderr, process.WaitForExitAsync(command.Token));
+            return new WorkerResult(process.ExitCode, await stdout, await stderr);
         }
         finally
         {

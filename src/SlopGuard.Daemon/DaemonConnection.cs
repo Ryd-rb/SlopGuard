@@ -18,6 +18,30 @@ public sealed class DaemonConnection(Workspace workspace)
 {
     public async Task<DaemonReply?> SendAsync(DaemonCommand command, CancellationToken cancellationToken = default)
     {
+        try
+        {
+            return await SendOnceAsync(command, cancellationToken);
+        }
+        catch (IOException ex) when (command == DaemonCommand.Status && IsDisconnected(ex))
+        {
+            // A probe can connect to the previous listener as its process exits.
+            await Task.Delay(50, cancellationToken);
+            try
+            {
+                return await SendOnceAsync(command, cancellationToken);
+            }
+            catch (IOException retry) when (IsDisconnected(retry))
+            {
+                return null;
+            }
+        }
+    }
+
+    private static bool IsDisconnected(IOException error) => OperatingSystem.IsWindows() &&
+        (error.HResult & 0xffff) is 109 or 232 or 233;
+
+    private async Task<DaemonReply?> SendOnceAsync(DaemonCommand command, CancellationToken cancellationToken)
+    {
         await using var pipe = new NamedPipeClientStream(".", workspace.InstanceName, PipeDirection.InOut,
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         using var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

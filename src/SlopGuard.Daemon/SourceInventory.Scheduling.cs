@@ -49,7 +49,8 @@ internal sealed partial class SourceInventory
         }
     }
 
-    internal TestAdmission Admit(ScheduleFence fence, SelectedTarget target, DateTimeOffset now, Func<bool> isCurrent)
+    internal TestAdmission Admit(ScheduleFence fence, SelectedTarget target, WorkerLease worker, DateTimeOffset now,
+        Func<bool> isCurrent)
     {
         var scope = JsonSerializer.Serialize(target.CauseIds);
         var plan = TestCause.Hash(JsonSerializer.Serialize(new[] { target.Id, target.InputFingerprint, scope }));
@@ -84,17 +85,19 @@ internal sealed partial class SourceInventory
                 }
             }
             using var insert = Command(connection, transaction, """
-                INSERT INTO test_attempt(number, revision, epoch, target, fingerprint, causes, plan_key, state)
-                VALUES ($number, $revision, $epoch, $target, $fingerprint, $scope, $plan, 'running')
+                INSERT INTO test_attempt(number, revision, epoch, target, fingerprint, causes, plan_key, state,
+                    lease_id, profile_revision)
+                VALUES ($number, $revision, $epoch, $target, $fingerprint, $scope, $plan, 'running', $lease, $profile)
                 RETURNING id
                 """, ("$number", number), ("$revision", fence.Revision), ("$epoch", fence.Epoch.ToString()),
-                ("$target", target.Id), ("$fingerprint", target.InputFingerprint), ("$scope", scope), ("$plan", plan));
+                ("$target", target.Id), ("$fingerprint", target.InputFingerprint), ("$scope", scope), ("$plan", plan),
+                ("$lease", worker.Id.ToString("N")), ("$profile", worker.ProfileRevision));
             var id = (long)insert.ExecuteScalar()!;
             Execute(connection, transaction, """
                 DELETE FROM test_attempt WHERE id <= (SELECT max(id) - 64 FROM test_attempt) AND state <> 'running'
                 """);
             transaction.Commit();
-            return new TestAdmission(new TestAttempt(id, number, fence, target), null);
+            return new TestAdmission(new TestAttempt(id, number, fence, target, worker.ProfileRevision), null);
         }
     }
 
@@ -219,5 +222,11 @@ internal sealed partial class SourceInventory
             cause TEXT NOT NULL, target TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY (cause, target)
         );
         PRAGMA user_version = 2;
+        """;
+
+    private const string WorkerSchema = """
+        ALTER TABLE test_attempt ADD COLUMN lease_id TEXT;
+        ALTER TABLE test_attempt ADD COLUMN profile_revision TEXT;
+        PRAGMA user_version = 4;
         """;
 }

@@ -8,7 +8,7 @@ internal sealed partial class SourceInventory(Workspace workspace)
     private const string Policy = "csharp.syntax:inventory-v1";
     internal const int MaxDetailedIntents = 2_048;
     private const int MaxIntentPathCharacters = 2_048;
-    private const int SchemaVersion = 3;
+    private const int SchemaVersion = 4;
     private readonly object writer = new();
 
     internal InventoryState Load()
@@ -286,15 +286,10 @@ internal sealed partial class SourceInventory(Workspace workspace)
 
     private SqliteConnection Open(bool initialize)
     {
-        Workspace.CheckDirectory(workspace.StateDirectory, allowMissing: initialize);
         if (initialize)
-        {
-            if (OperatingSystem.IsWindows())
-                Directory.CreateDirectory(workspace.StateDirectory);
-            else
-                Directory.CreateDirectory(workspace.StateDirectory,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+            Workspace.CreatePrivateDirectory(workspace.StateDirectory);
+        else
+            Workspace.CheckDirectory(workspace.StateDirectory);
         var path = workspace.InventoryPath;
         foreach (var candidate in new[] { path, path + "-journal", path + "-wal", path + "-shm" })
         {
@@ -338,7 +333,9 @@ internal sealed partial class SourceInventory(Workspace workspace)
                     Execute(connection, transaction, Schema);
                 if (version <= 1)
                     Execute(connection, transaction, SchedulerSchema);
-                Execute(connection, transaction, ProjectSchema);
+                if (version <= 2)
+                    Execute(connection, transaction, ProjectSchema);
+                Execute(connection, transaction, WorkerSchema);
                 transaction.Commit();
             }
             else if (version != SchemaVersion)

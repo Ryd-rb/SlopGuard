@@ -19,6 +19,7 @@ internal sealed class WorkspaceMonitor : IDisposable
     private readonly DurableTestScheduler? scheduler;
     private GitContext gitContext;
     private FileSystemWatcher? parentWatcher;
+    private FileSystemWatcher? profileWatcher;
     private WorkspaceReport? report;
     private InventoryState? committed;
     private SourceScan? reconciled;
@@ -38,7 +39,7 @@ internal sealed class WorkspaceMonitor : IDisposable
         scanner = new SourceScanner(workspace);
         inventory = new SourceInventory(workspace);
         reportFile = new ReportFile(workspace);
-        scheduler = adapter is null ? null : new DurableTestScheduler(inventory, this, adapter);
+        scheduler = adapter is null ? null : new DurableTestScheduler(inventory, this, adapter, workspace);
         scheduleStatus = new TestSchedulerStatus(adapter is null ? "awaiting_adapter" : "pending_reconciliation");
     }
 
@@ -95,6 +96,8 @@ internal sealed class WorkspaceMonitor : IDisposable
                         Invalidate(transition: true);
                 }));
         }
+        if (profileWatcher is not null)
+            StartProfileWatcher();
     }
 
     internal long Invalidate(string? path = null, bool restart = false, bool transition = false)
@@ -131,6 +134,7 @@ internal sealed class WorkspaceMonitor : IDisposable
                 state = snapshot is not null ? "ready" : lastError is null ? "pending" : "degraded",
                 lastError, fileCount = snapshot?.FileCount, partial = snapshot?.Partial,
                 recordingError, testScheduler = scheduleStatus,
+                executionProfile = new { path = ExecutionProfile.PathFor(workspace), rootIdentity = committed?.RootIdentity },
                 projectEvaluation = projectEvaluation?.Revision == schedule?.Revision && schedule?.Sequence == revision
                     ? projectEvaluation : null,
                 pendingTestIntents = committed?.Pending, retiredTestIntents = committed?.Retirement,
@@ -272,6 +276,7 @@ internal sealed class WorkspaceMonitor : IDisposable
     public void Dispose()
     {
         parentWatcher?.Dispose();
+        profileWatcher?.Dispose();
         foreach (var watcher in watchers)
             watcher.Dispose();
         if (Directory.Exists(workspace.Root))
@@ -346,9 +351,24 @@ internal sealed class WorkspaceMonitor : IDisposable
     private InventoryState LoadInventory()
     {
         var loaded = inventory.Load();
+        if (scheduler is not null && profileWatcher is null)
+            StartProfileWatcher();
         lock (gate)
             committed = loaded;
         return loaded;
+    }
+
+    private void StartProfileWatcher()
+    {
+        profileWatcher?.Dispose();
+        Workspace.CheckDirectory(workspace.StateDirectory);
+        var profilePath = ExecutionProfile.PathFor(workspace);
+        profileWatcher = Watch(workspace.StateDirectory, recursive: false,
+            NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size, (path, _) =>
+            {
+                if (Workspace.PathComparer.Equals(path, profilePath))
+                    Invalidate();
+            });
     }
 
     private void RecordError(string message, bool recording = false)

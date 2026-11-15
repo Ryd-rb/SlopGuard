@@ -7,7 +7,7 @@ using Xunit;
 
 namespace SlopGuard.IntegrationTests;
 
-public sealed class WorkspaceTests
+public sealed partial class WorkspaceTests
 {
     [Fact]
     public async Task WatchesEditsAndPopulatedDirectoryRenames()
@@ -552,6 +552,8 @@ public sealed class WorkspaceTests
     [Fact]
     public async Task EvaluatedConditionalAndLinkedSourcesSelectOnlyTheirMappedTargets()
     {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10))
+            return;
         await using var fixture = new Fixture();
         await fixture.WriteInputAsync("Library/Library.csproj", """
             <Project Sdk="Microsoft.NET.Sdk" InitialTargets="EvaluationMustSkipTargets">
@@ -622,6 +624,8 @@ public sealed class WorkspaceTests
     [Fact]
     public async Task ChangingProjectMetadataReplansTheSameIntentAgainstBothMemberships()
     {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10))
+            return;
         await using var fixture = new Fixture();
         var props = await fixture.WriteInputAsync("Directory.Build.props",
             "<Project><PropertyGroup><Route>old</Route></PropertyGroup></Project>");
@@ -687,6 +691,8 @@ public sealed class WorkspaceTests
     [Fact]
     public async Task DeletedSourceUsesItsPersistedPredecessorAfterRestart()
     {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10))
+            return;
         await using var fixture = new Fixture();
         await fixture.WriteInputAsync("Library/Library.csproj", """
             <Project Sdk="Microsoft.NET.Sdk">
@@ -735,6 +741,8 @@ public sealed class WorkspaceTests
     [Fact]
     public async Task UnresolvedReferenceLeavesAChangePending()
     {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10))
+            return;
         await using var fixture = new Fixture();
         await fixture.WriteInputAsync("Library/Library.csproj", """
             <Project Sdk="Microsoft.NET.Sdk">
@@ -782,30 +790,58 @@ public sealed class WorkspaceTests
                 targets.Select(target => new SelectedTarget(target, target + "-fixture", ids)).ToArray()));
         }
 
-        public Task<TestOutcome> RunAsync(TestAttempt attempt, CancellationToken cancellationToken) => run(attempt, cancellationToken);
+        public Task<TestOutcome> RunAsync(TestAttempt attempt, WorkerLease worker, CancellationToken cancellationToken) =>
+            run(attempt, cancellationToken);
     }
 
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly CancellationTokenSource cancellation = new();
+        private readonly string userState;
         private Task? daemon;
 
-        internal Fixture()
+        internal Fixture(string? sharedUserState = null)
         {
             Container = Directory.CreateTempSubdirectory("slopguard-").FullName;
             Root = Directory.CreateDirectory(Path.Combine(Container, "workspace")).FullName;
+            userState = sharedUserState ?? Path.Combine(Container, "state");
         }
 
         internal string Container { get; }
         internal string Root { get; }
         internal string ReportPath => Path.Combine(Root, ".slopguard", "results.json");
-        internal Workspace Workspace => new(Root, Path.Combine(Container, "state"));
+        internal Workspace Workspace => new(Root, userState);
         internal DaemonConnection Connection => new(Workspace);
 
-        internal void Start(ITestAdapter? adapter = null)
+        internal void Start(ITestAdapter? adapter = null, bool grant = true)
         {
+            if (adapter is not null && grant && !File.Exists(ExecutionProfile.PathFor(Workspace)))
+                WriteProfile(["evaluate", "test"], []);
             daemon = Task.Factory.StartNew(() => DaemonHost.Run(Workspace, adapter, cancellation.Token),
                 CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+
+        internal void WriteProfile(string[] operations, string[] outputRoots)
+        {
+            Directory.CreateDirectory(Workspace.StateDirectory);
+            var profile = ExecutionProfile.PathFor(Workspace);
+            File.WriteAllText(profile + ".tmp", JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                rootIdentity = RootIdentity.Read(Root),
+                operations,
+                outputRoots
+            }));
+            File.Move(profile + ".tmp", profile, overwrite: true);
+        }
+
+        internal Guid ReadLease(long attempt)
+        {
+            using var connection = OpenInventory();
+            using var query = connection.CreateCommand();
+            query.CommandText = "SELECT lease_id FROM test_attempt WHERE id = $attempt";
+            query.Parameters.AddWithValue("$attempt", attempt);
+            return Guid.ParseExact(Assert.IsType<string>(query.ExecuteScalar()), "N");
         }
 
         internal async Task<string> WriteBaselineAsync()
@@ -991,6 +1027,10 @@ public sealed class WorkspaceTests
                 await cancellation.CancelAsync();
                 if (daemon is not null)
                     await daemon.WaitAsync(TimeSpan.FromSeconds(6));
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                // The fixture can exit while a restarted daemon is still initializing.
             }
             finally
             {

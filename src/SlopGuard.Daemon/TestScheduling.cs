@@ -4,17 +4,16 @@ using System.Text;
 
 namespace SlopGuard.Daemon;
 
-// The adapter supplies the evaluated input identity and runs in-process in this stage.
-// A process-backed adapter will require execution profiles and supervised output leases.
 internal interface ITestAdapter
 {
     Task<TestSelection> SelectAsync(TestSelectionInput input, CancellationToken cancellationToken);
-    Task<TestOutcome> RunAsync(TestAttempt attempt, CancellationToken cancellationToken);
+    WorkerRequirements Requirements(SelectedTarget target) => new(ExecutionOperation.Test, false, []);
+    Task<TestOutcome> RunAsync(TestAttempt attempt, WorkerLease worker, CancellationToken cancellationToken);
 }
 
 internal interface IEvaluatedTestAdapter : ITestAdapter
 {
-    Task<ProjectGraph> EvaluateAsync(CancellationToken cancellationToken);
+    Task<ProjectGraph> EvaluateAsync(WorkerLease worker, CancellationToken cancellationToken);
 }
 
 internal sealed record ScheduleFence(Guid Epoch, long Sequence, long Revision, string RootIdentity, GitRevision Git);
@@ -45,7 +44,7 @@ internal sealed record TestWork(TestSelectionInput Input, HashSet<TestEvidence> 
 
 internal enum TestOutcome { Passed, Failed, RetryableFailure, Blocked, Cancelled }
 
-internal sealed record TestAttempt(long Id, int Number, ScheduleFence Fence, SelectedTarget Target);
+internal sealed record TestAttempt(long Id, int Number, ScheduleFence Fence, SelectedTarget Target, string ProfileRevision);
 internal sealed record TestAttemptReceipt(long Id, int Number, long Revision, Guid Epoch, string Target,
     string State, string? Outcome, DateTimeOffset? RetryAt);
 internal sealed record TestAdmission(TestAttempt? Attempt, DateTimeOffset? RetryAt);

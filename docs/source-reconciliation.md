@@ -12,7 +12,7 @@ The schema-2 migration adds attempt and per-target evidence records and preserve
 
 Schema 3 retains up to eight evaluated graphs, with priority for the latest graph and predecessors referenced by pending intents. A source transaction pins the complete graph for its prior committed revision when available. Selection reverse-walks both graphs, filters to explicitly eligible test projects, and versions each target's scope from the evaluated graph and its source digests. Unknown predecessors widen selection to the approved group. An incomplete current graph keeps intents outstanding.
 
-The preview CLI exposes the source inventory report, scheduler status and explicit project evaluation. The integration suite supplies the real evaluator and fake runner through the normal daemon entry point. Production shows `awaiting_adapter` until supervised execution is available.
+Schema 4 associates each attempt with a worker lease and execution profile revision. The per-user admission database independently retains the worker owner, process scope and output roots. Recovery proves the prior scope empty before retrying. The preview CLI exposes source inventory, scheduler status, the profile location and explicit project evaluation. The integration suite supplies the real evaluator and fake runner through the normal daemon entry point. Production shows `awaiting_adapter` until a real test runner is registered.
 
 ## Confirm a change
 

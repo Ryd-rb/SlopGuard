@@ -4,5 +4,6 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageReference Include="NuGet.Frameworks" Version="7.3.0" />
     <InternalsVisibleTo Include="SlopGuard.IntegrationTests" />
+    <InternalsVisibleTo Include="SlopGuard.WorkerFixture" />
   </ItemGroup>
 </Project>

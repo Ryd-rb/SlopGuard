@@ -49,6 +49,21 @@ dotnet run --no-build --project src/SlopGuard.Cli -- stop
 
 The preview publishes a source inventory report with Git attribution. It fingerprints C# source and stores pending test intents in SQLite. The CLI and MCP status expose `committedRevision`, `pendingTestIntents`, `recordingError` and `testScheduler`. The separate 0.1 release supplies the historical syntax-check workflow. Use the project's configured build for compiler and analyzer diagnostics.
 
-Use `slopguard projects --root <checkout>` to explicitly evaluate a checkout and print per-target C# membership, linked items, reference mappings and any unresolved scope. This command uses the installed .NET 10 SDK for evaluation and requests no build targets. The integration suite connects the evaluated selector to the durable scheduler with a fake runner. The preview daemon reports `awaiting_adapter` until supervised test execution is available. [Current implementation](docs/source-reconciliation.md#current-implementation), [Next implementation stages](docs/delivery.md#next-implementation-stages)
+Use `slopguard projects --root <checkout>` to explicitly evaluate a checkout and print per-target C# membership, linked items, reference mappings and any unresolved scope. This command uses the installed .NET 10 SDK for evaluation and requests no build targets. On Windows it uses the shared worker slot and a Job Object. The integration suite exercises supervised scheduling with a fake runner. The preview daemon reports `awaiting_adapter` until a real test runner is available. [Current implementation](docs/source-reconciliation.md#current-implementation), [Next implementation stages](docs/delivery.md#next-implementation-stages)
+
+### Workspace execution profiles
+
+The daemon reports the user-owned profile path and current root identity under `executionProfile` in `status`. Use that identity when creating the profile. The following example grants project evaluation and tests and reserves one approved output subtree.
+
+```json
+{
+  "schemaVersion": 1,
+  "rootIdentity": "<executionProfile.rootIdentity from status>",
+  "operations": ["evaluate", "test"],
+  "outputRoots": ["C:/path/to/approved-output"]
+}
+```
+
+Use absolute physical directory paths for outputs. Each grant is explicit. The other operations are `build`, `restore`, `network` and `compilerExtensions`. Replace the profile file atomically to change grants while the daemon is running. A missing, invalid or revoked profile blocks scheduled execution and leaves source intents pending. The explicit `projects` invocation authorizes a single evaluation. [Execution profile and worker behavior](docs/architecture.md#repository-execution)
 
 Released under the [MIT License](LICENSE).
