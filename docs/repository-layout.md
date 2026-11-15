@@ -10,7 +10,7 @@ The .NET 10 solution builds three production projects and a C# integration test 
 | `skills/slopguard` | Single agent skill delivered with the CLI. |
 | `docs` | Design decisions and implementation acceptance criteria. |
 
-The daemon depends on Core. The CLI composes the daemon and MCP bridge. Introduce the C# provider when adding evaluated project discovery and symbol analysis. Keep the Core project free of compiler, test runner, storage and transport dependencies. Introduce separate persistence, protocol or worker projects when an implemented component needs its own dependencies, process or release boundary.
+The daemon depends on Core and hosts the preview membership adapter. The CLI composes the daemon and MCP bridge. Introduce the C# provider when adding Roslyn symbol analysis. Keep the Core project free of compiler, test runner, storage and transport dependencies. Introduce separate persistence, protocol or worker projects when an implemented component needs its own dependencies, process or release boundary.
 
 Put test projects under `tests/`. Name unit-test projects after their assemblies, such as `tests/SlopGuard.Core.Tests`, and put daemon lifecycle tests in `tests/SlopGuard.IntegrationTests`. Keep reusable synthetic test workspaces under `tests/fixtures/<provider>/`, with shared Git and filesystem cases in a workspace folder. Keep independently versioned configuration or protocol schemas under `schemas/` when clients begin consuming them.
 

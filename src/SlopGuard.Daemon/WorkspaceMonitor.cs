@@ -24,6 +24,7 @@ internal sealed class WorkspaceMonitor : IDisposable
     private SourceScan? reconciled;
     private ScheduleFence? schedule;
     private TestSchedulerStatus scheduleStatus;
+    private ProjectEvaluationStatus? projectEvaluation;
     private long revision;
     private bool scanAll;
     private bool restartWatchers;
@@ -74,7 +75,7 @@ internal sealed class WorkspaceMonitor : IDisposable
                 }
                 if (SourceScanner.Matches(path))
                     Invalidate(structural ? null : path);
-                else if (IsProjectInput(path))
+                else if (ProjectEvaluator.IsProjectInput(path))
                     Invalidate();
             }));
         watchers.Add(Watch(workspace.Root, recursive: true, NotifyFilters.DirectoryName, (path, _) =>
@@ -130,6 +131,8 @@ internal sealed class WorkspaceMonitor : IDisposable
                 state = snapshot is not null ? "ready" : lastError is null ? "pending" : "degraded",
                 lastError, fileCount = snapshot?.FileCount, partial = snapshot?.Partial,
                 recordingError, testScheduler = scheduleStatus,
+                projectEvaluation = projectEvaluation?.Revision == schedule?.Revision && schedule?.Sequence == revision
+                    ? projectEvaluation : null,
                 pendingTestIntents = committed?.Pending, retiredTestIntents = committed?.Retirement,
             };
         }
@@ -331,6 +334,15 @@ internal sealed class WorkspaceMonitor : IDisposable
         }
     }
 
+    internal void UpdateProjectEvaluation(ScheduleFence fence, ProjectGraph graph)
+    {
+        lock (gate)
+        {
+            if (schedule == fence && revision == fence.Sequence)
+                projectEvaluation = new ProjectEvaluationStatus(fence.Revision, graph.Targets.Count, graph.Complete, graph.Issues);
+        }
+    }
+
     private InventoryState LoadInventory()
     {
         var loaded = inventory.Load();
@@ -348,10 +360,6 @@ internal sealed class WorkspaceMonitor : IDisposable
                 recordingError = message;
         }
     }
-
-    private static bool IsProjectInput(string path) =>
-        Path.GetExtension(path).ToUpperInvariant() is ".CSPROJ" or ".SLN" or ".SLNX" or ".PROPS" or ".TARGETS" or ".EDITORCONFIG"
-        || Path.GetFileName(path).ToUpperInvariant() is "GLOBAL.JSON" or "PACKAGES.LOCK.JSON" or "NUGET.CONFIG";
 
     private FileSystemWatcher Watch(string root, bool recursive, NotifyFilters filters, Action<string, bool> onPath)
     {

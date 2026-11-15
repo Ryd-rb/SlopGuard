@@ -43,11 +43,12 @@ dotnet build SlopGuard.slnx
 dotnet run --no-build --project src/SlopGuard.Cli -- start
 dotnet run --no-build --project src/SlopGuard.Cli -- status
 dotnet run --no-build --project src/SlopGuard.Cli -- results
+dotnet run --no-build --project src/SlopGuard.Cli -- projects
 dotnet run --no-build --project src/SlopGuard.Cli -- stop
 ```
 
 The preview publishes a source inventory report with Git attribution. It fingerprints C# source and stores pending test intents in SQLite. The CLI and MCP status expose `committedRevision`, `pendingTestIntents`, `recordingError` and `testScheduler`. The separate 0.1 release supplies the historical syntax-check workflow. Use the project's configured build for compiler and analyzer diagnostics.
 
-The durable scheduler is exercised through the daemon with an in-process fake adapter in integration tests. The preview reports `awaiting_adapter` while real project evaluation and test execution are under development. [Current implementation](docs/source-reconciliation.md#current-implementation), [Next implementation stages](docs/delivery.md#next-implementation-stages)
+Use `slopguard projects --root <checkout>` to explicitly evaluate a checkout and print per-target C# membership, linked items, reference mappings and any unresolved scope. This command uses the installed .NET 10 SDK for evaluation and requests no build targets. The integration suite connects the evaluated selector to the durable scheduler with a fake runner. The preview daemon reports `awaiting_adapter` until supervised test execution is available. [Current implementation](docs/source-reconciliation.md#current-implementation), [Next implementation stages](docs/delivery.md#next-implementation-stages)
 
 Released under the [MIT License](LICENSE).

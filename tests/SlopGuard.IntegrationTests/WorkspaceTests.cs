@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using SlopGuard.Daemon;
@@ -539,12 +540,225 @@ public sealed class WorkspaceTests
         await fixture.WaitForNextReportAsync(baseline);
         var oldIntent = Assert.Single(fixture.ReadIntents());
         await fixture.StopAsync();
-        fixture.ExecuteSql("DROP TABLE test_evidence; DROP TABLE test_attempt; PRAGMA user_version = 1;");
+        fixture.ExecuteSql("DROP TABLE project_graph; DROP TABLE test_evidence; DROP TABLE test_attempt; PRAGMA user_version = 1;");
 
         fixture.Start();
         var migrated = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
         Assert.True(CommittedRevision(migrated) > oldIntent.Revision);
         Assert.Equal(oldIntent, Assert.Single(fixture.ReadIntents()));
+        Assert.Empty(fixture.ReadAttempts());
+    }
+
+    [Fact]
+    public async Task EvaluatedConditionalAndLinkedSourcesSelectOnlyTheirMappedTargets()
+    {
+        await using var fixture = new Fixture();
+        await fixture.WriteInputAsync("Library/Library.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk" InitialTargets="EvaluationMustSkipTargets">
+              <PropertyGroup><TargetFrameworks>net8.0;net10.0</TargetFrameworks></PropertyGroup>
+              <ItemGroup>
+                <Compile Remove="Modern.cs" Condition="'$(TargetFramework)' != 'net10.0'" />
+                <Compile Include="../Shared/Linked.cs" Link="LibraryLink.cs"
+                         Condition="'$(TargetFramework)' == 'net8.0'" />
+              </ItemGroup>
+              <Target Name="EvaluationMustSkipTargets">
+                <WriteLinesToFile File="../target-ran.txt" Lines="ran" />
+              </Target>
+            </Project>
+            """);
+        await fixture.WriteInputAsync("Tests/Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
+                <IsTestProject>true</IsTestProject>
+              </PropertyGroup>
+              <ItemGroup><ProjectReference Include="../Library/Library.csproj" /></ItemGroup>
+            </Project>
+            """);
+        await fixture.WriteInputAsync("Pinned/Pinned.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject>
+              </PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="../Library/Library.csproj" SetTargetFramework="TargetFramework=net8.0" />
+                <Compile Include="../Shared/Linked.cs" Link="Fixture.cs" />
+              </ItemGroup>
+            </Project>
+            """);
+        var modern = await fixture.WriteInputAsync("Library/Modern.cs", "class Modern {}");
+        var linked = await fixture.WriteInputAsync("Shared/Linked.cs", "class Linked {}");
+        fixture.Start(new EvaluatedTestAdapter(new ProjectEvaluator(fixture.Workspace),
+            ["Tests/Tests.csproj", "Pinned/Pinned.csproj"], (_, _) => Task.FromResult(TestOutcome.Passed)));
+
+        var baseline = await fixture.WaitForSchedulerAsync("idle");
+        var graph = fixture.ReadGraph(CommittedRevision(baseline));
+        Assert.True(graph.Complete, JsonSerializer.Serialize(graph.Issues));
+        Assert.Equal(5, graph.Targets.Count);
+        var library8 = Assert.Single(graph.Targets, target => target.Id == "Library/Library.csproj|net8.0");
+        var library10 = Assert.Single(graph.Targets, target => target.Id == "Library/Library.csproj|net10.0");
+        var tests9 = Assert.Single(graph.Targets, target => target.Id == "Tests/Tests.csproj|net9.0");
+        var tests10 = Assert.Single(graph.Targets, target => target.Id == "Tests/Tests.csproj|net10.0");
+        var pinned = Assert.Single(graph.Targets, target => target.Id == "Pinned/Pinned.csproj|net10.0");
+        Assert.Equal(new CompileMember("Shared/Linked.cs", "LibraryLink.cs"), Assert.Single(library8.Compile));
+        Assert.Equal("Library/Modern.cs", Assert.Single(library10.Compile).Path);
+        Assert.Equal(library8.Id, Assert.Single(tests9.References));
+        Assert.Equal(library10.Id, Assert.Single(tests10.References));
+        Assert.Equal(library8.Id, Assert.Single(pinned.References));
+        Assert.Equal(new CompileMember("Shared/Linked.cs", "Fixture.cs"), Assert.Single(pinned.Compile));
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "target-ran.txt")));
+
+        await File.WriteAllTextAsync(modern, "class ModernChanged {}");
+        var first = await fixture.WaitForCompletedPlanAsync(0);
+        Assert.Equal(tests10.Id, Assert.Single(fixture.ReadAttempts()).Target);
+
+        await File.WriteAllTextAsync(linked, "class LinkedChanged {}");
+        await fixture.WaitForCompletedPlanAsync(first);
+        Assert.Equal(new[] { tests10.Id, pinned.Id, tests9.Id }, fixture.ReadAttempts().Select(attempt => attempt.Target));
+        Assert.Empty(fixture.ReadIntents());
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "target-ran.txt")));
+    }
+
+    [Fact]
+    public async Task ChangingProjectMetadataReplansTheSameIntentAgainstBothMemberships()
+    {
+        await using var fixture = new Fixture();
+        var props = await fixture.WriteInputAsync("Directory.Build.props",
+            "<Project><PropertyGroup><Route>old</Route></PropertyGroup></Project>");
+        await fixture.WriteInputAsync("Library/Library.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+                <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="Routed.cs" Condition="('$(Route)' == 'old' And '$(TargetFramework)' == 'net10.0')
+                    Or ('$(Route)' == 'new' And '$(TargetFramework)' == 'net8.0')" />
+              </ItemGroup>
+            </Project>
+            """);
+        await fixture.WriteInputAsync("Tests/Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+                <IsTestProject>true</IsTestProject>
+              </PropertyGroup>
+              <ItemGroup><ProjectReference Include="../Library/Library.csproj" /></ItemGroup>
+            </Project>
+            """);
+        var source = await fixture.WriteInputAsync("Library/Routed.cs", "class Routed {}");
+        var first = new TaskCompletionSource<TestAttempt>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runs = new ConcurrentQueue<TestAttempt>();
+        fixture.Start(new EvaluatedTestAdapter(new ProjectEvaluator(fixture.Workspace), ["Tests/Tests.csproj"],
+            async (attempt, _) =>
+            {
+                runs.Enqueue(attempt);
+                if (first.TrySetResult(attempt))
+                    await release.Task.WaitAsync(TimeSpan.FromSeconds(12));
+                return TestOutcome.Passed;
+            }));
+        await fixture.WaitForSchedulerAsync("idle");
+        await File.WriteAllTextAsync(source, "class RoutedChanged {}");
+        var initial = await first.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        try
+        {
+            Assert.Equal("Tests/Tests.csproj|net10.0", initial.Target.Id);
+            var intent = Assert.Single(fixture.ReadIntents());
+            Assert.StartsWith("graph:", intent.Predecessor);
+            await File.WriteAllTextAsync(props, "<Project><PropertyGroup><Route>new</Route></PropertyGroup></Project>");
+            await fixture.WaitForReportAsync(report => CommittedRevision(report) > initial.Fence.Revision);
+            Assert.Equal(intent, Assert.Single(fixture.ReadIntents()));
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await fixture.WaitForCompletedPlanAsync(initial.Id);
+        Assert.Equal(new[] { "superseded", "passed", "passed" }, fixture.ReadAttempts().Select(attempt => attempt.State));
+        var executed = runs.ToArray();
+        Assert.Equal(new[] { "Tests/Tests.csproj|net10.0", "Tests/Tests.csproj|net10.0", "Tests/Tests.csproj|net8.0" },
+            executed.Select(attempt => attempt.Target.Id));
+        Assert.NotEqual(initial.Target.InputFingerprint, executed[1].Target.InputFingerprint);
+        Assert.All(executed, attempt => Assert.Equal(initial.Target.CauseIds, attempt.Target.CauseIds));
+        Assert.Empty(fixture.ReadIntents());
+    }
+
+    [Fact]
+    public async Task DeletedSourceUsesItsPersistedPredecessorAfterRestart()
+    {
+        await using var fixture = new Fixture();
+        await fixture.WriteInputAsync("Library/Library.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+            </Project>
+            """);
+        await fixture.WriteInputAsync("Related/Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+              <ItemGroup><ProjectReference Include="../Library/Library.csproj" /></ItemGroup>
+            </Project>
+            """);
+        await fixture.WriteInputAsync("Unrelated/Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+            </Project>
+            """);
+        var source = await fixture.WriteInputAsync("Library/Delete.cs", "class Deleted {}");
+        var evaluator = new ProjectEvaluator(fixture.Workspace);
+        string[] approved = ["Related/Tests.csproj", "Unrelated/Tests.csproj"];
+        var started = new TaskCompletionSource<TestAttempt>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Start(new EvaluatedTestAdapter(evaluator, approved, async (attempt, token) =>
+        {
+            started.TrySetResult(attempt);
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return TestOutcome.Passed;
+        }));
+        await fixture.WaitForSchedulerAsync("idle");
+        File.Delete(source);
+        var original = await started.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal("Related/Tests.csproj|net10.0", original.Target.Id);
+        Assert.StartsWith("graph:", Assert.Single(fixture.ReadIntents()).Predecessor);
+        await fixture.StopAsync();
+
+        fixture.Start(new EvaluatedTestAdapter(evaluator, approved, (attempt, _) =>
+        {
+            Assert.Equal(original.Target.Id, attempt.Target.Id);
+            Assert.Equal(original.Target.CauseIds, attempt.Target.CauseIds);
+            return Task.FromResult(TestOutcome.Passed);
+        }));
+        await fixture.WaitForCompletedPlanAsync(original.Id);
+        Assert.Equal(new[] { "interrupted", "passed" }, fixture.ReadAttempts().Select(attempt => attempt.State));
+        Assert.Empty(fixture.ReadIntents());
+    }
+
+    [Fact]
+    public async Task UnresolvedReferenceLeavesAChangePending()
+    {
+        await using var fixture = new Fixture();
+        await fixture.WriteInputAsync("Library/Library.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+            </Project>
+            """);
+        await fixture.WriteInputAsync("Tests/Tests.csproj", """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="../Library/Library.csproj" AdditionalProperties="Configuration=Release" />
+              </ItemGroup>
+            </Project>
+            """);
+        fixture.Start(new EvaluatedTestAdapter(new ProjectEvaluator(fixture.Workspace), ["Tests/Tests.csproj"],
+            (_, _) => throw new InvalidOperationException("An unresolved reference was used as a confirmed edge.")));
+        await fixture.WaitForSchedulerAsync("idle");
+        await fixture.WriteInputAsync("Library/Added.cs", "class Added {}");
+        var status = await fixture.WaitForSchedulerAsync("awaiting_selection");
+        var graph = fixture.ReadGraph(CommittedRevision(status));
+        Assert.False(graph.Complete);
+        Assert.Contains(new ProjectEvaluationIssue("Tests/Tests.csproj", "unresolved_reference_context"), graph.Issues);
+        Assert.Empty(Assert.Single(graph.Targets, target => target.IsTestProject).References);
+        Assert.Single(fixture.ReadIntents());
         Assert.Empty(fixture.ReadAttempts());
     }
 
@@ -603,6 +817,35 @@ public sealed class WorkspaceTests
 
         internal Task<JsonElement> WaitForSchedulerAsync(string state) => WaitForStatusAsync(status =>
             status.GetProperty("testScheduler").GetProperty("state").GetString() == state);
+
+        internal async Task<long> WaitForCompletedPlanAsync(long previousAttempt)
+        {
+            var status = await WaitForStatusAsync(value =>
+            {
+                var scheduler = value.GetProperty("testScheduler");
+                return scheduler.GetProperty("state").GetString() == "idle" &&
+                    scheduler.GetProperty("latest") is { ValueKind: JsonValueKind.Object } latest &&
+                    latest.GetProperty("id").GetInt64() > previousAttempt;
+            });
+            return status.GetProperty("testScheduler").GetProperty("latest").GetProperty("id").GetInt64();
+        }
+
+        internal async Task<string> WriteInputAsync(string relative, string contents)
+        {
+            var path = Path.Combine(Root, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, contents);
+            return path;
+        }
+
+        internal ProjectGraph ReadGraph(long revision)
+        {
+            using var connection = OpenInventory();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT payload FROM project_graph WHERE revision = $revision";
+            command.Parameters.AddWithValue("$revision", revision);
+            return JsonSerializer.Deserialize<ProjectGraph>(Assert.IsType<byte[]>(command.ExecuteScalar()))!;
+        }
 
         internal async Task<JsonElement> ReadStatusAsync()
         {

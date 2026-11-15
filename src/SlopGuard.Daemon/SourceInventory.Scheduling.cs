@@ -7,7 +7,7 @@ internal sealed partial class SourceInventory
 {
     private const int MaxAttemptsPerPlan = 3;
 
-    internal TestWork? ReadTestWork(ScheduleFence fence, bool recover, Func<bool> isCurrent)
+    internal TestWork? ReadTestWork(ScheduleFence fence, bool recover, Func<bool> isCurrent, bool includeProjects = false)
     {
         lock (writer)
         {
@@ -43,8 +43,9 @@ internal sealed partial class SourceInventory
                     evidence.Add(new TestEvidence(rows.GetString(0), rows.GetString(1), rows.GetString(2)));
             }
             var latest = ReadLatest(connection, transaction);
+            var projects = includeProjects ? ReadProjects(connection, transaction, fence, causes) : null;
             transaction.Commit();
-            return new TestWork(new TestSelectionInput(fence, causes.AsReadOnly()), evidence, pending, latest);
+            return new TestWork(new TestSelectionInput(fence, causes.AsReadOnly(), projects), evidence, pending, latest);
         }
     }
 

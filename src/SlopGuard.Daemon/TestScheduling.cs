@@ -12,8 +12,18 @@ internal interface ITestAdapter
     Task<TestOutcome> RunAsync(TestAttempt attempt, CancellationToken cancellationToken);
 }
 
+internal interface IEvaluatedTestAdapter : ITestAdapter
+{
+    Task<ProjectGraph> EvaluateAsync(CancellationToken cancellationToken);
+}
+
 internal sealed record ScheduleFence(Guid Epoch, long Sequence, long Revision, string RootIdentity, GitRevision Git);
-internal sealed record TestSelectionInput(ScheduleFence Fence, IReadOnlyList<TestCause> Causes);
+internal sealed record TestSelectionInput(ScheduleFence Fence, IReadOnlyList<TestCause> Causes,
+    EvaluatedSelectionInputs? Projects = null);
+internal sealed record EvaluatedSelectionInputs(ProjectGraph Current, IReadOnlyDictionary<string, ProjectGraph> Predecessors,
+    IReadOnlyDictionary<string, string> SourceDigests);
+internal sealed record ProjectEvaluationStatus(long Revision, int TargetCount, bool Complete,
+    IReadOnlyList<ProjectEvaluationIssue> Issues);
 
 internal sealed record TestCause(long Revision, string PathKey, string? OldPath, string? OldDigest,
     string? NewPath, string? NewDigest, string? Predecessor, long? FallbackFirstRevision = null)

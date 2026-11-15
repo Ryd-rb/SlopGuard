@@ -8,7 +8,7 @@ internal sealed partial class SourceInventory(Workspace workspace)
     private const string Policy = "csharp.syntax:inventory-v1";
     internal const int MaxDetailedIntents = 2_048;
     private const int MaxIntentPathCharacters = 2_048;
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 3;
     private readonly object writer = new();
 
     internal InventoryState Load()
@@ -155,7 +155,9 @@ internal sealed partial class SourceInventory(Workspace workspace)
         if (resetInventory)
             Execute(connection, transaction, "DELETE FROM source");
         if (rootReplaced)
-            Execute(connection, transaction, "DELETE FROM test_intent; DELETE FROM intent_fallback; DELETE FROM test_evidence;");
+            Execute(connection, transaction, """
+                DELETE FROM test_intent; DELETE FROM intent_fallback; DELETE FROM test_evidence; DELETE FROM project_graph;
+                """);
 
         using var delete = Command(connection, transaction, "DELETE FROM source WHERE path_key = $key", ("$key", ""));
         using var upsert = Command(connection, transaction, """
@@ -184,7 +186,7 @@ internal sealed partial class SourceInventory(Workspace workspace)
         UpdateScopes(connection, transaction, 1, basis.UnobservedScopes, unobserved);
 
         if (intents.Length > 0)
-            RecordIntents(connection, transaction, priorPending, revision, intents);
+            RecordIntents(connection, transaction, priorPending, basis.Revision, revision, rootIdentity, intents);
         Execute(connection, transaction, """
             UPDATE workspace SET revision = $revision, root_identity = $root, policy = $policy,
                 branch = $branch, commit_id = $commit, retired_revision = $retired, retired_intents = $count WHERE id = 1
@@ -228,7 +230,7 @@ internal sealed partial class SourceInventory(Workspace workspace)
     }
 
     private static void RecordIntents(SqliteConnection connection, SqliteTransaction transaction,
-        PendingIntents pending, long revision, SourceChange[] intents)
+        PendingIntents pending, long basisRevision, long revision, string rootIdentity, SourceChange[] intents)
     {
         if (pending.Fallback is not null || intents.Length > MaxDetailedIntents - pending.DetailedCount ||
             intents.Any(intent => (intent.Old?.Path.Length ?? 0) + (intent.New?.Path.Length ?? 0) > MaxIntentPathCharacters))
@@ -243,11 +245,16 @@ internal sealed partial class SourceInventory(Workspace workspace)
             return;
         }
 
+        using var predecessor = Command(connection, transaction, """
+            SELECT 'graph:' || revision FROM project_graph
+            WHERE root_identity = $root AND complete = 1 AND revision = $basis
+            """, ("$root", rootIdentity), ("$basis", basisRevision));
+        var graph = predecessor.ExecuteScalar() as string ?? "graph_unavailable";
         using var insert = Command(connection, transaction, """
             INSERT INTO test_intent(revision, path_key, old_path, old_digest, new_path, new_digest, predecessor)
-            VALUES ($revision, $key, $oldPath, $oldDigest, $newPath, $newDigest, 'graph_unavailable')
+            VALUES ($revision, $key, $oldPath, $oldDigest, $newPath, $newDigest, $predecessor)
             """, ("$revision", revision), ("$key", ""), ("$oldPath", null), ("$oldDigest", null),
-            ("$newPath", null), ("$newDigest", null));
+            ("$newPath", null), ("$newDigest", null), ("$predecessor", graph));
         foreach (var intent in intents)
         {
             insert.Parameters["$key"].Value = Key(intent.New?.Path ?? intent.Old!.Path);
@@ -316,22 +323,22 @@ internal sealed partial class SourceInventory(Workspace workspace)
             command.ExecuteNonQuery();
             command.CommandText = "PRAGMA user_version";
             var version = (long)command.ExecuteScalar()!;
-            if (version == 0 && initialize)
+            if (version is >= 0 and < SchemaVersion && initialize)
             {
-                command.CommandText = "SELECT count(*) FROM sqlite_schema";
-                if ((long)command.ExecuteScalar()! != 0)
-                    throw new IOException("The SQLite inventory has an unrecognized schema.");
-                command.CommandText = "PRAGMA page_size = 4096;";
-                command.ExecuteNonQuery();
+                if (version == 0)
+                {
+                    command.CommandText = "SELECT count(*) FROM sqlite_schema";
+                    if ((long)command.ExecuteScalar()! != 0)
+                        throw new IOException("The SQLite inventory has an unrecognized schema.");
+                    command.CommandText = "PRAGMA page_size = 4096;";
+                    command.ExecuteNonQuery();
+                }
                 using var transaction = connection.BeginTransaction();
-                Execute(connection, transaction, Schema);
-                Execute(connection, transaction, SchedulerSchema);
-                transaction.Commit();
-            }
-            else if (version == 1 && initialize)
-            {
-                using var transaction = connection.BeginTransaction();
-                Execute(connection, transaction, SchedulerSchema);
+                if (version == 0)
+                    Execute(connection, transaction, Schema);
+                if (version <= 1)
+                    Execute(connection, transaction, SchedulerSchema);
+                Execute(connection, transaction, ProjectSchema);
                 transaction.Commit();
             }
             else if (version != SchemaVersion)

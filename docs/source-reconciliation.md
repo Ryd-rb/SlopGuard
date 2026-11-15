@@ -10,7 +10,9 @@ The `revision` field is the daemon's invalidation sequence. `committedRevision` 
 
 The schema-2 migration adds attempt and per-target evidence records and preserves source facts and pending intents. A scheduled attempt pins the selected target, input fingerprint and exact cause identifiers. The daemon records the attempt before launch and commits current evidence and resolution together. A receipt from a superseded attempt stays in bounded history. Transient failures retry after a recorded deadline, and startup marks unfinished attempts as interrupted. The same target, fingerprint and cause set gets up to three attempts. A current passing or failing test result satisfies its selected target. Partial selection keeps intents pending, even when its known targets completed.
 
-The preview CLI exposes the source inventory report and scheduler status. The integration suite supplies a fake adapter through the normal daemon entry point. Production shows `awaiting_adapter` until an evaluated selector and supervised runner are available.
+Schema 3 retains up to eight evaluated graphs, with priority for the latest graph and predecessors referenced by pending intents. A source transaction pins the complete graph for its prior committed revision when available. Selection reverse-walks both graphs, filters to explicitly eligible test projects, and versions each target's scope from the evaluated graph and its source digests. Unknown predecessors widen selection to the approved group. An incomplete current graph keeps intents outstanding.
+
+The preview CLI exposes the source inventory report, scheduler status and explicit project evaluation. The integration suite supplies the real evaluator and fake runner through the normal daemon entry point. Production shows `awaiting_adapter` until supervised execution is available.
 
 ## Confirm a change
 
@@ -61,7 +63,7 @@ If the daemon exits after launching a runner and before recording its completion
 
 ## First implementation and acceptance
 
-The reconciliation coordinator and durable scheduler are implemented and tested together with an in-process adapter. Source file matching and fingerprinting are independent of parsing. Use the [next implementation stages](delivery.md#next-implementation-stages) to add evaluated target selection before enabling process-backed tests.
+The reconciliation coordinator, evaluated selector and durable scheduler are implemented and exercised with an in-process fake runner. Source file matching and fingerprinting are independent of parsing. The [next implementation stages](delivery.md#next-implementation-stages) add supervised execution before enabling process-backed tests.
 
 | Fixture | Expected result |
 | --- | --- |

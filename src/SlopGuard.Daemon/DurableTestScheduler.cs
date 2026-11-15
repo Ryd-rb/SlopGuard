@@ -7,6 +7,7 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
 {
     private readonly Channel<bool> changes = Channel.CreateBounded<bool>(1);
     private bool recovered;
+    private long evaluatedRevision;
     private TestAttemptReceipt? latest;
 
     internal void Signal() => changes.Writer.TryWrite(true);
@@ -40,7 +41,23 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
             workspace.UpdateScheduler(new TestSchedulerStatus("pending_reconciliation", latest));
             return null;
         }
-        var work = inventory.ReadTestWork(fence, recover: !recovered, () => workspace.ScheduleIsCurrent(fence));
+        var projects = adapter as IEvaluatedTestAdapter;
+        if (projects is not null && evaluatedRevision != fence.Revision)
+        {
+            if (!await workspace.VerifyScheduleAsync(fence, cancellationToken))
+                return null;
+            workspace.UpdateScheduler(new TestSchedulerStatus("evaluating", latest), fence);
+            var graph = await projects.EvaluateAsync(cancellationToken);
+            if (!await workspace.VerifyScheduleAsync(fence, cancellationToken))
+                return null;
+            var recorded = inventory.RecordProjects(fence, graph, () => workspace.ScheduleIsCurrent(fence));
+            if (recorded is null)
+                return null;
+            evaluatedRevision = fence.Revision;
+            workspace.UpdateProjectEvaluation(fence, recorded);
+        }
+        var work = inventory.ReadTestWork(fence, recover: !recovered, () => workspace.ScheduleIsCurrent(fence),
+            includeProjects: projects is not null);
         if (work is null)
             return null;
         recovered = true;

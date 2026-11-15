@@ -9,6 +9,7 @@ if (args is [] or ["--help"] or ["-h"])
         Start         slopguard start [--root <checkout>]
         Status        slopguard status [--root <checkout>]
         Read results  slopguard results [--root <checkout>]
+        Projects      slopguard projects [--root <checkout>]
         Recheck       slopguard recheck [--root <checkout>]
         MCP server    slopguard mcp [--root <checkout>]
         Stop          slopguard stop [--root <checkout>]
@@ -42,6 +43,13 @@ try
             return Print(await connection.SendAsync(DaemonCommand.Status));
         case "results":
             return Print(await connection.SendAsync(DaemonCommand.Results));
+        case "projects":
+            var graph = await new ProjectEvaluator(workspace).EvaluateAsync();
+            Console.WriteLine(JsonSerializer.Serialize(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                WriteIndented = true
+            }));
+            return graph.Complete ? 0 : 1;
         case "recheck":
             return Print(await connection.SendAsync(DaemonCommand.Recheck));
         case "stop":
