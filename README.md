@@ -34,9 +34,9 @@ After an edit, the agent can ask these questions.
 - [Version 0.2 design](docs/version-0.2.md) specifies project-aware analysis, related tests and agent result control for the next release.
 - [Source reconciliation](docs/source-reconciliation.md) defines how a verified C# edit creates durable test work across saves, branch transitions and restart.
 
-## Use version 0.1
+## Use the 0.2 development build
 
-Build with the .NET 10 SDK. Git workspaces require Git on `PATH`. The commands below use the built CLI from the checkout.
+Build with the .NET 10 SDK. Git workspaces require Git on `PATH`. Stop any 0.1 daemon for the checkout before starting the development build.
 
 ```sh
 dotnet build SlopGuard.slnx
@@ -46,10 +46,8 @@ dotnet run --no-build --project src/SlopGuard.Cli -- results
 dotnet run --no-build --project src/SlopGuard.Cli -- stop
 ```
 
-Version 0.1 runs incremental Roslyn syntax checks, publishes `.slopguard/results.json` with file and Git attribution, and exposes status, findings and rechecks over MCP. It parses files using the current C# grammar without evaluating the project's framework, defines or references. The report's commit is the checked-out base of the scanned working tree. Treat a pending, degraded or partial report as incomplete. The [delivery plan](docs/delivery.md) tracks retiring the syntax checker and adding test execution, impact analysis and status marks.
+The preview publishes a source inventory report with Git attribution. It fingerprints C# source and stores pending test intents in SQLite. The CLI and MCP status expose `committedRevision`, `pendingTestIntents`, `recordingError` and `testScheduler`. The separate 0.1 release supplies the historical syntax-check workflow. Use the project's configured build for compiler and analyzer diagnostics.
 
-## Development build
-
-The first 0.2 stage adds a per-checkout SQLite inventory and queues durable test intents after confirmed C# changes. Stop the checkout's existing daemon before starting the development build. Use `status` or MCP `workspace_status` to inspect `committedRevision`, `pendingTestIntents` and `recordingError`. Intents remain in `awaiting_selection` until the test scheduler is implemented. [Source reconciliation](docs/source-reconciliation.md#current-implementation)
+The durable scheduler is exercised through the daemon with an in-process fake adapter in integration tests. The preview reports `awaiting_adapter` while real project evaluation and test execution are under development. [Current implementation](docs/source-reconciliation.md#current-implementation), [Next implementation stages](docs/delivery.md#next-implementation-stages)
 
 Released under the [MIT License](LICENSE).

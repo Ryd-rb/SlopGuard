@@ -6,7 +6,7 @@ namespace SlopGuard.Daemon;
 internal sealed class ReportFile(Workspace workspace)
 {
     internal const string Producer = "SlopGuard";
-    internal const int SchemaVersion = 1;
+    internal const int SchemaVersion = 2;
     internal const int MaximumBytes = 8 * 1024 * 1024;
     internal static JsonSerializerOptions Json { get; } = new(JsonSerializerDefaults.Web);
 

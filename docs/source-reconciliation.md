@@ -6,7 +6,11 @@ The first [0.2 implementation slice](version-0.2.md) turns watcher notifications
 
 The development daemon records source inventory and test intents in `SlopGuard/state/<workspace-id>/inventory.sqlite3` under the user's local application data directory. The database stores verified fingerprints, last-known fingerprints for uncertain paths, and the enumeration frontier. Source facts and pending work share one transaction. The single writer uses a rollback journal and a 64 MiB database page cap. The journal fits inside the checkout's larger database and journal allowance. [SQLite rollback journaling](https://sqlite.org/lockingv3.html)
 
-The existing `revision` field is the daemon's invalidation sequence. The additive `committedRevision` field identifies the durable observation and advances across restarts. `pendingTestIntents` gives the detailed count, trigger revision range and any workspace fallback marker. At most 2,048 detailed intents are retained. Additional causes extend one fallback marker. A replacement root retires the previous pending records and publishes the retirement revision and reason. Database write failures appear as `recordingError` while the durable revision stays at the prior commit. The test scheduler consumes these records in the next stage.
+The `revision` field is the daemon's invalidation sequence. `committedRevision` identifies the durable observation and advances across restarts. `pendingTestIntents` gives the detailed count, trigger revision range and any workspace fallback marker. At most 2,048 detailed intents are retained. Additional causes extend one fallback marker. A replacement root retires the previous pending records and publishes the retirement revision and reason. Inventory write failures appear as `recordingError` while the durable revision stays at the prior commit.
+
+The schema-2 migration adds attempt and per-target evidence records and preserves source facts and pending intents. A scheduled attempt pins the selected target, input fingerprint and exact cause identifiers. The daemon records the attempt before launch and commits current evidence and resolution together. A receipt from a superseded attempt stays in bounded history. Transient failures retry after a recorded deadline, and startup marks unfinished attempts as interrupted. The same target, fingerprint and cause set gets up to three attempts. A current passing or failing test result satisfies its selected target. Partial selection keeps intents pending, even when its known targets completed.
+
+The preview CLI exposes the source inventory report and scheduler status. The integration suite supplies a fake adapter through the normal daemon entry point. Production shows `awaiting_adapter` until an evaluated selector and supervised runner are available.
 
 ## Confirm a change
 
@@ -57,7 +61,7 @@ If the daemon exits after launching a runner and before recording its completion
 
 ## First implementation and acceptance
 
-The reconciliation coordinator commits SQLite source and intent records and exposes the revision, outstanding scope and recording failures through workspace status. In the next stage, drive a deterministic fake selector and runner against the normal coordinator entry points before connecting MSBuild or starting test processes. Separate file matching and fingerprinting from the standalone syntax checker so source reconciliation continues when the checker is retired.
+The reconciliation coordinator and durable scheduler are implemented and tested together with an in-process adapter. Source file matching and fingerprinting are independent of parsing. Use the [next implementation stages](delivery.md#next-implementation-stages) to add evaluated target selection before enabling process-backed tests.
 
 | Fixture | Expected result |
 | --- | --- |

@@ -2,11 +2,14 @@ using Microsoft.Data.Sqlite;
 
 namespace SlopGuard.Daemon;
 
-internal sealed class SourceInventory(Workspace workspace, string policy, bool trackTestIntents)
+internal sealed partial class SourceInventory(Workspace workspace)
 {
+    // The existing policy identifies the same eligible .cs files and digests.
+    private const string Policy = "csharp.syntax:inventory-v1";
     internal const int MaxDetailedIntents = 2_048;
     private const int MaxIntentPathCharacters = 2_048;
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
+    private readonly object writer = new();
 
     internal InventoryState Load()
     {
@@ -49,9 +52,16 @@ internal sealed class SourceInventory(Workspace workspace, string policy, bool t
     internal InventoryState? Reconcile(InventoryState basis, SourceScan scan, string rootIdentity, GitRevision git,
         bool startup, Func<bool> accept)
     {
+        lock (writer)
+            return CommitInventory(basis, scan, rootIdentity, git, startup, accept);
+    }
+
+    private InventoryState? CommitInventory(InventoryState basis, SourceScan scan, string rootIdentity, GitRevision git,
+        bool startup, Func<bool> accept)
+    {
         var rootReplaced = basis.RootIdentity is not null && basis.RootIdentity != rootIdentity;
-        var resetInventory = rootReplaced || basis.Policy != policy;
-        var createIntents = trackTestIntents && !startup && !resetInventory;
+        var resetInventory = rootReplaced || basis.Policy != Policy;
+        var createIntents = !startup && !resetInventory;
         var files = resetInventory
             ? new Dictionary<string, SourceFingerprint>(Workspace.PathComparer)
             : new Dictionary<string, SourceFingerprint>(basis.Files, Workspace.PathComparer);
@@ -80,16 +90,16 @@ internal sealed class SourceInventory(Workspace workspace, string policy, bool t
 
         var pathCharacters = files.Values.Sum(file => file.Path.Length);
         var omitted = new List<string>();
-        foreach (var (path, entry) in scan.Files)
+        foreach (var (path, digest) in scan.Files)
         {
             var previous = files.GetValueOrDefault(path);
-            var next = new SourceFingerprint(path, entry.Digest);
+            var next = new SourceFingerprint(path, digest);
             if (previous == next)
                 continue;
 
             var growth = path.Length - (previous?.Path.Length ?? 0);
-            if ((previous is null && files.Count >= SourceIndex.MaxFiles) ||
-                pathCharacters + growth > SourceIndex.MaxPathCharacters)
+            if ((previous is null && files.Count >= SourceScanner.MaxFiles) ||
+                pathCharacters + growth > SourceScanner.MaxPathCharacters)
             {
                 omitted.Add(path);
                 continue;
@@ -125,9 +135,6 @@ internal sealed class SourceInventory(Workspace workspace, string policy, bool t
         var unobserved = startup || resetInventory
             ? scan.UncertainScopes
             : IntersectScopes(basis.UnobservedScopes, scan.UncertainScopes);
-        var retirement = rootReplaced
-            ? new RetiredIntents(revision, basis.Pending.DetailedCount + (basis.Pending.Fallback is null ? 0 : 1))
-            : basis.Retirement;
         using var connection = Open(initialize: false);
         using var transaction = connection.BeginTransaction();
         using (var check = Command(connection, transaction, "SELECT revision FROM workspace WHERE id = 1"))
@@ -141,10 +148,14 @@ internal sealed class SourceInventory(Workspace workspace, string policy, bool t
         if (!accept())
             return null;
 
+        var priorPending = ReadPending(connection, transaction);
+        var retirement = rootReplaced
+            ? new RetiredIntents(revision, priorPending.DetailedCount + (priorPending.Fallback is null ? 0 : 1))
+            : basis.Retirement;
         if (resetInventory)
             Execute(connection, transaction, "DELETE FROM source");
         if (rootReplaced)
-            Execute(connection, transaction, "DELETE FROM test_intent; DELETE FROM intent_fallback;");
+            Execute(connection, transaction, "DELETE FROM test_intent; DELETE FROM intent_fallback; DELETE FROM test_evidence;");
 
         using var delete = Command(connection, transaction, "DELETE FROM source WHERE path_key = $key", ("$key", ""));
         using var upsert = Command(connection, transaction, """
@@ -173,17 +184,17 @@ internal sealed class SourceInventory(Workspace workspace, string policy, bool t
         UpdateScopes(connection, transaction, 1, basis.UnobservedScopes, unobserved);
 
         if (intents.Length > 0)
-            RecordIntents(connection, transaction, basis.Pending, revision, intents);
+            RecordIntents(connection, transaction, priorPending, revision, intents);
         Execute(connection, transaction, """
             UPDATE workspace SET revision = $revision, root_identity = $root, policy = $policy,
                 branch = $branch, commit_id = $commit, retired_revision = $retired, retired_intents = $count WHERE id = 1
-            """, ("$revision", revision), ("$root", rootIdentity), ("$policy", policy),
+            """, ("$revision", revision), ("$root", rootIdentity), ("$policy", Policy),
             ("$branch", git.Branch), ("$commit", git.Commit), ("$retired", retirement?.Revision),
             ("$count", retirement?.Count));
 
         var pending = ReadPending(connection, transaction);
         transaction.Commit();
-        return new InventoryState(revision, rootIdentity, policy, files, scan.UncertainScopes, unobserved, pending, retirement);
+        return new InventoryState(revision, rootIdentity, Policy, files, scan.UncertainScopes, unobserved, pending, retirement);
     }
 
     private static string Key(string path) => OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path;
@@ -222,6 +233,9 @@ internal sealed class SourceInventory(Workspace workspace, string policy, bool t
         if (pending.Fallback is not null || intents.Length > MaxDetailedIntents - pending.DetailedCount ||
             intents.Any(intent => (intent.Old?.Path.Length ?? 0) + (intent.New?.Path.Length ?? 0) > MaxIntentPathCharacters))
         {
+            if (pending.Fallback is not null)
+                Execute(connection, transaction, "DELETE FROM test_evidence WHERE cause = $cause",
+                    ("$cause", TestCause.Identifier(pending.Fallback.LastRevision, "")));
             Execute(connection, transaction, """
                 INSERT INTO intent_fallback(id, first_revision, last_revision) VALUES (1, $revision, $revision)
                 ON CONFLICT(id) DO UPDATE SET last_revision = excluded.last_revision
@@ -311,6 +325,13 @@ internal sealed class SourceInventory(Workspace workspace, string policy, bool t
                 command.ExecuteNonQuery();
                 using var transaction = connection.BeginTransaction();
                 Execute(connection, transaction, Schema);
+                Execute(connection, transaction, SchedulerSchema);
+                transaction.Commit();
+            }
+            else if (version == 1 && initialize)
+            {
+                using var transaction = connection.BeginTransaction();
+                Execute(connection, transaction, SchedulerSchema);
                 transaction.Commit();
             }
             else if (version != SchemaVersion)
@@ -368,7 +389,6 @@ internal sealed class SourceInventory(Workspace workspace, string policy, bool t
         CREATE TABLE intent_fallback (
             id INTEGER PRIMARY KEY CHECK (id = 1), first_revision INTEGER NOT NULL, last_revision INTEGER NOT NULL
         );
-        PRAGMA user_version = 1;
         """;
 }
 

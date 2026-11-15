@@ -1,22 +1,18 @@
 using System.Security.Cryptography;
-using System.Text;
-using SlopGuard.Core;
 
 namespace SlopGuard.Daemon;
 
-internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
+internal sealed class SourceScanner(Workspace workspace)
 {
     internal const int MaxFiles = 20_000;
     internal const int MaxPathCharacters = 2_000_000;
-    private const int MaxIndexedDiagnostics = 4_000;
-    private const int MaxReportedDiagnostics = 2_000;
     private const int MaxSourceBytes = 1_048_576;
     private const int MaxVisitedEntries = 200_000;
 
     internal async Task<SourceScan> ScanAsync(
         string[]? paths, SourceScan? prior, CancellationToken cancellationToken)
     {
-        var files = new Dictionary<string, SyntaxEntry>(Workspace.PathComparer);
+        var files = new Dictionary<string, string>(Workspace.PathComparer);
         var unknown = new HashSet<string>(Workspace.PathComparer);
         if (paths is not null && prior is not null)
         {
@@ -27,7 +23,6 @@ internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
         }
 
         var pathCharacters = files.Keys.Sum(path => path.Length);
-        var diagnosticCount = files.Values.Sum(entry => entry.Diagnostics.Count);
         var candidates = paths ?? EnumerateSources(unknown);
         foreach (var path in candidates)
         {
@@ -44,27 +39,7 @@ internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
                 var digest = await ReadSourceAsync(path, paths is not null, cancellationToken);
                 if (digest is null)
                     continue;
-                var (hash, bytes) = digest.Value;
-                SyntaxEntry entry;
-                if (prior is not null && prior.Files.TryGetValue(relative, out var cached) &&
-                    cached.Digest == hash && !cached.Truncated)
-                {
-                    entry = cached;
-                }
-                else
-                {
-                    using var stream = new MemoryStream(bytes, writable: false);
-                    using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-                    var source = await reader.ReadToEndAsync(cancellationToken);
-                    var analysis = checker.Analyze(source, cancellationToken);
-                    entry = new SyntaxEntry(hash, analysis.Diagnostics, analysis.Truncated);
-                }
-
-                var remaining = MaxIndexedDiagnostics - diagnosticCount;
-                if (entry.Diagnostics.Count > remaining)
-                    entry = entry with { Diagnostics = entry.Diagnostics.Take(remaining).ToArray(), Truncated = true };
-                files.Add(relative, entry);
-                diagnosticCount += entry.Diagnostics.Count;
+                files.Add(relative, digest);
                 pathCharacters += relative.Length;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -76,38 +51,8 @@ internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
         return new SourceScan(files, unknown);
     }
 
-    internal WorkspaceReport CreateReport(SourceScan scan, Guid epoch, long revision, long committedRevision,
-        GitRevision git)
-    {
-        var findings = new List<Finding>();
-        // Reserve room for report metadata and conservatively charge for JSON escaping.
-        var byteBudget = ReportFile.MaximumBytes - 1_048_576;
-        var diagnosticCount = 0;
-        var truncated = false;
-        foreach (var (path, entry) in scan.Files.OrderBy(pair => pair.Key, Workspace.PathComparer))
-        {
-            truncated |= entry.Truncated;
-            diagnosticCount += entry.Diagnostics.Count;
-            foreach (var diagnostic in entry.Diagnostics)
-            {
-                if (findings.Count == MaxReportedDiagnostics)
-                    break;
-                var cost = 256 + 6 * (path.Length + diagnostic.Rule.Length + diagnostic.Message.Length);
-                if (cost > byteBudget)
-                    continue;
-                byteBudget -= cost;
-                findings.Add(new Finding(path, entry.Digest, diagnostic.Rule,
-                    diagnostic.Message, diagnostic.Line, diagnostic.Column));
-            }
-        }
-
-        return new WorkspaceReport(ReportFile.SchemaVersion, ReportFile.Producer, workspace.Root, epoch, revision,
-            git.Branch, git.Commit, checker.Id, checker.Language, scan.Files.Count,
-            scan.Partial, truncated || diagnosticCount > findings.Count, findings)
-        {
-            CommittedRevision = committedRevision
-        };
-    }
+    internal static bool Matches(string path) =>
+        Path.GetExtension(path).Equals(".cs", StringComparison.OrdinalIgnoreCase);
 
     private IEnumerable<string> EnumerateSources(HashSet<string> unknown)
     {
@@ -147,7 +92,7 @@ internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
                     MarkUnknown(unknown, workspace.Relative(path));
                 else if ((flags & FileAttributes.Directory) != 0)
                     Push(path);
-                else if (checker.Matches(path))
+                else if (Matches(path))
                     yield return path;
             }
         }
@@ -183,7 +128,7 @@ internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
         }
     }
 
-    private async Task<(string Hash, byte[] Bytes)?> ReadSourceAsync(
+    private async Task<string?> ReadSourceAsync(
         string path, bool targeted, CancellationToken cancellationToken)
     {
         try
@@ -215,7 +160,7 @@ internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
             await stream.ReadExactlyAsync(bytes, cancellationToken);
             if (stream.Length != length || File.GetLastWriteTimeUtc(path) != before)
                 throw new IOException("A source file changed during analysis.");
-            return (Convert.ToHexString(SHA256.HashData(bytes)), bytes);
+            return Convert.ToHexString(SHA256.HashData(bytes));
         }
         catch (IOException ex) when (targeted && ex is FileNotFoundException or DirectoryNotFoundException)
         {
@@ -238,9 +183,7 @@ internal sealed class SourceIndex(Workspace workspace, ISourceChecker checker)
     }
 }
 
-internal sealed record SyntaxEntry(string Digest, IReadOnlyList<Diagnostic> Diagnostics, bool Truncated);
-
-internal sealed record SourceScan(Dictionary<string, SyntaxEntry> Files, HashSet<string> UncertainScopes)
+internal sealed record SourceScan(Dictionary<string, string> Files, HashSet<string> UncertainScopes)
 {
     internal bool Partial => UncertainScopes.Count != 0;
 

@@ -1,13 +1,15 @@
 using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Text.Json;
-using SlopGuard.Core;
 
 namespace SlopGuard.Daemon;
 
 public static class DaemonHost
 {
-    public static void Run(Workspace workspace, ISourceChecker checker, CancellationToken cancellationToken = default)
+    public static void Run(Workspace workspace, CancellationToken cancellationToken = default) =>
+        Run(workspace, null, cancellationToken);
+
+    internal static void Run(Workspace workspace, ITestAdapter? adapter, CancellationToken cancellationToken)
     {
         using var singleton = new Mutex(false, workspace.InstanceName);
         try
@@ -22,7 +24,7 @@ public static class DaemonHost
 
         try
         {
-            RunOwnedAsync(workspace, checker, cancellationToken).GetAwaiter().GetResult();
+            RunOwnedAsync(workspace, adapter, cancellationToken).GetAwaiter().GetResult();
         }
         finally
         {
@@ -30,19 +32,21 @@ public static class DaemonHost
         }
     }
 
-    private static async Task RunOwnedAsync(Workspace workspace, ISourceChecker checker, CancellationToken cancellationToken)
+    private static async Task RunOwnedAsync(Workspace workspace, ITestAdapter? adapter, CancellationToken cancellationToken)
     {
         var git = await GitContext.DiscoverAsync(workspace.Root, cancellationToken);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        using var monitor = new WorkspaceMonitor(workspace, git, checker);
+        using var monitor = new WorkspaceMonitor(workspace, git, adapter);
         monitor.Start();
         var indexing = monitor.RunAsync(stop.Token);
         var serving = ServeAsync(workspace, monitor, stop.Token);
-        await Task.WhenAny(indexing, serving);
+        var scheduling = monitor.RunSchedulerAsync(stop.Token);
+        var tasks = scheduling is null ? new[] { indexing, serving } : [indexing, serving, scheduling];
+        await Task.WhenAny(tasks);
         await stop.CancelAsync();
         try
         {
-            await Task.WhenAll(indexing, serving);
+            await Task.WhenAll(tasks);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -75,7 +79,7 @@ public static class DaemonHost
                     case DaemonCommand.Results:
                         var report = await monitor.ReadCurrentAsync(token);
                         reply = report is null
-                            ? new DaemonReply(false, null, "No current report. Check workspace status.")
+                            ? new DaemonReply(false, null, "No current inventory report. Check workspace status.")
                             : Success(report);
                         break;
                     case DaemonCommand.Recheck:

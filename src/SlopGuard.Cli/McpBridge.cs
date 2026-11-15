@@ -1,7 +1,6 @@
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using SlopGuard.Daemon;
-using SlopGuard.Providers.CSharp;
 
 namespace SlopGuard.Cli;
 
@@ -10,25 +9,21 @@ internal static class McpBridge
     internal static async Task RunAsync(DaemonConnection connection)
     {
         var tools = new McpServerPrimitiveCollection<McpServerTool>();
-        tools.Add(Create("workspace_status", "Read the workspace revision and syntax checker state.",
+        tools.Add(Create("workspace_status", "Read source reconciliation and test scheduling status.",
             DaemonCommand.Status, readOnly: true, connection));
-        tools.Add(Create("get_findings", "Read validated findings for the current workspace revision.",
+        tools.Add(Create("get_findings", "Read the validated source inventory report.",
             DaemonCommand.Results, readOnly: true, connection));
-        tools.Add(Create("run_checks", "Queue a full recheck with the C# syntax checker.",
+        tools.Add(Create("run_checks", "Queue a full source inventory reconciliation.",
             DaemonCommand.Recheck, readOnly: false, connection));
-        tools.Add(McpServerTool.Create((Func<object>)(() =>
-        {
-            var checker = new SyntaxChecker();
-            return new { checker.Id, checker.Language, coverage = "syntax" };
-        }), new McpServerToolCreateOptions
+        tools.Add(McpServerTool.Create((Func<string[]>)(() => []), new McpServerToolCreateOptions
         {
             Name = "list_checkers",
-            Description = "List the checker available in this version of SlopGuard.",
+            Description = "List inspection checkers registered in this version of SlopGuard.",
             ReadOnly = true,
         }));
         var options = new McpServerOptions
         {
-            ServerInfo = new Implementation { Name = "SlopGuard", Version = "0.1.0" },
+            ServerInfo = new Implementation { Name = "SlopGuard", Version = "0.2.0-preview.1" },
             ToolCollection = tools,
         };
         await using var server = McpServer.Create(new StdioServerTransport(options), options);

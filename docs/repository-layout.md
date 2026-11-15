@@ -1,17 +1,16 @@
 # Repository layout
 
-The .NET 10 solution builds four production projects and a C# integration test project.
+The .NET 10 solution builds three production projects and a C# integration test project.
 
 | Path | Ownership |
 | --- | --- |
 | `src/SlopGuard.Core` | Language-neutral workspace and revision identity, source spans, provider contracts, evidence, findings, job requests and result schemas. |
 | `src/SlopGuard.Daemon` | Watcher and Git integration, indexing, scheduling, resource metering, persistence, and the current-report exporter. |
-| `src/SlopGuard.Providers.CSharp` | C# and .NET discovery, Roslyn, MSBuild and test runners, and C# inspection providers. |
 | `src/SlopGuard.Cli` | Executable composition root, workspace lifecycle commands and the MCP stdio bridge. |
 | `skills/slopguard` | Single agent skill delivered with the CLI. |
 | `docs` | Design decisions and implementation acceptance criteria. |
 
-The daemon and C# provider both depend on Core. The CLI will compose the daemon, MCP bridge and built-in providers. Keep the Core project free of compiler, test runner, storage and transport dependencies. Introduce separate persistence, protocol or worker projects when an implemented component needs its own dependencies, process or release boundary.
+The daemon depends on Core. The CLI composes the daemon and MCP bridge. Introduce the C# provider when adding evaluated project discovery and symbol analysis. Keep the Core project free of compiler, test runner, storage and transport dependencies. Introduce separate persistence, protocol or worker projects when an implemented component needs its own dependencies, process or release boundary.
 
 Put test projects under `tests/`. Name unit-test projects after their assemblies, such as `tests/SlopGuard.Core.Tests`, and put daemon lifecycle tests in `tests/SlopGuard.IntegrationTests`. Keep reusable synthetic test workspaces under `tests/fixtures/<provider>/`, with shared Git and filesystem cases in a workspace folder. Keep independently versioned configuration or protocol schemas under `schemas/` when clients begin consuming them.
 

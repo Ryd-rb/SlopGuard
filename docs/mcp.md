@@ -19,6 +19,8 @@ Before a working-tree transition initiated by the agent, request withdrawal of t
 
 Version 0.1 exposes `workspace_status`, `list_checkers`, `run_checks` and `get_findings` for syntax. Preserve those tool entry points and advertise the checkers supported by the connected daemon. Version 0.2 retires the syntax checker and uses these tools for reconciliation and verification. Expose wire, report and capability versions during the startup handshake. A client seeing an incompatible daemon reports its version and how to switch builds. Leave that daemon running until the user explicitly stops it.
 
+The scheduler preview returns a schema-2 source inventory report from `get_findings`, accepts explicit inventory reconciliation through `run_checks`, and reports pending intents and scheduler state in `workspace_status`. `list_checkers` returns an empty list in this preview. The remaining tool contracts below describe later stages.
+
 ## Tool contracts
 
 Use documented JSON schemas with finite budgets and named checker IDs. Scopes accept validated relative paths, project IDs, named workspace scopes and optional target contexts. Job submission returns promptly. Status responses carry workspace revision and configuration revision. Paginate with opaque cursors bound to the workspace, daemon incarnation, query parameters and projection revision. A cursor for a current query becomes stale when that scope is invalidated. A historical cursor can continue within its retention limit and effective policy. Return an explicit expiry when its snapshot has been reclaimed. Distinguish opted-in history from the default current view in every result.

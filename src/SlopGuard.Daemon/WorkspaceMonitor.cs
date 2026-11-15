@@ -4,7 +4,7 @@ using SlopGuard.Core;
 
 namespace SlopGuard.Daemon;
 
-internal sealed class WorkspaceMonitor(Workspace workspace, GitContext git, ISourceChecker checker) : IDisposable
+internal sealed class WorkspaceMonitor : IDisposable
 {
     private const int MaxPendingPaths = 512;
     private readonly Channel<bool> wakeup = Channel.CreateBounded<bool>(1);
@@ -12,19 +12,36 @@ internal sealed class WorkspaceMonitor(Workspace workspace, GitContext git, ISou
     private Guid epoch = Guid.NewGuid();
     private readonly HashSet<string> pending = new(Workspace.PathComparer);
     private readonly List<FileSystemWatcher> watchers = [];
-    private readonly SourceIndex index = new(workspace, checker);
-    private readonly SourceInventory inventory = new(workspace, checker.Id + ":inventory-v1", checker.Language == "csharp");
-    private readonly ReportFile reportFile = new(workspace);
-    private GitContext gitContext = git;
+    private readonly Workspace workspace;
+    private readonly SourceScanner scanner;
+    private readonly SourceInventory inventory;
+    private readonly ReportFile reportFile;
+    private readonly DurableTestScheduler? scheduler;
+    private GitContext gitContext;
     private FileSystemWatcher? parentWatcher;
     private WorkspaceReport? report;
     private InventoryState? committed;
-    private SourceScan? syntax;
+    private SourceScan? reconciled;
+    private ScheduleFence? schedule;
+    private TestSchedulerStatus scheduleStatus;
     private long revision;
     private bool scanAll;
     private bool restartWatchers;
     private string? lastError;
     private string? recordingError;
+
+    internal WorkspaceMonitor(Workspace workspace, GitContext git, ITestAdapter? adapter)
+    {
+        this.workspace = workspace;
+        gitContext = git;
+        scanner = new SourceScanner(workspace);
+        inventory = new SourceInventory(workspace);
+        reportFile = new ReportFile(workspace);
+        scheduler = adapter is null ? null : new DurableTestScheduler(inventory, this, adapter);
+        scheduleStatus = new TestSchedulerStatus(adapter is null ? "awaiting_adapter" : "pending_reconciliation");
+    }
+
+    internal Task? RunSchedulerAsync(CancellationToken cancellationToken) => scheduler?.RunAsync(cancellationToken);
 
     internal void Start()
     {
@@ -55,7 +72,7 @@ internal sealed class WorkspaceMonitor(Workspace workspace, GitContext git, ISou
                         Invalidate(restart: true);
                     return;
                 }
-                if (checker.Matches(path))
+                if (SourceScanner.Matches(path))
                     Invalidate(structural ? null : path);
                 else if (IsProjectInput(path))
                     Invalidate();
@@ -97,6 +114,7 @@ internal sealed class WorkspaceMonitor(Workspace workspace, GitContext git, ISou
                 pending.Add(path);
             wakeup.Writer.TryWrite(true);
         }
+        scheduler?.Signal();
         return current;
     }
 
@@ -107,10 +125,11 @@ internal sealed class WorkspaceMonitor(Workspace workspace, GitContext git, ISou
             var snapshot = report?.Revision == revision ? report : null;
             return new
             {
-                workspace.Root, epoch, revision, committedRevision = committed?.Revision, checker = checker.Id,
+                workspace.Root, epoch, revision, committedRevision = committed?.Revision,
+                reportSchemaVersion = ReportFile.SchemaVersion,
                 state = snapshot is not null ? "ready" : lastError is null ? "pending" : "degraded",
                 lastError, fileCount = snapshot?.FileCount, partial = snapshot?.Partial,
-                findingsTruncated = snapshot?.FindingsTruncated, recordingError,
+                recordingError, testScheduler = scheduleStatus,
                 pendingTestIntents = committed?.Pending, retiredTestIntents = committed?.Retirement,
             };
         }
@@ -175,9 +194,9 @@ internal sealed class WorkspaceMonitor(Workspace workspace, GitContext git, ISou
                 recording = true;
                 var basis = committed ?? LoadInventory();
                 recording = false;
-                var startup = syntax is null;
-                var fullScan = startup || batch.FullScan || syntax!.Partial || basis.RootIdentity != rootIdentity;
-                var scan = await index.ScanAsync(fullScan ? null : batch.Paths, syntax, cancellationToken);
+                var startup = reconciled is null;
+                var fullScan = startup || batch.FullScan || reconciled!.Partial || basis.RootIdentity != rootIdentity;
+                var scan = await scanner.ScanAsync(fullScan ? null : batch.Paths, reconciled, cancellationToken);
                 if (await gitContext.ReadAsync(cancellationToken) != startingGit ||
                     RootIdentity.Read(workspace.Root) != rootIdentity)
                 {
@@ -201,18 +220,23 @@ internal sealed class WorkspaceMonitor(Workspace workspace, GitContext git, ISou
                     Invalidate();
                     continue;
                 }
-                syntax = scan;
+                reconciled = scan;
                 lock (gate)
                 {
                     committed = next;
                     recordingError = null;
+                    if (revision == batch.Revision && !scan.Partial)
+                        schedule = new ScheduleFence(batch.Epoch, batch.Revision, next.Revision, rootIdentity, startingGit);
                 }
+                scheduler?.Signal();
 
                 if (withdrawalError is not null)
                     throw withdrawalError;
                 if (!IsCurrent(batch.Revision))
                     continue;
-                var snapshot = index.CreateReport(scan, batch.Epoch, batch.Revision, next.Revision, startingGit);
+                var snapshot = new WorkspaceReport(ReportFile.SchemaVersion, ReportFile.Producer, workspace.Root,
+                    batch.Epoch, batch.Revision, startingGit.Branch, startingGit.Commit, scan.Files.Count,
+                    scan.Partial, next.Revision);
                 if (await gitContext.ReadAsync(cancellationToken) != startingGit ||
                     RootIdentity.Read(workspace.Root) != rootIdentity)
                 {
@@ -269,6 +293,42 @@ internal sealed class WorkspaceMonitor(Workspace workspace, GitContext git, ISou
     {
         lock (gate)
             return candidate == revision;
+    }
+
+    internal ScheduleFence? CurrentSchedule()
+    {
+        lock (gate)
+            return schedule?.Sequence == revision ? schedule : null;
+    }
+
+    internal bool ScheduleIsCurrent(ScheduleFence fence) => CurrentSchedule() == fence;
+
+    internal async Task<bool> VerifyScheduleAsync(ScheduleFence fence, CancellationToken cancellationToken)
+    {
+        if (!ScheduleIsCurrent(fence))
+            return false;
+        try
+        {
+            if (await gitContext.ReadAsync(cancellationToken) == fence.Git &&
+                RootIdentity.Read(workspace.Root) == fence.RootIdentity)
+                return ScheduleIsCurrent(fence);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            RecordError(ex.Message);
+        }
+        Invalidate(restart: true);
+        return false;
+    }
+
+    internal void UpdateScheduler(TestSchedulerStatus status, ScheduleFence? fence = null, PendingIntents? pending = null)
+    {
+        lock (gate)
+        {
+            scheduleStatus = status;
+            if (pending is not null && committed is not null && committed.Revision == fence?.Revision)
+                committed = committed with { Pending = pending };
+        }
     }
 
     private InventoryState LoadInventory()

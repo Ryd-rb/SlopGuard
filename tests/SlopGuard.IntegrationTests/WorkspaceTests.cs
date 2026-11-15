@@ -1,9 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
-using SlopGuard.Core;
 using SlopGuard.Daemon;
-using SlopGuard.Providers.CSharp;
 using Xunit;
 
 namespace SlopGuard.IntegrationTests;
@@ -18,29 +16,29 @@ public sealed class WorkspaceTests
         var source = Path.Combine(original, "Source.cs");
         await File.WriteAllTextAsync(source, "class Source {}");
         fixture.Start();
-        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        var baseline = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
 
         await File.WriteAllTextAsync(source, "class Source {");
-        var invalid = await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("First/Source.cs"));
-        var findings = invalid.GetProperty("findings");
-        var finding = Assert.Single(findings.EnumerateArray());
-        Assert.Equal("CS1513", finding.GetProperty("rule").GetString());
-        Assert.Equal(64, finding.GetProperty("sourceDigest").GetString()!.Length);
+        var edited = await fixture.WaitForNextReportAsync(baseline);
+        Assert.False(edited.TryGetProperty("findings", out _));
+        var change = Assert.Single(fixture.ReadIntents());
+        Assert.Equal("First/Source.cs", change.NewPath);
+        Assert.Equal(64, change.NewDigest!.Length);
 
         var renamed = Path.Combine(fixture.Root, "Second");
         Directory.Move(original, renamed);
-        var moved = await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Second/Source.cs"));
-        Assert.Equal(new[] { "Second/Source.cs" }, FindingPaths(moved));
+        var moved = await fixture.WaitForNextReportAsync(edited);
+        Assert.Equal(1, FileCount(moved));
         Assert.Collection(fixture.ReadIntents().Where(intent => intent.Revision == CommittedRevision(moved)),
             removed => Assert.Equal(("First/Source.cs", null), (removed.OldPath, removed.NewPath)),
             added => Assert.Equal((null, "Second/Source.cs"), (added.OldPath, added.NewPath)));
 
         File.Delete(Path.Combine(renamed, "Source.cs"));
-        var empty = await fixture.WaitForReportAsync(report => FileCount(report) == 0);
-        Assert.Empty(FindingPaths(empty));
+        await fixture.WaitForReportAsync(report => FileCount(report) == 0);
 
         await File.WriteAllTextAsync(Path.Combine(fixture.Root, "New.cs"), "class New {");
-        await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("New.cs"));
+        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        Assert.Contains(fixture.ReadIntents(), intent => intent.OldPath is null && intent.NewPath == "New.cs");
     }
 
     [Fact]
@@ -81,17 +79,19 @@ public sealed class WorkspaceTests
         await using var fixture = new Fixture();
         await File.WriteAllTextAsync(Path.Combine(fixture.Root, "Original.cs"), "class Original {");
         fixture.Start();
-        await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Original.cs"));
+        var initial = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
 
         Directory.Move(fixture.Root, Path.Combine(fixture.Container, "previous"));
         Directory.CreateDirectory(fixture.Root);
         var fresh = Path.Combine(fixture.Root, "Fresh.cs");
         await File.WriteAllTextAsync(fresh, "class Fresh {");
-        var replacement = await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Fresh.cs"));
-        Assert.Equal(new[] { "Fresh.cs" }, FindingPaths(replacement));
+        var replacement = await fixture.WaitForReportAsync(report => FileCount(report) == 1 &&
+            report.GetProperty("epoch").GetGuid() != initial.GetProperty("epoch").GetGuid());
+        var freshDigest = fixture.ReadDigest("Fresh.cs");
 
         await File.WriteAllTextAsync(fresh, "class Fresh {}");
-        await fixture.WaitForReportAsync(report => FileCount(report) == 1 && FindingPaths(report).Length == 0);
+        await fixture.WaitForNextReportAsync(replacement);
+        Assert.NotEqual(freshDigest, fixture.ReadDigest("Fresh.cs"));
     }
 
     [Fact]
@@ -104,7 +104,7 @@ public sealed class WorkspaceTests
         var source = Path.Combine(fixture.Root, "Source.cs");
         await File.WriteAllTextAsync(source, "class Source {}");
         fixture.Start();
-        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        var initial = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
         using (File.Open(fixture.ReportPath, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
             await File.WriteAllTextAsync(source, "class Source {");
@@ -119,7 +119,7 @@ public sealed class WorkspaceTests
             Assert.False(timeout.IsCancellationRequested);
             Assert.False((await fixture.Connection.SendAsync(DaemonCommand.Results))?.Ok);
         }
-        await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Source.cs"));
+        await fixture.WaitForNextReportAsync(initial);
         await fixture.StopAsync();
         Assert.False(File.Exists(fixture.ReportPath));
     }
@@ -135,7 +135,7 @@ public sealed class WorkspaceTests
         Assert.Empty(fixture.ReadIntents());
 
         await File.WriteAllTextAsync(source, "class Online {");
-        var online = await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Source.cs"));
+        var online = await fixture.WaitForNextReportAsync(baseline);
         var saved = Assert.Single(fixture.ReadIntents());
         Assert.Equal(CommittedRevision(online), saved.Revision);
         Assert.True(saved.Revision > CommittedRevision(baseline));
@@ -157,51 +157,16 @@ public sealed class WorkspaceTests
         await File.WriteAllTextAsync(replacement, "class Offline {}");
         File.Move(replacement, source, overwrite: true);
         await File.WriteAllTextAsync(Path.Combine(fixture.Root, "Directory.Build.props"), "<Project />");
-        await fixture.WaitForReportAsync(report => CommittedRevision(report) > CommittedRevision(restarted));
+        var unchanged = await fixture.WaitForNextReportAsync(restarted);
         Assert.Equal(saved, Assert.Single(fixture.ReadIntents()));
 
         await File.WriteAllTextAsync(source, "class AfterRestart {");
-        await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Source.cs"));
+        await fixture.WaitForNextReportAsync(unchanged);
         var intents = fixture.ReadIntents();
         Assert.Equal(2, intents.Length);
         Assert.Equal(saved, intents[0]);
         Assert.NotEqual(saved.NewDigest, intents[1].OldDigest);
         Assert.Equal(saved.NewPath, intents[1].OldPath);
-    }
-
-    [Fact]
-    public async Task EditDuringScanReconcilesBothPathsAgainstTheCommittedBaseline()
-    {
-        await using var fixture = new Fixture();
-        using var checker = new PausingChecker();
-        var first = Path.Combine(fixture.Root, "First.cs");
-        var second = Path.Combine(fixture.Root, "Second.cs");
-        await File.WriteAllTextAsync(first, "class First {}");
-        await File.WriteAllTextAsync(second, "class Second {}");
-        fixture.Start(checker);
-        var baseline = await fixture.WaitForReportAsync(report => FileCount(report) == 2);
-        await File.WriteAllTextAsync(first, "class Discarded {");
-        await checker.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        try
-        {
-            var scanning = await fixture.ReadStatusAsync();
-            await File.WriteAllTextAsync(second, "class Changed {");
-            await fixture.WaitForStatusAsync(status => status.GetProperty("revision").GetInt64() >
-                scanning.GetProperty("revision").GetInt64());
-            Assert.False((await fixture.Connection.SendAsync(DaemonCommand.Results))?.Ok);
-            Assert.Empty(fixture.ReadIntents());
-        }
-        finally
-        {
-            checker.Release.Set();
-        }
-
-        var report = await fixture.WaitForReportAsync(value => FindingPaths(value).Length == 2);
-        Assert.True(CommittedRevision(report) > CommittedRevision(baseline));
-        var intents = fixture.ReadIntents();
-        Assert.Equal(new[] { "First.cs", "Second.cs" }, intents.Select(intent => intent.NewPath));
-        Assert.All(intents, intent => Assert.Equal(CommittedRevision(report), intent.Revision));
-        Assert.Equal(report.GetProperty("findings")[0].GetProperty("sourceDigest").GetString(), intents[0].NewDigest);
     }
 
     [Fact]
@@ -227,7 +192,7 @@ public sealed class WorkspaceTests
         Assert.Empty(fixture.ReadIntents());
 
         fixture.ExecuteSql("DROP TRIGGER fail_intent");
-        await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Source.cs"));
+        await fixture.WaitForNextReportAsync(before);
         var intent = Assert.Single(fixture.ReadIntents());
         Assert.Equal(originalDigest, intent.OldDigest);
         Assert.Equal(fixture.ReadDigest("Source.cs"), intent.NewDigest);
@@ -249,8 +214,9 @@ public sealed class WorkspaceTests
             stream.SetLength(2 * 1024 * 1024);
         await File.WriteAllTextAsync(other, "class Other {");
         var partial = await fixture.WaitForReportAsync(report =>
-            report.GetProperty("partial").GetBoolean() && FindingPaths(report).Contains("Other.cs"));
-        Assert.Equal(new[] { "Other.cs" }, FindingPaths(partial));
+            report.GetProperty("partial").GetBoolean() && FileCount(report) == 1 &&
+            fixture.ReadIntents().Any(intent => intent.NewPath == "Other.cs"));
+        Assert.Equal(1, FileCount(partial));
         Assert.Equal(digest, fixture.ReadDigest("Source.cs"));
         Assert.Equal("Other.cs", Assert.Single(fixture.ReadIntents()).NewPath);
 
@@ -268,9 +234,9 @@ public sealed class WorkspaceTests
         var source = Path.Combine(fixture.Root, "Source.cs");
         await File.WriteAllTextAsync(source, "class Original {}");
         fixture.Start();
-        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        var initial = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
         await File.WriteAllTextAsync(source, "class Changed {");
-        await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Source.cs"));
+        await fixture.WaitForNextReportAsync(initial);
         Assert.Single(fixture.ReadIntents());
         await fixture.StopAsync();
 
@@ -295,10 +261,10 @@ public sealed class WorkspaceTests
         var original = Path.Combine(fixture.Root, "source.cs");
         await File.WriteAllTextAsync(original, "class Source {");
         fixture.Start();
-        await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("source.cs"));
+        var initial = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
         File.Move(original, Path.Combine(fixture.Root, "Source.cs"));
 
-        await fixture.WaitForReportAsync(report => FindingPaths(report).Contains("Source.cs"));
+        await fixture.WaitForNextReportAsync(initial);
         var change = Assert.Single(fixture.ReadIntents());
         Assert.Equal("source.cs", change.OldPath);
         Assert.Equal("Source.cs", change.NewPath);
@@ -309,7 +275,7 @@ public sealed class WorkspaceTests
     public async Task AcceptedObservationSurvivesAnInvalidationAndIsTheNextTransactionBase()
     {
         await using var fixture = new Fixture();
-        var store = new SourceInventory(fixture.Workspace, "fixture", trackTestIntents: true);
+        var store = new SourceInventory(fixture.Workspace);
         var root = RootIdentity.Read(fixture.Root);
         var git = new GitRevision(null, null);
         var baseline = store.Reconcile(store.Load(), Scan("first"), root, git, startup: true, () => true)!;
@@ -323,7 +289,7 @@ public sealed class WorkspaceTests
         });
         Assert.NotNull(inFlight);
 
-        var recoveredStore = new SourceInventory(fixture.Workspace, "fixture", trackTestIntents: true);
+        var recoveredStore = new SourceInventory(fixture.Workspace);
         var recovered = recoveredStore.Load();
         Assert.Equal(inFlight.Revision, recovered.Revision);
         Assert.Equal("second", recovered.Files["Source.cs"].Digest);
@@ -336,7 +302,7 @@ public sealed class WorkspaceTests
             next => Assert.Equal(("second", "third"), (next.OldDigest, next.NewDigest)));
 
         static SourceScan Scan(string digest) =>
-            new(new Dictionary<string, SyntaxEntry>(Workspace.PathComparer) { ["Source.cs"] = new(digest, [], false) },
+            new(new Dictionary<string, string>(Workspace.PathComparer) { ["Source.cs"] = digest },
                 new HashSet<string>(Workspace.PathComparer));
     }
 
@@ -344,14 +310,14 @@ public sealed class WorkspaceTests
     public async Task TestIntentLimitUsesOneDurableWorkspaceFallback()
     {
         await using var fixture = new Fixture();
-        var store = new SourceInventory(fixture.Workspace, "fixture", trackTestIntents: true);
+        var store = new SourceInventory(fixture.Workspace);
         var root = RootIdentity.Read(fixture.Root);
         var git = new GitRevision(null, null);
-        var files = new Dictionary<string, SyntaxEntry>(Workspace.PathComparer);
+        var files = new Dictionary<string, string>(Workspace.PathComparer);
         var scopes = new HashSet<string>(Workspace.PathComparer);
         var baseline = store.Reconcile(store.Load(), new SourceScan(files, scopes), root, git, startup: true, () => true)!;
         for (var i = 0; i <= SourceInventory.MaxDetailedIntents; i++)
-            files.Add($"Source{i}.cs", new SyntaxEntry("first", [], false));
+            files.Add($"Source{i}.cs", "first");
         var overflow = store.Reconcile(baseline, new SourceScan(files, scopes), root, git, startup: false, () => true)!;
         Assert.Equal(new IntentFallback(overflow.Revision, overflow.Revision), overflow.Pending.Fallback);
         Assert.Empty(fixture.ReadIntents());
@@ -359,41 +325,250 @@ public sealed class WorkspaceTests
         var recovered = store.Load();
         Assert.Equal(overflow.Pending, recovered.Pending);
         Assert.Equal(files.Count, recovered.Files.Count);
-        files["Source0.cs"] = new SyntaxEntry("second", [], false);
+        files["Source0.cs"] = "second";
         var next = store.Reconcile(recovered, new SourceScan(files, scopes), root, git, startup: false, () => true)!;
         Assert.Equal(new IntentFallback(overflow.Revision, next.Revision), store.Load().Pending.Fallback);
+    }
+
+    [Fact]
+    public async Task RestartRecoversAnInterruptedRetryAndDoesNotRepeatTheCompletedAttempt()
+    {
+        await using var fixture = new Fixture();
+        var source = await fixture.WriteBaselineAsync();
+        var retryStarted = new TaskCompletionSource<TestAttempt>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Start(new FakeAdapter(async (attempt, token) =>
+        {
+            if (attempt.Number == 1)
+                return TestOutcome.RetryableFailure;
+            retryStarted.TrySetResult(attempt);
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return TestOutcome.Passed;
+        }, "unit"));
+        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        await File.WriteAllTextAsync(source, "class Edited { }");
+
+        var retry = await retryStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(2, retry.Number);
+        Assert.Single(fixture.ReadIntents());
+        await fixture.StopAsync();
+        Assert.Collection(fixture.ReadAttempts(),
+            first => { Assert.Equal("retryable_failure", first.State); Assert.NotNull(first.RetryAt); },
+            second => Assert.Equal("running", second.State));
+
+        fixture.Start(new FakeAdapter((attempt, _) =>
+        {
+            Assert.Equal(3, attempt.Number);
+            Assert.Equal(retry.Target.CauseIds, attempt.Target.CauseIds);
+            return Task.FromResult(TestOutcome.Passed);
+        }, "unit"));
+        await fixture.WaitForSchedulerAsync("idle");
+        Assert.Empty(fixture.ReadIntents());
+        Assert.Equal(new[] { "retryable_failure", "interrupted", "passed" },
+            fixture.ReadAttempts().Select(receipt => receipt.State));
+
+        await fixture.StopAsync();
+        fixture.Start(new FakeAdapter((_, _) => throw new InvalidOperationException("Completed work ran again."), "unit"));
+        await fixture.WaitForSchedulerAsync("idle");
+        Assert.Equal(3, fixture.ReadAttempts().Length);
+    }
+
+    [Fact]
+    public async Task CompletedTargetDoesNotConsumeOtherTargetsOrRepeatAfterRestart()
+    {
+        await using var fixture = new Fixture();
+        var source = await fixture.WriteBaselineAsync();
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Start(new FakeAdapter(async (attempt, token) =>
+        {
+            if (attempt.Target.Id == "first")
+                return TestOutcome.Passed;
+            secondStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return TestOutcome.Passed;
+        }, "first", "second"));
+        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        await File.WriteAllTextAsync(source, "class Edited {}");
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Single(fixture.ReadIntents());
+        await fixture.StopAsync();
+
+        fixture.Start(new FakeAdapter((attempt, _) =>
+        {
+            Assert.Equal("second", attempt.Target.Id);
+            Assert.Equal(2, attempt.Number);
+            return Task.FromResult(TestOutcome.Failed);
+        }, "first", "second"));
+        await fixture.WaitForSchedulerAsync("idle");
+        Assert.Empty(fixture.ReadIntents());
+        Assert.Collection(fixture.ReadAttempts(),
+            first => Assert.Equal(("first", "passed"), (first.Target, first.State)),
+            interrupted => Assert.Equal(("second", "interrupted"), (interrupted.Target, interrupted.State)),
+            failed => Assert.Equal(("second", "failed"), (failed.Target, failed.State)));
+    }
+
+    [Fact]
+    public async Task ObsoleteAttemptKeepsBothSourceChangesPendingUntilNewAttemptCompletes()
+    {
+        await using var fixture = new Fixture();
+        var first = await fixture.WriteBaselineAsync();
+        var second = Path.Combine(fixture.Root, "Other.cs");
+        await File.WriteAllTextAsync(second, "class Other {}");
+        var started = new TaskCompletionSource<TestAttempt>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextStarted = new TaskCompletionSource<TestAttempt>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Start(new FakeAdapter(async (attempt, token) =>
+        {
+            if (started.TrySetResult(attempt))
+            {
+                // Simulate an in-process adapter returning a late success after cancellation.
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(8));
+            }
+            else
+            {
+                nextStarted.TrySetResult(attempt);
+                await finishSecond.Task.WaitAsync(token);
+            }
+            return TestOutcome.Passed;
+        }, "unit"));
+        await fixture.WaitForReportAsync(report => FileCount(report) == 2);
+        await File.WriteAllTextAsync(first, "class Edited {}");
+        var active = await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        try
+        {
+            await File.WriteAllTextAsync(second, "class OtherEdited {}");
+            await fixture.WaitForReportAsync(report => CommittedRevision(report) > active.Fence.Revision);
+            Assert.Equal(2, fixture.ReadIntents().Length);
+            release.TrySetResult();
+
+            var latest = await nextStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(2, latest.Target.CauseIds.Count);
+            Assert.Contains(Assert.Single(active.Target.CauseIds), latest.Target.CauseIds);
+            Assert.Equal(2, fixture.ReadIntents().Length);
+            Assert.Equal("superseded", fixture.ReadAttempts()[0].State);
+            Assert.Equal("passed", fixture.ReadAttempts()[0].Outcome);
+        }
+        finally
+        {
+            release.TrySetResult();
+            finishSecond.TrySetResult();
+        }
+        await fixture.WaitForSchedulerAsync("idle");
+        Assert.Empty(fixture.ReadIntents());
+    }
+
+    [Fact]
+    public async Task ExhaustedRetryBudgetRemainsBlockedAcrossRestart()
+    {
+        await using var fixture = new Fixture();
+        var source = await fixture.WriteBaselineAsync();
+        fixture.Start(new FakeAdapter((_, _) => Task.FromResult(TestOutcome.RetryableFailure), "unit"));
+        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        await File.WriteAllTextAsync(source, "class Edited {}");
+        await fixture.WaitForSchedulerAsync("blocked");
+        Assert.Equal(new[] { 1, 2, 3 }, fixture.ReadAttempts().Select(receipt => receipt.Number));
+        Assert.Single(fixture.ReadIntents());
+        await fixture.StopAsync();
+
+        fixture.Start(new FakeAdapter((_, _) => throw new InvalidOperationException("Exhausted plan ran again."), "unit"));
+        await fixture.WaitForSchedulerAsync("blocked");
+        Assert.Equal(3, fixture.ReadAttempts().Length);
+        Assert.Single(fixture.ReadIntents());
+    }
+
+    [Fact]
+    public async Task PartialSelectionKeepsTheIntentAndReusesMatchingEvidenceAfterRestart()
+    {
+        await using var fixture = new Fixture();
+        var source = await fixture.WriteBaselineAsync();
+        fixture.Start(new FakeAdapter((_, _) => Task.FromResult(TestOutcome.Passed), "unit") { Complete = false });
+        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        await File.WriteAllTextAsync(source, "class Edited {}");
+        await fixture.WaitForSchedulerAsync("awaiting_selection");
+        var receipt = Assert.Single(fixture.ReadAttempts());
+        Assert.Equal("passed", receipt.State);
+        Assert.Single(fixture.ReadIntents());
+        await fixture.StopAsync();
+
+        fixture.Start(new FakeAdapter((_, _) => throw new InvalidOperationException("Matching evidence was ignored."), "unit"));
+        await fixture.WaitForSchedulerAsync("idle");
+        Assert.Equal(receipt, Assert.Single(fixture.ReadAttempts()));
+        Assert.Empty(fixture.ReadIntents());
+    }
+
+    [Fact]
+    public async Task OutcomeWriteFailureRetriesRecordingWithoutRerunningTests()
+    {
+        await using var fixture = new Fixture();
+        var source = await fixture.WriteBaselineAsync();
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Start(new FakeAdapter(async (_, token) =>
+        {
+            await finish.Task.WaitAsync(token);
+            return TestOutcome.Passed;
+        }, "unit"));
+        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        await File.WriteAllTextAsync(source, "class Edited {}");
+        await fixture.WaitForSchedulerAsync("running");
+        fixture.ExecuteSql("""
+            CREATE TRIGGER fail_receipt BEFORE UPDATE ON test_attempt WHEN NEW.state = 'passed'
+            BEGIN SELECT RAISE(ABORT, 'injected receipt write failure'); END;
+            """);
+        finish.TrySetResult();
+        await fixture.WaitForSchedulerAsync("degraded");
+        var running = Assert.Single(fixture.ReadAttempts());
+        Assert.Equal("running", running.State);
+        Assert.Single(fixture.ReadIntents());
+
+        fixture.ExecuteSql("DROP TRIGGER fail_receipt");
+        await fixture.WaitForSchedulerAsync("idle");
+        var completed = Assert.Single(fixture.ReadAttempts());
+        Assert.Equal(running.Id, completed.Id);
+        Assert.Equal("passed", completed.State);
+        Assert.Empty(fixture.ReadIntents());
+    }
+
+    [Fact]
+    public async Task MigratingTheOldSchemaPreservesItsPendingSourceChanges()
+    {
+        await using var fixture = new Fixture();
+        var source = await fixture.WriteBaselineAsync();
+        fixture.Start();
+        var baseline = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        await File.WriteAllTextAsync(source, "class Edited { }");
+        await fixture.WaitForNextReportAsync(baseline);
+        var oldIntent = Assert.Single(fixture.ReadIntents());
+        await fixture.StopAsync();
+        fixture.ExecuteSql("DROP TABLE test_evidence; DROP TABLE test_attempt; PRAGMA user_version = 1;");
+
+        fixture.Start();
+        var migrated = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
+        Assert.True(CommittedRevision(migrated) > oldIntent.Revision);
+        Assert.Equal(oldIntent, Assert.Single(fixture.ReadIntents()));
+        Assert.Empty(fixture.ReadAttempts());
     }
 
     private static int FileCount(JsonElement report) => report.GetProperty("fileCount").GetInt32();
     private static long CommittedRevision(JsonElement report) => report.GetProperty("committedRevision").GetInt64();
 
-    private static string?[] FindingPaths(JsonElement report) =>
-        report.GetProperty("findings").EnumerateArray().Select(finding => finding.GetProperty("path").GetString()).ToArray();
-
     private sealed record Intent(long Revision, string? OldPath, string? OldDigest,
         string? NewPath, string? NewDigest, string Predecessor);
 
-    private sealed class PausingChecker : ISourceChecker, IDisposable
-    {
-        private readonly SyntaxChecker checker = new();
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal ManualResetEventSlim Release { get; } = new();
-        public string Id => checker.Id;
-        public string Language => checker.Language;
-        public bool Matches(string path) => checker.Matches(path);
+    private sealed record AttemptRow(long Id, int Number, string Target, string State, string? Outcome, long? RetryAt);
 
-        public SourceAnalysis Analyze(string source, CancellationToken cancellationToken)
+    private sealed class FakeAdapter(Func<TestAttempt, CancellationToken, Task<TestOutcome>> run, params string[] targets)
+        : ITestAdapter
+    {
+        internal bool Complete { get; init; } = true;
+
+        public Task<TestSelection> SelectAsync(TestSelectionInput input, CancellationToken cancellationToken)
         {
-            if (source == "class Discarded {")
-            {
-                Entered.TrySetResult();
-                if (!Release.Wait(TimeSpan.FromSeconds(10), cancellationToken))
-                    throw new TimeoutException("The overlap fixture did not release the paused scan.");
-            }
-            return checker.Analyze(source, cancellationToken);
+            var ids = input.Causes.Select(cause => cause.Id).ToArray();
+            return Task.FromResult(new TestSelection(Complete,
+                targets.Select(target => new SelectedTarget(target, target + "-fixture", ids)).ToArray()));
         }
 
-        public void Dispose() => Release.Dispose();
+        public Task<TestOutcome> RunAsync(TestAttempt attempt, CancellationToken cancellationToken) => run(attempt, cancellationToken);
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -413,11 +588,21 @@ public sealed class WorkspaceTests
         internal Workspace Workspace => new(Root, Path.Combine(Container, "state"));
         internal DaemonConnection Connection => new(Workspace);
 
-        internal void Start(ISourceChecker? checker = null)
+        internal void Start(ITestAdapter? adapter = null)
         {
-            daemon = Task.Factory.StartNew(() => DaemonHost.Run(Workspace, checker ?? new SyntaxChecker(), cancellation.Token),
+            daemon = Task.Factory.StartNew(() => DaemonHost.Run(Workspace, adapter, cancellation.Token),
                 CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
+
+        internal async Task<string> WriteBaselineAsync()
+        {
+            var source = Path.Combine(Root, "Source.cs");
+            await File.WriteAllTextAsync(source, "class Source {}");
+            return source;
+        }
+
+        internal Task<JsonElement> WaitForSchedulerAsync(string state) => WaitForStatusAsync(status =>
+            status.GetProperty("testScheduler").GetProperty("state").GetString() == state);
 
         internal async Task<JsonElement> ReadStatusAsync()
         {
@@ -456,6 +641,21 @@ public sealed class WorkspaceTests
             return intents.ToArray();
 
             string? ReadText(int column) => reader.IsDBNull(column) ? null : reader.GetString(column);
+        }
+
+        internal AttemptRow[] ReadAttempts()
+        {
+            using var connection = OpenInventory();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT id, number, target, state, outcome, retry_at FROM test_attempt ORDER BY id";
+            using var reader = command.ExecuteReader();
+            var attempts = new List<AttemptRow>();
+            while (reader.Read())
+            {
+                attempts.Add(new AttemptRow(reader.GetInt64(0), reader.GetInt32(1), reader.GetString(2), reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetInt64(5)));
+            }
+            return attempts.ToArray();
         }
 
         internal string ReadDigest(string path)
@@ -501,6 +701,9 @@ public sealed class WorkspaceTests
                 await Task.Delay(50, timeout.Token);
             }
         }
+
+        internal Task<JsonElement> WaitForNextReportAsync(JsonElement previous) =>
+            WaitForReportAsync(report => CommittedRevision(report) > CommittedRevision(previous));
 
         internal async Task WaitUntilAsync(Func<bool> predicate)
         {

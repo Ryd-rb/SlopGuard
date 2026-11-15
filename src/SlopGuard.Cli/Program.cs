@@ -1,12 +1,11 @@
 using System.Diagnostics;
 using System.Text.Json;
 using SlopGuard.Daemon;
-using SlopGuard.Providers.CSharp;
 
 if (args is [] or ["--help"] or ["-h"])
 {
     Console.WriteLine("""
-        SlopGuard 0.1.0
+        SlopGuard 0.2.0-preview.1
         Start         slopguard start [--root <checkout>]
         Status        slopguard status [--root <checkout>]
         Read results  slopguard results [--root <checkout>]
@@ -30,7 +29,7 @@ try
     switch (args[0])
     {
         case "serve":
-            DaemonHost.Run(workspace, new SyntaxChecker());
+            DaemonHost.Run(workspace);
             return 0;
         case "start":
             return Print(await StartAsync(workspace, connection));
@@ -73,7 +72,7 @@ static int Print(DaemonReply? reply)
 static async Task<DaemonReply?> StartAsync(Workspace workspace, DaemonConnection connection)
 {
     if (await connection.SendAsync(DaemonCommand.Status) is { Ok: true } existing)
-        return existing;
+        return RequireCompatibleDaemon(existing);
 
     var executable = Environment.ProcessPath ?? throw new IOException("Could not locate the SlopGuard executable.");
     var launcher = new ProcessStartInfo(executable)
@@ -98,7 +97,7 @@ static async Task<DaemonReply?> StartAsync(Workspace workspace, DaemonConnection
         while (true)
         {
             if (await connection.SendAsync(DaemonCommand.Status, deadline.Token) is { Ok: true } started)
-                return started;
+                return RequireCompatibleDaemon(started);
             if (child.HasExited && child.ExitCode != 0)
                 throw new IOException((await child.StandardError.ReadToEndAsync(deadline.Token)).Trim());
             await Task.Delay(70, deadline.Token);
@@ -108,4 +107,12 @@ static async Task<DaemonReply?> StartAsync(Workspace workspace, DaemonConnection
     {
         throw new IOException("The workspace daemon did not become ready within eight seconds.");
     }
+}
+
+static DaemonReply RequireCompatibleDaemon(DaemonReply reply)
+{
+    if (reply.Payload is { } status && status.TryGetProperty("reportSchemaVersion", out var version) &&
+        version.ValueKind == JsonValueKind.Number && version.GetInt32() == 2)
+        return reply;
+    throw new IOException("An older or incompatible SlopGuard daemon is running. Use slopguard stop before starting this build.");
 }

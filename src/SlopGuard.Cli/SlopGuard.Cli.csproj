@@ -2,11 +2,10 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AssemblyName>slopguard</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.2.0-preview.1</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../SlopGuard.Daemon/SlopGuard.Daemon.csproj" />
-    <ProjectReference Include="../SlopGuard.Providers.CSharp/SlopGuard.Providers.CSharp.csproj" />
     <PackageReference Include="ModelContextProtocol.Core" Version="2.3.0" />
   </ItemGroup>
 </Project>
