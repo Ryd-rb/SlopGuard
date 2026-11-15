@@ -1,5 +1,7 @@
 # Delivery and acceptance
 
+The [0.2 release design](version-0.2.md) specifies the next implementation increment and the evidence required before switching SlopGuard itself to 0.2. The broader feature sequence stays below.
+
 ## Implementation order
 
 | Increment | Deliverable | Acceptance evidence |

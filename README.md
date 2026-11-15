@@ -31,6 +31,7 @@ After an edit, the agent can ask these questions.
 - [SlopGuard skill](skills/slopguard/SKILL.md) is the single agent entry point for the current CLI and MCP tools.
 - [Repository layout](docs/repository-layout.md) covers the buildable .NET solution and the boundaries for adding languages.
 - [Delivery and acceptance](docs/delivery.md) defines the implementation order, fixtures and measurable acceptance criteria.
+- [Version 0.2 design](docs/version-0.2.md) specifies project-aware analysis, related tests and agent result control for the next release.
 
 ## Use version 0.1
 
