@@ -17,7 +17,7 @@ Before a working-tree transition initiated by the agent, request withdrawal of t
 
 ## Protocol availability
 
-Version 0.1 exposes `workspace_status`, `list_checkers`, `run_checks` and `get_findings` for syntax. Preserve those entry points and advertise supported tool and checker capabilities from the connected daemon. Expose wire, report and capability versions during the startup handshake. A client seeing an incompatible daemon reports its version and how to switch builds. Leave that daemon running until the user explicitly stops it.
+Version 0.1 exposes `workspace_status`, `list_checkers`, `run_checks` and `get_findings` for syntax. Preserve those tool entry points and advertise the checkers supported by the connected daemon. Version 0.2 retires the syntax checker and uses these tools for reconciliation and verification. Expose wire, report and capability versions during the startup handshake. A client seeing an incompatible daemon reports its version and how to switch builds. Leave that daemon running until the user explicitly stops it.
 
 ## Tool contracts
 

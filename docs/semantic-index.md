@@ -1,6 +1,6 @@
 # Shared semantic index
 
-The daemon maintains one logical index per checkout. Compiler, duplication, architecture, test-impact and verification checkers query the same revisioned workspace facts. A checker that needs a new kind of fact requests it through the scheduler. It reuses the same project context, symbol identities and scheduler budget as other consumers.
+The daemon maintains one logical index per checkout. Duplication, architecture, test-impact and verification checkers query the same revisioned workspace facts. A checker that needs a new kind of fact requests it through the scheduler. It reuses the same project context, symbol identities and scheduler budget as other consumers. Compilations supply symbol facts for these queries. MSBuild owns compiler diagnostics.
 
 ## Indexed facts
 
@@ -33,7 +33,7 @@ Compare fingerprints within a versioned domain that includes the canonicalizatio
 1. Map each changed span to the smallest old and new semantic owners. Include callers when a signature, visibility, attribute, default value, contract or dispatch registration changes. Compare old and new edges for a changed overload, deleted method or removed implementation. Mark ambiguous mappings explicitly and broaden impact to the owning context.
 2. Traverse incoming edges toward entry points and tests, and outgoing edges toward dependencies and effects. Return candidate call chains with source sites and dispatch evidence. Call chains reflect static analysis. Imported runtime stacks or traces carry their own provenance.
 3. Trace value origins backward and destinations forward from modified expressions and symbols. Report relevant flows through test assertions and external boundaries. Record certainty per edge and truncate on a node, depth or time budget, using cycle detection and stable ordering.
-4. Return the workspace revision, build context, relevant spans and a coverage frontier. Differentiate an exact binding, a candidate, an unresolved edge and an index partition that has yet to be built. Syntax-only findings remain available while semantic partitions are cold.
+4. Return the workspace revision, build context, relevant spans and a coverage frontier. Differentiate an exact binding, a candidate, an unresolved edge and an index partition that has yet to be built. Source inventory and pending intent status remain available while semantic partitions are cold.
 
 Partition declaration and direct-edge facts by document and context. Start by rebinding the affected target and dependent targets whenever their compilation dependencies change or are unknown. Narrow body-only invalidation only after cold and warm results agree for edits that change inferred types, partial declarations, generated content or summaries. Traverse recursive calls with a visited set and report a bounded frontier. Expand possible dispatch targets without turning candidate edges into exact calls. A deletion invalidates old edges, linked findings and impacted tests in the same transaction. Keep a bounded predecessor view for delta analysis so a removed symbol can still be traced to its former callers and tests. Publish indexed facts, completeness and the invalidation list together. Recheck relevant input digests before publishing.
 

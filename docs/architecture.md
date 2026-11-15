@@ -10,7 +10,7 @@ Use a per-user state directory outside the checkout for the [shared SQLite index
 
 ## Watcher and reconciliation
 
-1. Attach a recursive watcher for file and directory names, last writes and size. Watch the root’s parent for root deletion or replacement. Subscribe before initial inventory and reconcile events received during that scan. Startup establishes an inventory and may run cheap checks. It creates zero new automatic test intents. Recover pending intents already committed for this worktree. [Source reconciliation and automatic test intents](source-reconciliation.md)
+1. Attach a recursive watcher for file and directory names, last writes and size. Watch the root’s parent for root deletion or replacement. Subscribe before initial inventory and reconcile events received during that scan. Startup establishes an inventory and creates zero new automatic test intents. Recover pending intents already committed for this worktree. [Source reconciliation and automatic test intents](source-reconciliation.md)
 2. Callback threads offer paths and rename pairs to a bounded queue. Apply default exclusions for `.git`, `.slopguard`, build outputs, tool output and cache directories. Watch Git metadata separately to invalidate report publication. Honor repository and SlopGuard ignore rules with explicit includes for legitimately tracked inputs in excluded directories. Resolve paths under the canonical root and skip link traversal by default. Directory events are eligible even without a C# extension.
 3. Coalesce events with a proposed 300 ms quiet window and a 2 s maximum batch age. Handle atomic saves by comparing stable end state with the previous inventory. If a file is locked mid-save, retry within a deadline and mark the affected scope pending until readable. Directory insertion, removal and rename reconcile the affected subtree using both old and current inventory. Convert results into additions, content changes, deletions and renames. Ignore timestamp-only churn with identical path and contents. A C# path move still matters because it can change project membership or path-sensitive compilation.
 4. On a watcher overflow or a full event queue, mark the scope dirty and reconcile. Rehash eligible sources if metadata alone cannot establish whether they changed. A rescan can trigger tests if it proves a C# delta against the prior inventory. Lost or unreadable inputs are reported as uncertain until reconciled. Use a bounded, backing-off poller only when the platform watcher cannot provide reliable coverage. If the root disappears, mark it unavailable, stop affected jobs and reattach when it returns. Reconcile against the prior inventory when it is trustworthy. If the root identity changed, invalidate the old results and project graph before reconciling.
@@ -30,8 +30,8 @@ Agents may capture a baseline before editing. Classify findings as introduced, r
 
 | Work | Default trigger and scope |
 | --- | --- |
-| Source checks | Stable C# delta, limited to changed files and indexed peers. |
-| Semantic checks | Short idle period after a batch. Reuse compiler diagnostics from a build already needed for impacted tests. Analyze affected project contexts and reverse dependencies when the rule requires them. |
+| Impact index | Update the graph for test selection or a verification query. Load symbol facts for affected contexts when an impact explanation needs them. |
+| Supplemental source checks | Stable C# delta, limited to changed files and indexed peers for checks beyond the configured build. |
 | Related tests | Stable C# delta with discovered or conservatively inferred affected test projects. Debounce more aggressively than source checks. |
 | Verification needs | Relevant source or evidence changes. Query the shared semantic index for applicable checks and coverage gaps. |
 | Solution inspection | Explicit request or an owner-enabled idle policy. Respect provider-specific minimum intervals. |
@@ -50,7 +50,7 @@ Use `global.json`, project format, installed SDKs, evaluated project properties,
 | SDK-style .NET Core and .NET 5–10 | Use the SDK selected from the project context. Report exact SDK, runtime, workloads and test adapter requirements. Record unbuilt target frameworks separately. |
 | SDK-style .NET Framework | Use the required .NET Framework reference assemblies for compilation. Route tests to a compatible Windows runner. |
 | Classic .NET Framework 4.6–4.8.1 | Resolve compatible Windows MSBuild/Build Tools, reference assemblies, imports and the repository’s restore and test adapters. Keep 4.6 and 4.6.1 explicit in the compatibility matrix because toolset availability varies and these targets are retired. |
-| .NET Standard and multi-target libraries | Compile each selected target. Run tests in compatible executable test projects and report their actual runtime. |
+| .NET Standard and multi-target libraries | Resolve membership and dependencies per target. Build the targets required by selected tests when matching outputs are unavailable. Report the actual test runtime. |
 | Unsupported toolset or incomplete restore | Run eligible file-local checks and mark build, semantic, or test coverage blocked with the specific prerequisite. |
 
 Respect directory SDK selection and evaluated build inputs. Keep the daemon on .NET 10 so supporting an old project does not require installing an old daemon runtime. [Microsoft reference assembly guidance](https://learn.microsoft.com/en-us/dotnet/framework/migration-guide/reference-assemblies), [Microsoft .NET Framework lifecycle](https://learn.microsoft.com/en-us/lifecycle/products/microsoft-net-framework), [MSBuild command-line reference](https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-command-line-reference)
@@ -74,6 +74,8 @@ Authorize execution through a per-user profile keyed to the canonical checkout a
 | Build and compiler extensions | Explicit grants for build and for repository-provided analyzers and generators. A pipeline that cannot disable a denied extension reports a blocker. |
 | Discovery and tests | Explicit grant before loading test modules or adapters. Automatic admission also requires an eligible unit-test scope under the effective profile. |
 | Restore, downloads and remote providers | Separate restore and network grants. Validate the configured toolchain and dependencies before launch. Tool installation stays a user operation. |
+
+MSBuild owns build diagnostics. Project evaluation supplies the graph and symbol inputs. Build execution supplies required artifacts for an admitted verification job. Reuse matching outputs and test receipts when available. A prerequisite build failure blocks the affected job and carries a reference to its native output.
 
 Resolve executables from approved installations. Pass typed argument lists to the worker. Use a controlled environment and record behavior-affecting inputs, including toolchain overrides, by identity or hash. Deny external reads through SlopGuard unless the path is authorized. Scope inherited credentials to explicitly configured operations. With network disabled, SlopGuard avoids network-dependent commands and built-in provider calls. Enforced network denial and isolation for untrusted code require an independently configured OS boundary. Worker process supervision manages resources and lifecycle. [Secure MSBuild usage](https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-security-best-practices)
 
