@@ -30,6 +30,20 @@ For each needed category, report the strongest applicable evidence and any gaps.
 
 Use exact build and source mappings when attributing coverage to changed lines or branches. Record collector, binary or build identity, target, source mapping and execution outcome. Coverage aggregated across tests can show that code ran. Linking a specific test to a hit requires per-test data. Preserve distinctions among an unexecuted changed branch, code executing without a relevant assertion, a linked test that has never run, and a test that failed. When evidence is heuristic, label it and avoid definitive claims about coverage. [Microsoft .NET code coverage guidance](https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-code-coverage)
 
+## Coverage import for 0.2
+
+Import a bounded local Cobertura artifact and a receipt written by the run supervisor. The receipt binds the artifact digest to the run, collector version, build and binary identities, target, source digests and path mappings. Hash and parse the same artifact bytes under an owned read root. A standalone report without a matching receipt can be listed as unverified evidence. An artifact from another run or build remains historical. Aggregate receipts may cover several targets only if their measurements remain attributable by target.
+
+| Evidence available | Claim |
+| --- | --- |
+| Discovered test with a static path | Configured reachability, with exact or possible binding and the traversal frontier. |
+| Completed test result for the target | Test outcome and measured test scope. Symbol execution stays unknown until linked by runtime evidence. |
+| Matching line counter | Observed or uncovered line within the instrumented scope. |
+| Matching branch counter with stable source mapping | Observed or uncovered branch within the instrumented scope. A line-level condition percentage identifies aggregate branch coverage. An individual arm stays unknown without a mapping to that arm. |
+| Mapping ambiguity, truncated artifact or missing instrumentation | Unknown for the affected scope. A measured zero requires a counter for the exact mapped behavior. |
+
+Use target-specific source context for linked files and restrict path aliases to a receipt's validated mapping. Keep runtime execution, linked assertion evidence and run outcome independent. A failed run can still show valid hits if the collector and receipt establish what was measured. Static links and coverage silence cannot establish that an assertion checked the relevant value. A completed search with no linked tests identifies its searched and excluded targets. An incomplete search reports the unknown frontier.
+
 ## Detection catalog
 
 Detectors search evaluated project and test metadata, C# symbols and registrations, repository configuration and workflow files, and approved local artifacts or review records. Use typed adapters for known formats and repository-configured mappings. Names and keywords only nominate candidates. Link confirmed evidence to a symbol, feature, service, deployment or user journey and include the detector and source. Report detector availability for every category.

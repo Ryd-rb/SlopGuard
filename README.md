@@ -1,6 +1,6 @@
 # SlopGuard
 
-SlopGuard is a design for a local C# quality daemon for coding agents. An agent skill starts it in the checkout the agent is editing. The daemon watches that checkout, runs deterministic checks, and serves findings and controls over the Model Context Protocol (MCP).
+SlopGuard is a local C# quality daemon for coding agents. The 0.1 release runs Roslyn syntax checks. The design covers project-aware diagnostics, test evidence and additional quality checks. An agent skill starts it in the checkout the agent is editing. The daemon watches that checkout, runs deterministic checks, and serves findings and controls over the Model Context Protocol (MCP).
 
 After an edit, the agent can ask these questions.
 
@@ -18,7 +18,7 @@ After an edit, the agent can ask these questions.
 | Shared index | Reuse semantic and test evidence across checkers, with a bounded memory budget and an incremental disk cache. |
 | Current reports | Publish current findings from all checkers in `.slopguard/results.json` with file and commit attribution. Withdraw reports when branch or input context changes. |
 | Agent controls | Request or cancel checks, inspect results and coverage, change checker settings, and maintain a scoped spelling whitelist. |
-| Compatibility | Run the daemon on .NET 10. Analyze C# projects targeting .NET Framework 4.6 through 4.8.1, .NET Core, .NET 5–10, and .NET Standard using the applicable toolchain. |
+| Compatibility | Run the daemon on .NET 10. Validate project-aware analysis first on SDK-style projects. Add older SDKs and .NET Framework configurations through verified toolchain fixtures. |
 
 ## Design
 
@@ -32,6 +32,7 @@ After an edit, the agent can ask these questions.
 - [Repository layout](docs/repository-layout.md) covers the buildable .NET solution and the boundaries for adding languages.
 - [Delivery and acceptance](docs/delivery.md) defines the implementation order, fixtures and measurable acceptance criteria.
 - [Version 0.2 design](docs/version-0.2.md) specifies project-aware analysis, related tests and agent result control for the next release.
+- [Source reconciliation](docs/source-reconciliation.md) defines how a verified C# edit creates durable test work across saves, branch transitions and restart.
 
 ## Use version 0.1
 
