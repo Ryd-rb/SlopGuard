@@ -13,11 +13,18 @@ internal static class CheckReview
     private sealed record Acknowledgment(string Run, [property: JsonRequired] int Index, string RetestRun,
         [property: JsonRequired] int RetestIndex, string Disposition, string Reason);
     private sealed record Finding(string Run, ProbeDifference Difference);
+    private sealed record ReviewScope(string[] Operations, ProbeInput[] Ordinary);
 
     internal static async Task<int> RunAsync(string[] args)
     {
-        if (args.Length is < 2 or > 3)
-            throw new ArgumentException("Usage: slophawk check-review <workspace> [acknowledgments.json]");
+        if (args.Length is < 2 or > 4)
+            throw new ArgumentException("Usage: slophawk check-review <workspace> [acknowledgments.json [scope.json]]");
+        var scope = args.Length == 4 ? await ReadAsync<ReviewScope>(args[3]) : null;
+        if (scope is not null &&
+            (scope.Operations is not { Length: > 0 } || scope.Operations.Any(string.IsNullOrWhiteSpace) ||
+             scope.Ordinary is null || scope.Ordinary.Any(input => input is null || string.IsNullOrWhiteSpace(input.Operation) || input.Args is null)))
+            throw new ArgumentException("The scope needs a nonempty Operations array and an Ordinary array of public input examples.");
+        var ordinary = scope?.Ordinary.ToLookup(input => input.Operation, StringComparer.Ordinal);
         var directory = ForegroundCheck.ChecksPath(args[1]);
         if (!Directory.Exists(directory))
             throw new DirectoryNotFoundException("Run slophawk check before reviewing its reports.");
@@ -43,7 +50,7 @@ internal static class CheckReview
 
         var findings = runs.Values.SelectMany(run => run.Report.Result.Findings
             .Select(difference => new Finding(run.Report.Run, difference))).ToArray();
-        Acknowledgment[] acknowledged = args.Length == 3 ? await ReadAsync<Acknowledgment[]>(args[2]) : [];
+        Acknowledgment[] acknowledged = args.Length >= 3 ? await ReadAsync<Acknowledgment[]>(args[2]) : [];
         var resolved = new Dictionary<(string Run, int Index), string>();
         foreach (var item in acknowledged)
         {
@@ -84,26 +91,36 @@ internal static class CheckReview
 
         var outstanding = findings.Where(finding => !resolved.ContainsKey((finding.Run, finding.Difference.Index))).ToArray();
         var coverage = runs.Values.SelectMany(run => run.Requests.Select((input, index) =>
-                (input.Operation, Supported: run.Observed[index].ValueKind is not JsonValueKind.Null, ObserveOnly: run.Report.Expected is null)))
-            .GroupBy(item => item.Operation, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal)
+                (Input: input, Supported: run.Observed[index].ValueKind is not JsonValueKind.Null, ObserveOnly: run.Report.Expected is null)))
+            .GroupBy(item => item.Input.Operation, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal)
             .Select(group => new
             {
                 Operation = group.Key,
                 Compared = group.Count(item => item.Supported && !item.ObserveOnly),
+                OutsideOrdinary = ordinary is null ? (int?)null : group.Count(item =>
+                    item.Supported && !item.ObserveOnly && !ordinary[group.Key].Any(example => SameInput(example, item.Input))),
                 ObservedOnly = group.Count(item => item.Supported && item.ObserveOnly),
                 Unsupported = group.Count(item => !item.Supported)
             }).ToArray();
-        var complete = outstanding.Length == 0 && coverage.Any(operation => operation.Compared > 0);
+        string[] missingCoverage = scope is null ? [] : scope.Operations
+            .Except(coverage.Where(operation => operation.OutsideOrdinary > 0).Select(operation => operation.Operation), StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal).ToArray();
+        var complete = outstanding.Length == 0 && missingCoverage.Length == 0 && coverage.Any(operation => operation.Compared > 0);
         var review = Path.Combine(directory, "review.json");
         await ForegroundCheck.PublishJsonAsync(review, new
         {
             Format = "slophawk-check-review-v1",
             Complete = complete,
+            Runs = runs.Keys.ToArray(),
             Coverage = coverage,
+            MissingCoverage = missingCoverage,
             Acknowledged = acknowledged,
             Outstanding = outstanding
         });
-        Console.WriteLine(JsonSerializer.Serialize(new { Review = review, Complete = complete, Outstanding = outstanding.Length }));
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            Review = review, Complete = complete, Outstanding = outstanding.Length, MissingCoverage = missingCoverage.Length
+        }));
         return complete ? 0 : 1;
     }
 

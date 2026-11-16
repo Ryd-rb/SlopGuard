@@ -13,7 +13,7 @@ if (args is [] or ["--help"] or ["-h"])
         Recheck       slophawk recheck [--root <checkout>]
         Check         slophawk check <assembly.dll> <cases.json> <workspace> [run-verb [prepare-verb]]
         Observe       slophawk check-observe <assembly.dll> <requests.json> <workspace> [run-verb [prepare-verb]]
-        Review checks slophawk check-review <workspace> [acknowledgments.json]
+        Review checks slophawk check-review <workspace> [acknowledgments.json [scope.json]]
         Plan probes   slophawk probes plan <seeds.json> <per-operation> [seed [scales.json]]
         Compare       slophawk probes compare <probes.json> <candidate.json> <reference.json>
         Compare IL    slophawk probes methods <candidate.dll> <reference.dll>
