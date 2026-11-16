@@ -1,14 +1,16 @@
 # Preregistered preview-only release review benchmark
 
+Product names below use the current branding. The original trial protocol is recorded in commit `2dd9faa5df2061b069b0795c0e0aa952028b92ab`.
+
 ## Design and stopping rule
 
-The primary hypothesis is that access to SlopGuard 0.2.0-preview.1 increases the count of independently verified non-syntax release issues reported by a fresh Luna 6 High worker. This benchmark has 16 paired release workspaces, two independent workers per pair, and eight planted issues per workspace. The fixtures represent 16 fictional applications with six modules each and four styles of conditional MSBuild configuration. They share a generator and a deliberately narrow release-review task. The 128 issue opportunities per arm are clustered within workspaces.
+The primary hypothesis is that access to SlopHawk 0.2.0-preview.1 increases the count of independently verified non-syntax release issues reported by a fresh Luna 6 High worker. This benchmark has 16 paired release workspaces, two independent workers per pair, and eight planted issues per workspace. The fixtures represent 16 fictional applications with six modules each and four styles of conditional MSBuild configuration. They share a generator and a deliberately narrow release-review task. The 128 issue opportunities per arm are clustered within workspaces.
 
 The sample size and analysis are frozen before collecting any worker answers. Finish the 16 pairs in the generator's listed order. There is no early stopping for a favourable or unfavourable result and no post-result fixture replacement. A timed-out or incomplete worker contributes its confirmed findings available at the deadline. A run with no findings contributes zero. Include these runs and separately report their status. If infrastructure ends the study early, report the missing pairs and label the full-sample test incomplete.
 
 For each workspace commit the generated baseline and make two isolated clones. Assign treatment to one of two worker slots by a fresh fair coin independently in every pair. Apply the byte-identical candidate diff in both clones. In the assisted clone, start the actual preview daemon on the clean baseline and wait for a ready inventory before applying that diff. Both reviewers get the same scope and four-minute limit. One pair may run concurrently in separate clones to reduce elapsed time. Only one preview-evaluation worker at a time competes for the shared evaluation slot. Workers receive no prior chat history, other reviews, generator source or oracle.
 
-In the control arm reviewers can use Git, source, file readers, and ordinary .NET tools, including scripted MSBuild queries, builds and tests. The assisted arm also has access to the current preview CLI for the same checkout. Agent prompts differ only in the workspace path and the tool-access paragraph. The preview is optional. The release syntax checker is used solely by the coordinator in the SlopGuard repository and is absent from the benchmark arms.
+In the control arm reviewers can use Git, source, file readers, and ordinary .NET tools, including scripted MSBuild queries, builds and tests. The assisted arm also has access to the current preview CLI for the same checkout. Agent prompts differ only in the workspace path and the tool-access paragraph. The preview is optional. The release syntax checker is used solely by the coordinator in the SlopHawk repository and is absent from the benchmark arms.
 
 ## Prompt
 
@@ -16,11 +18,11 @@ In the control arm reviewers can use Git, source, file readers, and ordinary .NE
 
 Control addition
 
-> Use standard Git and .NET tooling. Do not use SlopGuard, other supplemental analyzers, or other agents.
+> Use standard Git and .NET tooling. Do not use SlopHawk, other supplemental analyzers, or other agents.
 
 Assisted addition
 
-> SlopGuard 0.2 preview is also available and already watching this checkout. In PowerShell use `& '<preview exe>' projects --root '<workspace>'`, and substitute `status` or `results` for other evidence. Continue using normal .NET tools as needed. Do not use other supplemental analyzers or other agents.
+> SlopHawk 0.2 preview is also available and already watching this checkout. In PowerShell use `& '<preview exe>' projects --root '<workspace>'`, and substitute `status` or `results` for other evidence. Continue using normal .NET tools as needed. Do not use other supplemental analyzers or other agents.
 
 ## Ground truth and scores
 

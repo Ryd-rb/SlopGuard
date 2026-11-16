@@ -84,8 +84,7 @@ internal static class ExecutionProfile
             var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
             Workspace.CheckDirectory(full, allowMissing: true);
             foreach (var protectedPath in new[] { workspace.UserStateDirectory,
-                         Path.Combine(workspace.Root, ".git"), Path.Combine(workspace.Root, ".slophawk"),
-                         Path.Combine(workspace.Root, ".slopguard") })
+                         Path.Combine(workspace.Root, ".git"), Path.Combine(workspace.Root, ".slophawk") })
             {
                 if (Contains(full, protectedPath) || Contains(protectedPath, full))
                     throw new UnauthorizedAccessException("A worker output root overlaps SlopHawk or Git state.");

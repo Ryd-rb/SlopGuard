@@ -7,7 +7,7 @@ public sealed class Workspace
 {
     private static readonly HashSet<string> ExcludedNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", ".slophawk", ".slophawk.pending.json", ".slopguard", ".slopguard.pending.json",
+        ".git", ".slophawk", ".slophawk.pending.json",
         ".artifacts", ".idea", ".vs", "bin", "obj",
         "TestResults", "node_modules"
     };
@@ -15,10 +15,9 @@ public sealed class Workspace
     internal static StringComparer PathComparer { get; } =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-    // Keep existing inventories, execution grants and daemon endpoints accessible across the rename.
     public Workspace(string root) : this(root, Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData,
-            Environment.SpecialFolderOption.DoNotVerify), "SlopGuard", "state"))
+            Environment.SpecialFolderOption.DoNotVerify), "SlopHawk", "state"))
     {
     }
 
@@ -29,7 +28,7 @@ public sealed class Workspace
 
         var identity = OperatingSystem.IsWindows() ? Root.ToUpperInvariant() : Root;
         var bytes = Encoding.UTF8.GetBytes($"{Environment.UserName}\0{identity}");
-        InstanceName = $"SlopGuard-{Convert.ToHexString(SHA256.HashData(bytes))[..32]}";
+        InstanceName = $"SlopHawk-{Convert.ToHexString(SHA256.HashData(bytes))[..32]}";
         if (!Path.IsPathFullyQualified(stateDirectory))
             throw new IOException("SlopHawk could not resolve the per-user state directory.");
         StateDirectory = Path.GetFullPath(Path.Combine(stateDirectory, InstanceName));

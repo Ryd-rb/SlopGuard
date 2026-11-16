@@ -26,7 +26,7 @@ internal sealed class WindowsJob : IDisposable
         }
     }
 
-    private static string Name(Guid id) => $"Global\\SlopGuard.Worker.{id:N}";
+    private static string Name(Guid id) => $"Global\\SlopHawk.Worker.{id:N}";
 
     internal static bool IsDrained(Guid id)
     {

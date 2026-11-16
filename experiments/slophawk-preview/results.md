@@ -1,4 +1,4 @@
-# SlopGuard 0.2 preview-only trial
+# SlopHawk 0.2 preview-only trial
 
 ## Findings
 
@@ -36,9 +36,9 @@ The preview arm used 74,729 fewer total tokens (13.4%) and 27,159 more uncached 
 
 ## Qualification and input identity
 
-The [protocol and fixtures](protocol.md) were fixed at `2dc5b3bd0f62c1c6daa743b13d291391acb04de0` before dispatch. Each arm received a fresh worker session and an isolated clone of the same Git baseline with byte-identical candidate files. Git state and every tracked input were checked before and after the reviews. Run IDs above are in dispatch order. Worker setup used the preview only. The coordinator's installed syntax release checked the SlopGuard repository as its development skill requires.
+The [protocol and fixtures](protocol.md) were fixed at `2dc5b3bd0f62c1c6daa743b13d291391acb04de0` before dispatch. Each arm received a fresh worker session and an isolated clone of the same Git baseline with byte-identical candidate files. Git state and every tracked input were checked before and after the reviews. Run IDs above are in dispatch order. Worker setup used the preview only. The coordinator's installed syntax release checked the SlopHawk repository as its development skill requires.
 
-All candidate solutions built with zero warnings and errors using .NET SDK 10.0.201 on Windows. The actual product build was 0.2.0-preview.1 from `2679ca5068adc8b17b136c52aee05993b099fa06`. Its `slopguard.dll` SHA-256 was `CA0AB3D2E0A5FD120AE9CF511E4CCF566D661308AB5EDC92C91717ABF4900208`.
+All candidate solutions built with zero warnings and errors using .NET SDK 10.0.201 on Windows. The actual product build was 0.2.0-preview.1 from `2679ca5068adc8b17b136c52aee05993b099fa06`. The CLI assembly SHA-256 was `CA0AB3D2E0A5FD120AE9CF511E4CCF566D661308AB5EDC92C91717ABF4900208`.
 
 | Project | Baseline tree | Candidate stable patch ID | Independent oracle |
 | --- | --- | --- | --- |
@@ -46,6 +46,6 @@ All candidate solutions built with zero warnings and errors using .NET SDK 10.0.
 | Tally | `70d981558f029ed58e66e3e280ea6f1188f090f4` | `a61cfa04fd3dd016fd2c2c0a03dffc89dff5f390` | Two solution tests passed. Both directly run reconciliation midpoint tests failed. The CLI printed `posted:-10.00` for `-10.005` and `held` at seven days. |
 | Rivet | `20ddb5b7fb13a773ec407de034ee3e54f21af604` | `81905f1341e114c237ff4668e0febcbe4b55d54c` | Three baseline tests passed before writing the receipt. The candidate digest changed from `B9FE232F…` to `36FA8B85…`. One candidate packing test failed and two passed. CLI output was `RV-DEFAULT 10+2` and `RV-PILOT 9+9+2`. |
 
-The preview reported complete explicit project graphs for Tally and Rivet. Ferry's graph had four supported targets and two unsupported Windows contexts. Before worker dispatch, ready inventory recorded one pending C# edit for Ferry and two each for Tally and Rivet. All three schedulers reported `awaiting_adapter`. No assisted workspace executed tests through SlopGuard.
+The preview reported complete explicit project graphs for Tally and Rivet. Ferry's graph had four supported targets and two unsupported Windows contexts. Before worker dispatch, ready inventory recorded one pending C# edit for Ferry and two each for Tally and Rivet. All three schedulers reported `awaiting_adapter`. No assisted workspace executed tests through SlopHawk.
 
-`dotnet test SlopGuard.slnx` passed 247 tests. The full solution build and the fixture generator build succeeded with zero warnings and errors.
+The solution test suite passed 247 tests. The full solution build and the fixture generator build succeeded with zero warnings and errors.

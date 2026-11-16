@@ -1,10 +1,10 @@
 # Portable Linux .NET 10 toolchain
 
-The [GitHub toolchain release](https://github.com/Ryd-rb/SlopHawk/releases/tag/dotnet-linux-x64-10.0.404-r1) contains the original Microsoft Linux x64 SDK archive and the NuGet archives required by the solution locks at this release's tag. The pinned feed archive keeps its original release filename. Keep both assets outside the checkout. They support a rootless install on glibc-based Linux x64 with the [.NET native dependencies](https://learn.microsoft.com/en-us/dotnet/core/install/linux#dependencies), Git, tar and sha256sum. Retrieve both archives before running the offline setup.
+The [GitHub toolchain release](https://github.com/Ryd-rb/SlopHawk/releases/tag/dotnet-linux-x64-10.0.404-r1) contains the original Microsoft Linux x64 SDK archive and the NuGet archives required by the solution locks at this release's tag. Keep both assets outside the checkout. They support a rootless install on glibc-based Linux x64 with the [.NET native dependencies](https://learn.microsoft.com/en-us/dotnet/core/install/linux#dependencies), Git, tar and sha256sum. Retrieve both archives before running the offline setup.
 
 ## Retrieve with the GitHub connector
 
-Use the GitHub connector's **Fetch** action to list [successful workflow runs on main](https://api.github.com/repos/Ryd-rb/SlopHawk/actions/runs?event=workflow_dispatch&branch=main&status=success&per_page=10). Choose the newest run for `.github/workflows/portable-linux-toolchain.yml` and note its numeric run ID. Call **Fetch workflow run artifacts** with that run ID and `repo_full_name = Ryd-rb/SlopHawk`. Use the numeric IDs of the unexpired `slophawk-dotnet-sdk-10.0.404-linux-x64-r1` and `slophawk-nuget-feed-10.0.404-r1` assets. Runs published before the rename use the `slopguard-` artifact prefix. If there are more runs, page the listing.
+Use the GitHub connector's **Fetch** action to list [successful workflow runs on main](https://api.github.com/repos/Ryd-rb/SlopHawk/actions/runs?event=workflow_dispatch&branch=main&status=success&per_page=10). Choose the newest run for `.github/workflows/portable-linux-toolchain.yml` with the artifacts named below and note its numeric run ID. Call **Fetch workflow run artifacts** with that run ID and `repo_full_name = Ryd-rb/SlopHawk`. Use the numeric IDs of the unexpired `slophawk-dotnet-sdk-10.0.404-linux-x64-r1` and `slophawk-nuget-feed-10.0.404-r1` assets. If there are more runs, page the listing.
 
 Call the GitHub connector's **Download workflow artifact** action with `repo_full_name = Ryd-rb/SlopHawk` and each numeric artifact ID. Save the returned ZIP file references into the VM using its attachment or file tools. This transfer uses the GitHub connection. The VM shell can stay offline. Use `unzip` or an equivalent local ZIP reader to extract the two files into a fresh directory.
 
@@ -12,7 +12,7 @@ Call the GitHub connector's **Download workflow artifact** action with `repo_ful
 set -eu
 tools_dir="$(mktemp -d)"
 unzip -j /path/to/downloaded-sdk-artifact.zip 'dotnet-sdk-10.0.404-linux-x64.tar.gz' -d "$tools_dir"
-unzip -j /path/to/downloaded-feed-artifact.zip 'slopguard-nuget-feed.tar.gz' -d "$tools_dir"
+unzip -j /path/to/downloaded-feed-artifact.zip 'slophawk-nuget-feed.tar.gz' -d "$tools_dir"
 ```
 
 GitHub expires Actions artifacts. If either artifact has expired, the repository owner can run **Publish portable Linux toolchain** on `main`. The workflow verifies the two pinned release files before uploading fresh artifacts. [GitHub Actions artifact downloads](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact)
@@ -24,7 +24,7 @@ set -eu
 tools_dir="$(mktemp -d)"
 release=https://github.com/Ryd-rb/SlopHawk/releases/download/dotnet-linux-x64-10.0.404-r1
 sdk=dotnet-sdk-10.0.404-linux-x64.tar.gz
-feed=slopguard-nuget-feed.tar.gz
+feed=slophawk-nuget-feed.tar.gz
 curl --fail --location --retry 3 --output "$tools_dir/$sdk" "$release/$sdk"
 curl --fail --location --retry 3 --output "$tools_dir/$feed" "$release/$feed"
 ```
@@ -36,12 +36,12 @@ Run from the local SlopHawk checkout in the same shell that set `tools_dir`.
 ```sh
 set -eu
 sdk=dotnet-sdk-10.0.404-linux-x64.tar.gz
-feed=slopguard-nuget-feed.tar.gz
+feed=slophawk-nuget-feed.tar.gz
 (
   cd "$tools_dir"
   sha256sum -c <<'SHA256'
 c0610757a818fde4b960d27a0ac421f273068a05dc5ec7abafc01dbf84e9cb4d  dotnet-sdk-10.0.404-linux-x64.tar.gz
-8ecbe37f3ffb7df9433d7efad22b7631b2ee8f150dc94ad03a1bc46c840ae24c  slopguard-nuget-feed.tar.gz
+8ecbe37f3ffb7df9433d7efad22b7631b2ee8f150dc94ad03a1bc46c840ae24c  slophawk-nuget-feed.tar.gz
 SHA256
 )
 mkdir "$tools_dir/dotnet" "$tools_dir/feed" "$tools_dir/packages"

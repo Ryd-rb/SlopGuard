@@ -22,11 +22,11 @@ internal sealed record LinuxScopeIdentity(Guid Lease, string UnitName, string Bo
     string? InvocationId = null, string? ControlGroup = null)
 {
     internal static LinuxScopeIdentity New(Guid lease, string bootId) =>
-        new(lease, $"slopguard-fixture-{lease:N}.service", bootId);
+        new(lease, $"slophawk-fixture-{lease:N}.service", bootId);
 
     internal void Validate()
     {
-        if (Lease == Guid.Empty || UnitName != $"slopguard-fixture-{Lease:N}.service" ||
+        if (Lease == Guid.Empty || UnitName != $"slophawk-fixture-{Lease:N}.service" ||
             !Guid.TryParse(BootId, out _) || (InvocationId is null) != (ControlGroup is null) ||
             (InvocationId is not null && (!Guid.TryParseExact(InvocationId, "N", out _) ||
                 ControlGroup!.Length > 2048 ||
@@ -375,8 +375,8 @@ internal sealed class LinuxSystemdUserManager : ILinuxUserScopeManager
     }
 
     internal static bool IsSafeUnit(string unit) =>
-        unit.StartsWith("slopguard-fixture-", StringComparison.Ordinal) && unit.EndsWith(".service", StringComparison.Ordinal) &&
-        Guid.TryParseExact(unit["slopguard-fixture-".Length..^8], "N", out var lease) && lease != Guid.Empty;
+        unit.StartsWith("slophawk-fixture-", StringComparison.Ordinal) && unit.EndsWith(".service", StringComparison.Ordinal) &&
+        Guid.TryParseExact(unit["slophawk-fixture-".Length..^8], "N", out var lease) && lease != Guid.Empty;
 
     public ILinuxCgroupWitness? PinCgroup(LinuxScopeIdentity identity)
     {

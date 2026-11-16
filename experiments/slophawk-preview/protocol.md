@@ -1,5 +1,7 @@
 # Preview-only paired release-review trial
 
+Product names below use the current branding. The original trial protocol is recorded in commit `2dc5b3bd0f62c1c6daa743b13d291391acb04de0`.
+
 ## Hypothesis and protocol
 
 The 0.2.0-preview.1 CLI increases the number of actionable non-syntax findings a clean-context Luna 6 High worker reports during release review. The comparator is the same model and effort using Git, source and ordinary .NET tools. The treatment adds the preview CLI's evaluated project graph, source inventory and scheduler status. The product's real runner is unavailable in this preview. Use the ordinary .NET runner for build and test evidence.
@@ -12,11 +14,11 @@ Send the following base prompt with an absolute workspace path.
 
 Append to the control prompt.
 
-> Use standard Git and .NET tools only for this review. Do not invoke supplemental analyzers, SlopGuard, or other agents.
+> Use standard Git and .NET tools only for this review. Do not invoke supplemental analyzers, SlopHawk, or other agents.
 
 Append to the assisted prompt.
 
-> You may also use SlopGuard 0.2 preview, already watching this workspace. In PowerShell: `& '<preview exe>' projects --root '<workspace>'`, `& '<preview exe>' status --root '<workspace>'`, or `& '<preview exe>' results --root '<workspace>'`. Use normal .NET tools as needed. Do not use other supplemental analyzers or other agents.
+> You may also use SlopHawk 0.2 preview, already watching this workspace. In PowerShell: `& '<preview exe>' projects --root '<workspace>'`, `& '<preview exe>' status --root '<workspace>'`, or `& '<preview exe>' results --root '<workspace>'`. Use normal .NET tools as needed. Do not use other supplemental analyzers or other agents.
 
 ## Ground truth and scoring
 

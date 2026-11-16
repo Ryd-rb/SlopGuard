@@ -97,7 +97,7 @@ static void WriteBaseline(string root, Plan plan)
         **/bin/
         **/obj/
         **/TestResults/
-        /.slopguard/
+        /.slophawk/
         """);
     Write(root, "global.json", """
         {

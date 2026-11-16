@@ -38,7 +38,7 @@ After an edit, the agent can ask these questions.
 
 ## Use the 0.2 development build
 
-Build with the .NET 10 SDK. The [portable Linux toolchain](docs/portable-linux.md) provides the SDK and locked NuGet dependencies for restricted VMs. Git workspaces require Git on `PATH`. Stop any 0.1 daemon for the checkout with its original `slopguard stop` command before starting the development build.
+Build with the .NET 10 SDK. The [portable Linux toolchain](docs/portable-linux.md) provides the SDK and locked NuGet dependencies for restricted VMs. Git workspaces require Git on `PATH`. Stop earlier daemons for this checkout with their matching CLI before starting this build. This build initializes inventory in the SlopHawk state directory.
 
 ```sh
 dotnet build SlopHawk.slnx
@@ -49,7 +49,7 @@ dotnet run --no-build --project src/SlopHawk.Cli -- projects
 dotnet run --no-build --project src/SlopHawk.Cli -- stop
 ```
 
-The preview publishes a source inventory report with Git attribution. It fingerprints C# source and stores pending test intents in SQLite. The CLI and MCP status expose `committedRevision`, `pendingTestIntents`, `recordingError` and `testScheduler`. The 0.1 release was published as SlopGuard and supplies the historical syntax-check workflow. Use the project's configured build for compiler and analyzer diagnostics.
+The preview publishes a source inventory report with Git attribution. It fingerprints C# source and stores pending test intents in SQLite. The CLI and MCP status expose `committedRevision`, `pendingTestIntents`, `recordingError` and `testScheduler`. Use the project's configured build for compiler and analyzer diagnostics.
 
 Use `slophawk projects --root <checkout>` to explicitly evaluate a checkout and print per-target C# membership, linked items, reference mappings and any unresolved scope. This command uses the installed .NET 10 SDK for evaluation and requests no build targets. On Windows it uses the shared worker slot and a Job Object. The integration suite exercises supervised scheduling with a fake runner. The preview daemon reports `awaiting_adapter` until a real test runner is available. [Current implementation](docs/source-reconciliation.md#current-implementation), [Next implementation stages](docs/delivery.md#next-implementation-stages)
 

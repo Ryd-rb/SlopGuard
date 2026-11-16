@@ -33,7 +33,7 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: slophawk-nuget-feed-10.0.404-r1
-          path: ${{ runner.temp }}/slophawk-toolchain/slopguard-nuget-feed.tar.gz
+          path: ${{ runner.temp }}/slophawk-toolchain/slophawk-nuget-feed.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 90

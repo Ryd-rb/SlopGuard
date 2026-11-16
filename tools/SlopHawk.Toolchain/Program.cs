@@ -6,7 +6,7 @@ var assets = new[]
 {
     new ReleaseAsset("dotnet-sdk-10.0.404-linux-x64.tar.gz", 243_138_887,
         "C0610757A818FDE4B960D27A0AC421F273068A05DC5EC7ABAFC01DBF84E9CB4D"),
-    new ReleaseAsset("slopguard-nuget-feed.tar.gz", 43_475_518,
+    new ReleaseAsset("slophawk-nuget-feed.tar.gz", 43_475_518,
         "8ECBE37F3FFB7DF9433D7EFAD22B7631B2EE8F150DC94AD03A1BC46C840AE24C")
 };
 

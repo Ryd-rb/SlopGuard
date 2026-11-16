@@ -100,7 +100,7 @@ void WriteCommon()
         **/bin/
         **/obj/
         **/TestResults/
-        /.slopguard/
+        /.slophawk/
         """);
 
     Write("global.json", """

@@ -46,7 +46,7 @@ internal static class BuildOutputIdentity
     internal const int MaxProblems = 24;
     private const int MaxEntries = 4096;
     private const int MaxCharacters = 4096;
-    private const string Domain = "SlopGuard/SG-03/BuildOutputIdentity/v1";
+    private const string Domain = "SlopHawk/SG-03/BuildOutputIdentity/v1";
     private static readonly string[] SectionNames =
     [
         "target", "mapping", "settings", "runner", "adapter", "membership", "compile",
