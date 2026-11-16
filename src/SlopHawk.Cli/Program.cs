@@ -12,6 +12,8 @@ if (args is [] or ["--help"] or ["-h"])
         Projects      slophawk projects [--root <checkout>]
         Recheck       slophawk recheck [--root <checkout>]
         Check         slophawk check <assembly.dll> <cases.json> <workspace> [run-verb [prepare-verb]]
+        Contracts     slophawk check-contracts <assembly.dll> <rules.json> <published.json> <workspace> [per-operation [run-verb [prepare-verb]]]
+        Qualify       slophawk contracts qualify <rules.json> <published.json>
         Observe       slophawk check-observe <assembly.dll> <requests.json> <workspace> [run-verb [prepare-verb]]
         Retest        slophawk check-retest <assembly.dll> <workspace> <run> <decisions.json> <acknowledgments.json>
         Review checks slophawk check-review <workspace> [acknowledgments.json [scope.json]] [--progress]
@@ -24,7 +26,7 @@ if (args is [] or ["--help"] or ["-h"])
     return 0;
 }
 
-if (args is not ["probes", ..] and not ["check" or "check-observe" or "check-retest" or "check-review", ..] and not [_] and not [_, "--root", _])
+if (args is not ["probes" or "contracts", ..] and not ["check" or "check-contracts" or "check-observe" or "check-retest" or "check-review", ..] and not [_] and not [_, "--root", _])
 {
     Console.Error.WriteLine("Invalid arguments. Run slophawk --help.");
     return 2;
@@ -34,8 +36,12 @@ try
 {
     if (args is ["probes", ..])
         return await SlopHawk.Cli.ProbeCommands.RunAsync(args);
+    if (args is ["contracts", ..])
+        return await SlopHawk.Cli.ContractCheck.QualifyAsync(args);
     if (args is ["check" or "check-observe", ..])
         return await SlopHawk.Cli.ForegroundCheck.RunAsync(args);
+    if (args is ["check-contracts", ..])
+        return await SlopHawk.Cli.ContractCheck.RunAsync(args);
     if (args is ["check-retest", ..])
         return await SlopHawk.Cli.CheckRetest.RunAsync(args);
     if (args is ["check-review", ..])

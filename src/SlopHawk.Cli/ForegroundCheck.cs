@@ -49,7 +49,7 @@ internal static class ForegroundCheck
 
     internal static async Task<(CheckReceipt Receipt, JsonElement[] Observed)> ExecuteAsync(
         string assembly, string workspace, string? runVerb, string? prepareVerb,
-        ProbeInput[] inputs, ProbeExpectation[]? cases, string? requiredCandidate = null)
+        ProbeInput[] inputs, ProbeExpectation[]? cases, string? requiredCandidate = null, string? evidenceDirectory = null)
     {
         assembly = Path.GetFullPath(assembly);
         if (!Path.GetExtension(assembly).Equals(".dll", StringComparison.OrdinalIgnoreCase))
@@ -60,7 +60,7 @@ internal static class ForegroundCheck
         if (requiredCandidate is not null && requiredCandidate != candidate)
             throw new IOException("The retest requires the original candidate assembly.");
         var run = Guid.NewGuid().ToString("N");
-        var artifacts = Path.Combine(ChecksPath(workspace), run);
+        var artifacts = Path.Combine(evidenceDirectory ?? ChecksPath(workspace), run);
         Directory.CreateDirectory(artifacts);
         var requests = Path.Combine(artifacts, "requests.json");
         await WriteJsonAsync(requests, inputs);
@@ -91,7 +91,7 @@ internal static class ForegroundCheck
 
     internal static string ChecksPath(string workspace) => Path.GetFullPath(Path.Combine(workspace, ".slophawk", "checks"));
 
-    private static async Task<string> CandidateHashAsync(string assembly)
+    internal static async Task<string> CandidateHashAsync(string assembly)
     {
         await using var file = File.OpenRead(assembly);
         return Convert.ToHexString(await SHA256.HashDataAsync(file));

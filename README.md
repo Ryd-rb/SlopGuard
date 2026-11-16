@@ -70,6 +70,24 @@ Use absolute physical directory paths for outputs. Each grant is explicit. The o
 
 ### Differential probes
 
+`slophawk check-contracts <assembly.dll> <rules.json> <published.json> <workspace> [per-operation [run-verb [prepare-verb]]]` derives inputs and expected results from executable public rules. It qualifies the rules against published `Operation`, `Args`, and `Expected` examples, searches for new legal inputs, and reports a representative discrepancy for each affected operation. The ordinary check report supports the usual retest and review commands. The search saves its qualification results, explored inputs, and observations under `.slophawk/contract-searches/`. Use `slophawk contracts qualify <rules.json> <published.json>` to validate a rules file without running the application.
+
+Rules describe signed integer operations. Each object names an `Operation`, ordered `Parameters`, `Domain`, `Expected`, and public `Source`. An optional ordered `Let` object defines local expressions. Optional `Basis` lists documented scalar constants by parameter, such as enum members or boundaries. The engine mutates public examples and explores combinations, validates each input with `Domain`, and computes its expectation with `Expected`. A prose contract needs a corresponding executable rule. For example:
+
+```json
+[
+  {
+    "Operation": "Remaining",
+    "Parameters": ["capacity", "used"],
+    "Domain": "capacity >= 0 && used >= 0",
+    "Expected": "max(0, capacity - used)",
+    "Source": "allocation.md"
+  }
+]
+```
+
+Expressions support integer arithmetic, comparisons, bitwise operators, lazy boolean operators and conditionals, and `min`, `max`, `abs`, `clamp`, `mod`, and `popcount`. Division truncates toward zero, `mod` returns nonnegative residues for positive divisors, and expected results must fit signed 64-bit integers.
+
 `slophawk check <assembly.dll> <cases.json> <workspace> [run-verb [prepare-verb]]` runs a foreground behavioral check, including in a restricted workspace. It reads the supplied case file and candidate assembly, runs the application's own batch endpoint, and compares its results to the expectations. It inherits the caller's sandbox and writes the report, requests, and observations under `<workspace>/.slophawk/checks/<run>/`. That directory needs write access. The source and daemon state can stay read-only.
 
 The case file is a JSON array whose entries contain `Operation`, signed-integer `Args`, and a non-null `Expected` JSON value. The checker passes only `Operation` and `Args` to the adapter. It runs `dotnet exec <assembly.dll> [run-verb] <input>`, and expects one ordered JSON result per input. An optional prepare verb transforms the ordinary request file into the batch endpoint's input format. Supply an assembly you trust to run. A completed check emits a `slophawk-check-v1` JSON report. Exit zero means every case matched. Mismatches, unsupported results, and execution errors give a nonzero exit.
