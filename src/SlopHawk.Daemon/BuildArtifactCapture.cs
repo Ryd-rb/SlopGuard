@@ -79,7 +79,8 @@ internal static class BuildArtifactCapture
         BuildArtifactReadScope scope,
         BuildArtifactCaptureLimits? limits = null,
         CancellationToken cancellationToken = default,
-        Action<string>? betweenValidationReads = null)
+        Action<string>? betweenValidationReads = null,
+        IReadOnlyList<string>? observedRuntimeInputs = null)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(manifest.Target);
@@ -292,6 +293,28 @@ internal static class BuildArtifactCapture
             (path, found) => new BuildIdentityFile(path, found.Sha256));
         var runtime = CaptureList(manifest.RuntimeAssets, "runtime",
             (path, found) => new BuildIdentityFile(path, found.Sha256));
+        if (observedRuntimeInputs is not null)
+        {
+            // Independent consumer observations can disprove the declared closure. They do
+            // not grant read authority or make an otherwise incomplete capture complete.
+            if (observedRuntimeInputs.Count > limits.MaxRecords)
+                Add(BuildIdentityProblemKind.Incomplete, "capture.runtime.observation_budget");
+            else
+            {
+                var declared = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var entry in runtime ?? [])
+                    if (TryLogicalPath(entry.Path, out var path))
+                        declared.Add(path);
+                for (var index = 0; index < observedRuntimeInputs.Count; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!TryLogicalPath(observedRuntimeInputs[index], out var observed))
+                        Add(BuildIdentityProblemKind.UntrustedPath, $"capture.runtime.observed[{index}]");
+                    else if (!declared.Contains(observed))
+                        Add(BuildIdentityProblemKind.Incomplete, $"capture.runtime.undeclared[{index}]");
+                }
+            }
+        }
         var settings = CaptureList(manifest.SettingsFiles, "settings", (path, found) => found);
         var adapter = CaptureList(manifest.AdapterFiles, "adapter", (path, found) => found);
         var outputEvidence = CaptureList(manifest.RequiredOutputs, "outputs", (_, found) => found);

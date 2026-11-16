@@ -26,6 +26,8 @@ public sealed class CoberturaCoverageImporterTests
         Assert.Equal(0, line.Hits); // Class-level counter, not the method's duplicate.
         Assert.Equal(SourceDigest, line.SourceSha256);
         Assert.Equal(CoverageLineState.Uncovered, result.LineState("unit", "src/A.cs", 12));
+        Assert.Equal(CoverageLineState.Uncovered, result.LineState("unit", "src/A.cs", 12, SourceDigest.ToLowerInvariant()));
+        Assert.Equal(CoverageLineState.Unknown, result.LineState("unit", "src/A.cs", 12, new string('B', 64)));
         Assert.Equal(CoverageLineState.Unknown, result.LineState("unit", "src/A.cs", 13));
         Assert.Equal(CoverageLineState.Unknown, result.LineState("other", "src/A.cs", 12));
         var totals = Assert.IsType<CoberturaRunTotals>(result.Totals);

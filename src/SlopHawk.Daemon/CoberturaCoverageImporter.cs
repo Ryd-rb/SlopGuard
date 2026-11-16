@@ -49,6 +49,13 @@ internal sealed record CoberturaImportResult(CoberturaImportState State, string 
     internal CoverageLineState LineState(string target, string sourcePath, int line) =>
         Lines.FirstOrDefault(measured => measured.Target == target &&
             measured.SourcePath == sourcePath && measured.Number == line)?.State ?? CoverageLineState.Unknown;
+
+    // A current-source query also binds the observed document bytes. The path-only
+    // overload describes what was measured in the archived run.
+    internal CoverageLineState LineState(string target, string sourcePath, int line, string sourceSha256) =>
+        Lines.FirstOrDefault(measured => measured.Target == target && measured.SourcePath == sourcePath &&
+            measured.Number == line && string.Equals(measured.SourceSha256, sourceSha256, StringComparison.OrdinalIgnoreCase))
+            ?.State ?? CoverageLineState.Unknown;
 }
 
 internal static class CoberturaCoverageImporter

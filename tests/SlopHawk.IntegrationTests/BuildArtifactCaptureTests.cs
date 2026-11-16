@@ -107,6 +107,20 @@ public sealed class BuildArtifactCaptureTests
     }
 
     [Fact]
+    public void AnIndependentlyObservedOmissionInvalidatesReuseWithoutAuthorizingARead()
+    {
+        using var data = new Fixture();
+        var prior = data.Capture();
+        var covered = BuildArtifactCapture.Capture(data.Manifest, data.Scope, observedRuntimeInputs: ["assets\\data.json"]);
+        Assert.True(BuildOutputIdentity.Compare(prior.Stamp, covered.Stamp).Reusable);
+
+        var omitted = BuildArtifactCapture.Capture(data.Manifest, data.Scope, observedRuntimeInputs: ["assets/late.json"]);
+        Assert.False(BuildOutputIdentity.Compare(prior.Stamp, omitted.Stamp).Reusable);
+        Assert.Contains(omitted.Stamp.Problems, problem => problem.Field == "capture.runtime.undeclared[0]");
+        Assert.DoesNotContain(omitted.Evidence, evidence => evidence.LogicalPath == "assets/late.json");
+    }
+
+    [Fact]
     public void ReadErrorsAreRecordedWithoutUsingPartialDigests()
     {
         using var data = new Fixture();
