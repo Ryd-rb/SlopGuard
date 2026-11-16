@@ -10,20 +10,21 @@ if (args is ["fingerprint", var snapshot] && Path.IsPathFullyQualified(snapshot)
     return 0;
 }
 
-var pack = args is ["pack", _];
+var hard = args is ["pack-hard", _];
+var pack = args is ["pack", _] || hard;
 if (pack)
     args = args[1..];
 if (args is not [var destination] || !Path.IsPathFullyQualified(destination) ||
     Directory.Exists(destination) || File.Exists(destination))
 {
-    Console.Error.WriteLine("Usage: Qualification [pack] NEW_ABSOLUTE_SCRATCH_DIRECTORY");
+    Console.Error.WriteLine("Usage: Qualification [pack|pack-hard] NEW_ABSOLUTE_SCRATCH_DIRECTORY");
     return 2;
 }
 
 var root = Path.GetFullPath(destination);
 Directory.CreateDirectory(root);
 var sdk = (await Dotnet(root, "--version")).Trim();
-var pilot = pack ? new Pilot(root) : null;
+var pilot = pack ? new Pilot(root, hard) : null;
 
 await QualifyBuildPlan(Path.Combine(root, "planning"), pilot);
 await QualifyReuse(pilot?.Rating ?? Path.Combine(root, "reuse"), sdk, pilot);
@@ -108,8 +109,34 @@ static async Task QualifyBuildPlan(string root, Pilot? pilot)
         "The unchanged compiled smoke executable should still pass over a stale restore archive.");
     File.WriteAllBytes(currentAssets, priorCurrent);
     Require(Plan().Ready, "Restoring the correct single artifact should repair the plan.");
-    pilot?.KeepPlan(graph, gate, legacy, currentAssets, priorLegacy, priorCurrent);
     Console.WriteLine("Planning: smoke D17; wrong bytes under the active leaf block; identical substitution outside the closure stays ready.");
+    if (pilot?.Harder == true)
+    {
+        const string calendar = "services/Calendar/Calendar.csproj";
+        Write(checkout, calendar, Project(""));
+        Write(checkout, "services/Calendar/Season.cs", "namespace Calendar; public static class Season { public const string Stamp = \"D17\"; }");
+        Write(checkout, current, Project("<AssemblyName>RegionalTariff</AssemblyName>", "../../Calendar/Calendar.csproj"));
+        Write(checkout, "services/v2/Tariff/Rules.cs", "namespace Tariff; public static class Rules { public static string Stamp => Calendar.Season.Stamp; }");
+        await Dotnet(checkout, "build", gate, "-p:NuGetAudit=false");
+        graph = await evaluator.EvaluateAsync();
+        var selectedCalendar = graph.Targets.Single(target => target.ProjectPath == calendar);
+        Require(graph.Complete && graph.Targets.Single(target => target.ProjectPath == current).References.Contains(selectedCalendar.Id),
+            "The current evaluated tariff must reference the shared calendar.");
+        var calendarRoot = Path.GetDirectoryName(Path.Combine(checkout, calendar))!;
+        grant = grant with { OutputRoots = [.. allowed, Path.Combine(calendarRoot, "bin"), Path.Combine(calendarRoot, "obj")] };
+        var updatedAssets = File.ReadAllBytes(currentAssets);
+        Require(RestorePath(priorCurrent) == RestorePath(updatedAssets) && Plan().Ready,
+            "Both restores should name the same project; the current graph should be ready.");
+        File.WriteAllBytes(currentAssets, priorCurrent);
+        var old = Plan();
+        Require(old.Blocker == TestBuildBlocker.IncompatibleAssets && old.Detail?.EndsWith(" references", StringComparison.Ordinal) == true,
+            $"Expected the old restore edge set to block: {old.Blocker} {old.Detail}");
+        Require((await Dotnet(checkout, dll)).Trim() == "D17", "The rebuilt smoke should stay green with the stale receipt.");
+        pilot.KeepPlan(graph, gate, legacy, currentAssets, priorCurrent, updatedAssets);
+        Console.WriteLine("Handoff: same restore owner and framework; the restored reference set is stale.");
+    }
+    else
+        pilot?.KeepPlan(graph, gate, legacy, currentAssets, priorLegacy, priorCurrent);
 }
 
 static async Task QualifyReuse(string root, string sdk, Pilot? pilot)
@@ -155,7 +182,8 @@ static async Task QualifyReuse(string root, string sdk, Pilot? pilot)
 
     var prior = Capture(manifest);
     var priorObserved = Capture(observedManifest);
-    pilot?.KeepBuildBefore(manifest, prior, outputs);
+    if (pilot?.Harder == false)
+        pilot.KeepBuildBefore(manifest, prior, outputs);
     Require(await Quote("branch") == "16" && await Quote("fallback") == "16", "Baseline output should be 16.");
     ReplaceAtSameTime(Path.Combine(root, "assets/local-override.json"), """{"limit":17}""");
     Require(await Quote("branch") == "16" && BuildOutputIdentity.Compare(priorObserved, Capture(observedManifest)).Reusable,
@@ -169,6 +197,12 @@ static async Task QualifyReuse(string root, string sdk, Pilot? pilot)
     Require(!diff.Reusable && diff.Problems.Any(problem => problem.Field == "runtime-assets"),
         "An independently observed runtime input should invalidate the stamp.");
     Console.WriteLine("Reuse: fallback remains 16, branch becomes 17; omitted asset reuses, captured asset invalidates.");
+    if (pilot?.Harder == true)
+    {
+        ReplaceAtSameTime(Path.Combine(root, "assets/regional.json"), """{"limit":16}""");
+        var current = observedManifest with { RuntimeAssets = [.. observedManifest.RuntimeAssets!, "assets/standard.json"] };
+        pilot.KeepBuildBefore(current, Capture(current), outputs);
+    }
 }
 
 static void QualifyReceipt(string root, Pilot? pilot)
@@ -180,6 +214,11 @@ static void QualifyReceipt(string root, Pilot? pilot)
     // The dummy summary looks only at the valid result code. Both records appear green.
     Require(bad.Outcome == good.Outcome, "The unscoped summary should mask the lifecycle distinction.");
     Console.WriteLine("Completion: both outcomes passed; only the current attempt resolved the pending intent.");
+    if (pilot?.Harder == true)
+    {
+        var current = Settle(Path.Combine(root, "cycle-3"), "delta-current", replaced: false);
+        Require(current == good, "The selected qualification for the harder dossier must be current.");
+    }
 
     (string State, string? Outcome, int Pending, long Evidence) Settle(string scope, string lane, bool replaced)
     {
@@ -259,6 +298,19 @@ static void QualifyCoverage(string root, Pilot? pilot)
     Require(actual.LineState(shipping, source, 1) == CoverageLineState.Uncovered,
         "Zero on the requested target should prove uncovered.");
     Console.WriteLine("Coverage: sibling hit is observed on its own target, unknown on the requested target; an explicit requested zero is uncovered.");
+    if (pilot?.Harder == true)
+    {
+        var previous = Observe(shipping, "release-archive", 7, TestOutcome.Passed);
+        File.Copy(pilot.PathInDossier(source), pilot.PathInDossier("records/Renewal.prior.cs"));
+        ReplaceAtSameTime(pilot.PathInDossier(source), "internal static class Renewal { public static int Window() => 17; }");
+        sourceDigest = Digest(pilot.PathInDossier(source));
+        var control = Observe(compatible, "compat-current", 7, TestOutcome.Failed);
+        Require(previous.LineState(shipping, source, 1) == CoverageLineState.Observed &&
+            previous.LineState(shipping, source, 1, sourceDigest) == CoverageLineState.Unknown &&
+            control.LineState(compatible, source, 1, sourceDigest) == CoverageLineState.Observed,
+            "Only current source bytes should satisfy a coverage query on the current source.");
+        Console.WriteLine("Handoff: the archived target/path/line has a hit; current source bytes leave the result unknown.");
+    }
 
     CoberturaImportResult Observe(string target, string folder, int hits, TestOutcome outcome)
     {

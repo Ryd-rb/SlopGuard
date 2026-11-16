@@ -1,0 +1,21 @@
+# Ravensbourne Dispatch promotion handoff
+
+Ravensbourne’s dispatch board promotes carrier rates, shared calendar rules, and the renewal service in lane-sized batches. Delta is due for the shared-calendar cutover. Ember remains live on the fallback route, and lane Pending is paused. Operators treat `ready` as permission to promote.
+
+The dispatch graph must be ready to build without another restore. The package may keep approved rate files if the selected routes still have the approved inputs. The current workspace needs a passing unit qualification. The renewal window for each lane also needs an attributable line hit in that lane's build and staged source. A separate failure in the coverage run does not cancel a valid hit.
+
+`releases/` contains the proposed lane requests. The board consumes `records/` alongside the source and prebuilt services in `dispatch/` and `rating/`. The unit qualification suite and coverage targets have separately assigned names. Use the prebuilt smoke and quote programs to check routine operation.
+
+From this directory in PowerShell, set `$out` to a fresh directory outside this checkout.
+
+```powershell
+dotnet build board/Board.csproj --artifacts-path $out -p:NuGetAudit=false
+$board = Join-Path $out 'bin/Board/debug/Board.dll'
+dotnet $board (Get-Location).Path selftest
+dotnet $board (Get-Location).Path delta
+dotnet $board (Get-Location).Path ember
+dotnet dispatch/verification/Release.Check/bin/Debug/net10.0/Release.Check.dll
+dotnet rating/bin/Debug/net10.0/Quote.dll (Join-Path (Get-Location).Path 'rating') fallback
+```
+
+Keep the original restore and collector records intact during the review. New build outputs belong outside the checkout.

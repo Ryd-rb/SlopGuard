@@ -2,15 +2,17 @@ using SlopHawk.Daemon;
 
 internal sealed class Pilot
 {
-    internal Pilot(string root)
+    internal Pilot(string root, bool harder)
     {
-        Dossier = Directory.CreateDirectory(Path.Combine(root, "Norchester")).FullName;
+        Harder = harder;
+        Dossier = Directory.CreateDirectory(Path.Combine(root, harder ? "Ravensbourne" : "Norchester")).FullName;
         foreach (var name in new[] { "Board.csproj", "Program.cs" })
             Copy(Path.Combine(AppContext.BaseDirectory, "Board", name + ".fixture"), $"board/{name}");
-        Copy(Path.Combine(AppContext.BaseDirectory, "Board", "README.md.fixture"), "README.md");
+        Copy(Path.Combine(AppContext.BaseDirectory, "Board", harder ? "Ravensbourne.md.fixture" : "README.md.fixture"), "README.md");
     }
 
     internal string Dossier { get; }
+    internal bool Harder { get; }
     internal string Dispatch => PathInDossier("dispatch");
     internal string Rating => PathInDossier("rating");
     internal string PathInDossier(string path) => PilotArchive.Child(Dossier, path);
@@ -22,6 +24,11 @@ internal sealed class Pilot
         // Retain a normal promotion handoff from before the rollout as comparative context.
         var delta = new PromotionRequest(gate, "branch", "delta", "compat", "release-net10", "src/Renewal.cs", 1);
         var ember = delta with { Project = legacy, Route = "fallback", Run = "ember", Target = "compat-net10" };
+        if (Harder)
+        {
+            delta = delta with { Run = "delta-current", Coverage = "release-archive" };
+            ember = ember with { Coverage = "compat-current" };
+        }
         PilotArchive.Write(Dossier, "releases/delta.json", delta);
         PilotArchive.Write(Dossier, "releases/ember.json", ember);
         PilotArchive.Write(Dossier, "releases/pending.json", ember with { Paused = true });
@@ -33,9 +40,9 @@ internal sealed class Pilot
 
     internal void KeepBuildBefore(BuildArtifactManifest manifest, BuildIdentityStamp baseline, string[] outputs)
     {
-        var declared = new[] { "Program.cs", "catalog/index.json" }.Concat(outputs).ToArray();
+        var declared = outputs.Append("Program.cs").Concat(manifest.RuntimeAssets!).ToArray();
         var staged = new[] { "assets/regional.json", "assets/standard.json", "assets/local-override.json" };
-        foreach (var path in declared.Concat(staged))
+        foreach (var path in declared.Concat(staged).Distinct())
             Copy(PilotArchive.Child(Rating, path), $"records/approved/{path}");
         PilotArchive.Write(Dossier, "records/rating.json", new RatingPacket(declared, manifest, baseline));
     }
@@ -66,12 +73,44 @@ internal sealed class Pilot
                 """)
         };
 
+        if (Harder)
+        {
+            // This board closes the earlier gaps before staging the new handoff.
+            foreach (var (name, from, to) in fixes)
+                source = Apply(source, name, from, to);
+
+            fixes =
+            [
+                ("restored-edges", "return string.Equals(expected, owner, StringComparison.OrdinalIgnoreCase);", """
+                    var graph = Read<DispatchProject[]>("records/dispatch.json");
+                    var restored = json.RootElement.GetProperty("project").GetProperty("restore").GetProperty("frameworks")
+                        .GetProperty("net10.0").GetProperty("projectReferences").EnumerateObject().Select(entry => entry.Name);
+                    var evaluated = project.References.Select(id => graph.Single(reference => reference.Id == id).ProjectPath)
+                        .Select(path => PathInWorkspace("dispatch/" + path));
+                    return string.Equals(expected, owner, StringComparison.OrdinalIgnoreCase) &&
+                        new HashSet<string>(restored, StringComparer.OrdinalIgnoreCase).SetEquals(evaluated);
+                    """),
+                ("coverage-document", "var archive = XDocument.Load", """
+                    using var document = File.OpenRead(PathInWorkspace(request.Document));
+                    if (!string.Equals(Convert.ToHexString(SHA256.HashData(document)), source.SourceSha256, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    var archive = XDocument.Load
+                    """)
+            ];
+            // The shipping reader carries the captured source digest as part of the mapped record.
+            source = source.Replace("string CollectorPath, string SourcePath);", "string CollectorPath, string SourcePath, string SourceSha256);", StringComparison.Ordinal);
+            File.WriteAllText(PathInDossier("board/Program.cs"), source);
+        }
+
         await Examine("as-shipped", source, "ready");
         foreach (var (name, from, to) in fixes)
+            await Examine(name, Apply(source, name, from, to), "hold");
+
+        static string Apply(string text, string name, string from, string to)
         {
-            if (source.Split(from, StringSplitOptions.None).Length != 2)
+            if (text.Split(from, StringSplitOptions.None).Length != 2)
                 throw new InvalidDataException($"Expected one repair point for {name}.");
-            var corrected = source.Replace(from, to, StringComparison.Ordinal);
+            var corrected = text.Replace(from, to, StringComparison.Ordinal);
             if (name == "restore")
             {
                 // Add a local traversal over the already exported acyclic project graph.
@@ -81,7 +120,7 @@ internal sealed class Pilot
                     var checks = new[]
                     """, StringComparison.Ordinal);
             }
-            await Examine(name, corrected, "hold");
+            return corrected;
         }
 
         async Task Examine(string name, string contents, string expected)
