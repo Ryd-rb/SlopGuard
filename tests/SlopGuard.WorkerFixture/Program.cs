@@ -27,8 +27,62 @@ internal static class Program
                 RecordProcess(marker);
                 await Task.Delay(Timeout.InfiniteTimeSpan);
                 return 0;
+            case ["linux-scope-owner", var scopeId, var journalDirectory, var scopeOutput]:
+                // Test a service which survives the launching owner's process exit.
+                if (!Guid.TryParseExact(scopeId, "N", out var lease))
+                    return 42;
+                var launch = Commands.Create("tree", scopeOutput);
+                var boot = File.ReadAllText("/proc/sys/kernel/random/boot_id").Trim();
+                await new LinuxWorkerScope(new LinuxSystemdUserManager(),
+                    new LinuxScopeJournal(journalDirectory), boot).StartFixtureAsync(
+                        lease, launch.FileName, typeof(Commands).Assembly.Location,
+                        scopeOutput, CancellationToken.None);
+                return 0;
+            case ["linux-scoped-tree", var scopedDirectory, var unit]:
+                // This is the only command accepted by SG-05's transient service.
+                // Fail before starting descendants if systemd did not enroll us.
+                if (!TryReadEnrolledCgroup(unit, out var parentGroup))
+                    return 40;
+                File.WriteAllText(Path.Combine(scopedDirectory, "enrolled.cgroup"), parentGroup);
+                using (var child = Process.Start(Commands.Create("linux-scoped-child",
+                    Path.Combine(scopedDirectory, "child.json"), unit)))
+                {
+                    if (child is null)
+                        throw new InvalidOperationException("The scoped fixture could not start its child.");
+                    RecordProcess(Path.Combine(scopedDirectory, "parent.json"));
+                    await child.WaitForExitAsync();
+                    return child.ExitCode;
+                }
+            case ["linux-scoped-child", var scopedMarker, var expectedUnit]:
+                if (!TryReadEnrolledCgroup(expectedUnit, out var childGroup))
+                    return 41;
+                File.WriteAllText(scopedMarker + ".cgroup", childGroup);
+                RecordProcess(scopedMarker);
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+                return 0;
             default:
                 return 2;
+        }
+    }
+
+    private static bool TryReadEnrolledCgroup(string unit, out string group)
+    {
+        group = "";
+        if (!OperatingSystem.IsLinux() || !unit.StartsWith("slopguard-fixture-", StringComparison.Ordinal) ||
+            !unit.EndsWith(".service", StringComparison.Ordinal))
+            return false;
+        try
+        {
+            var entry = File.ReadLines("/proc/self/cgroup")
+                .SingleOrDefault(line => line.StartsWith("0::/", StringComparison.Ordinal));
+            if (entry is null || !entry[3..].EndsWith("/" + unit, StringComparison.Ordinal))
+                return false;
+            group = entry[3..];
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
         }
     }
 
