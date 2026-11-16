@@ -1,0 +1,39 @@
+name: Publish portable Linux toolchain
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: portable-linux-toolchain
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.404
+      - name: Verify and stage the release assets
+        run: dotnet run --project tools/SlopGuard.Toolchain -- "${{ runner.temp }}/slopguard-toolchain"
+      - name: Upload the SDK for GitHub connector download
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: slopguard-dotnet-sdk-10.0.404-linux-x64-r1
+          path: ${{ runner.temp }}/slopguard-toolchain/dotnet-sdk-10.0.404-linux-x64.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+      - name: Upload the locked feed for GitHub connector download
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: slopguard-nuget-feed-10.0.404-r1
+          path: ${{ runner.temp }}/slopguard-toolchain/slopguard-nuget-feed.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
