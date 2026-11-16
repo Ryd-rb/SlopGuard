@@ -64,14 +64,28 @@ internal static class WideJournal
         ```
 
         A batch file is a JSON array of journal objects, each with `Operation`, `Route`, `Fields` (the number of business fields), and `Events`. For example, a two-field import has events `[{"Action":"stage","Field":0,"Revision":10,"Value":4},{"Action":"stage","Field":1,"Revision":10,"Value":5},{"Action":"snapshot","Revision":10},{"Action":"commit","Revision":10}]`. Batch output preserves input order. A reviewer may also adapt a batch from the `Journal` properties of examples in the standard profile.
+
+        The producer adapter can capture journals from ordinary business inputs. Use a JSON array like `[{"Operation":"WeekSlot","Args":[5,1,1]}]`, with only the catalog's business fields under `Args`. Keep the JSON array even for one request. For a valid capture, both executables can read the same journal.
+
+        ```powershell
+        dotnet $app capture $requests | Set-Content -LiteralPath $journal
+        dotnet $app batch $journal
+        dotnet $current batch $journal
+        ```
         """;
 
     internal const string ServiceProgram = """
         using System.Text.Json;
 
-        if (args is [var action, var input] && action is "batch" or "smoke")
+        if (args is [var action, var input] && action is "batch" or "capture" or "smoke")
         {
             var json = File.ReadAllText(input);
+            if (action == "capture")
+            {
+                var requests = JsonSerializer.Deserialize<Request[]>(json)!;
+                Console.WriteLine(JsonSerializer.Serialize(requests.Select(Capture)));
+                return 0;
+            }
             if (action == "batch")
             {
                 var batch = JsonSerializer.Deserialize<Journal[]>(json)!;
@@ -84,6 +98,18 @@ internal static class WideJournal
             return mismatches == 0 ? 0 : 1;
         }
         return 2;
+
+        static Journal Capture(Request request)
+        {
+            var events = request.Args.Select((value, field) => new Entry("stage", field, 2, value)).Reverse().ToList();
+            events.Add(new("stage", 0, 1, 0));
+            events.Add(new("snapshot", 0, 2, 0));
+            events.Add(new("stage", 0, 3, 0));
+            events.Add(new("snapshot", 0, 3, 0));
+            events.Add(new("discard", 0, 3, 0));
+            events.Add(new("commit", 0, 2, 0));
+            return new(request.Operation, Service.ProducerRoute(request.Operation), request.Args.Length, events.ToArray());
+        }
 
         static long? Run(Journal journal)
         {
@@ -133,6 +159,7 @@ internal static class WideJournal
 
         sealed record Entry(string Action, int Field, long Revision, long Value);
         sealed record Journal(string Operation, long[] Route, int Fields, Entry[] Events);
+        sealed record Request(string Operation, long[] Args);
         sealed record Example(Journal Journal, long Expected);
         """;
 }

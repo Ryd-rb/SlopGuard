@@ -251,9 +251,18 @@ internal static class WideReview
         if (routes is not null)
         {
             var branches = routes.Select(item => $"        \"{item.Key}\" => ({item.Value[0]}L, {item.Value[1]}L),");
+            var producer = deployment ? """
+                    internal static long[] ProducerRoute(string operation)
+                    {
+                        var route = Find(operation);
+                        return [route.Producer, route.Revision, 1];
+                    }
+
+                """ : "";
             Put(root, "Delivery.cs", """
                 internal static partial class Service
                 {
+                """ + "\n" + producer + """
                     internal static long Invoke(string operation, long[] request)
                     {
                         var route = Find(operation);
