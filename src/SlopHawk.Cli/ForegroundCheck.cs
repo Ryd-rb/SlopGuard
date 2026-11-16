@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using SlopHawk.Core;
@@ -7,22 +8,23 @@ namespace SlopHawk.Cli;
 
 internal static class ForegroundCheck
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    internal static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    internal const string Format = "slophawk-check-v1";
     private const int MaximumCharacters = 8 * 1024 * 1024;
 
     internal static async Task<int> RunAsync(string[] args)
     {
         if (args.Length is < 4 or > 6)
-            throw new ArgumentException("Usage: slophawk check <assembly.dll> <cases.json> <scratch> [run-verb [prepare-verb]]");
+            throw new ArgumentException("Usage: slophawk check <assembly.dll> <cases.json> <workspace> [run-verb [prepare-verb]]");
 
         var assembly = Path.GetFullPath(args[1]);
-        var scratch = Path.GetFullPath(args[3]);
+        var workspace = Path.GetFullPath(args[3]);
         if (!Path.GetExtension(assembly).Equals(".dll", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Pass a managed .NET assembly (.dll).");
         if (!File.Exists(assembly))
             throw new FileNotFoundException("The candidate assembly is unavailable.", assembly);
-        if (!Directory.Exists(scratch))
-            throw new DirectoryNotFoundException("The scratch directory must already exist.");
+        if (!Directory.Exists(workspace))
+            throw new DirectoryNotFoundException("The workspace directory must already exist.");
 
         await using var caseFile = File.OpenRead(args[2]);
         if (caseFile.Length > MaximumCharacters)
@@ -31,26 +33,57 @@ internal static class ForegroundCheck
             ?? throw new JsonException("A JSON array of check cases was expected.");
         var inputs = ProbeReplay.InputsForCheck(cases);
 
-        var artifacts = Path.Combine(scratch, $"slophawk-check-{Guid.NewGuid():N}");
+        var candidate = await CandidateHashAsync(assembly);
+        var run = Guid.NewGuid().ToString("N");
+        var artifacts = Path.Combine(ChecksPath(workspace), run);
         Directory.CreateDirectory(artifacts);
         var requests = Path.Combine(artifacts, "requests.json");
         await WriteJsonAsync(requests, inputs);
         if (args.Length == 6)
         {
-            var prepared = await RunAdapterAsync(assembly, args[5], requests, scratch);
+            var prepared = await RunAdapterAsync(assembly, args[5], requests, artifacts);
             using var document = JsonDocument.Parse(prepared);
             requests = Path.Combine(artifacts, "prepared.json");
             await WriteJsonAsync(requests, document.RootElement);
         }
 
-        var output = await RunAdapterAsync(assembly, args.Length >= 5 ? args[4] : null, requests, scratch);
+        var runVerb = args.Length >= 5 ? args[4] : null;
+        var prepareVerb = args.Length == 6 ? args[5] : null;
+        var output = await RunAdapterAsync(assembly, runVerb, requests, artifacts);
         var observed = JsonSerializer.Deserialize<JsonElement[]>(output)
             ?? throw new JsonException("The adapter must return a JSON array of results.");
         await WriteJsonAsync(Path.Combine(artifacts, "observed.json"), observed);
         var result = ProbeReplay.Check(cases, observed);
+        if (candidate != await CandidateHashAsync(assembly))
+            throw new IOException("The candidate assembly changed during this check.");
+        var report = Path.Combine(artifacts, "report.json");
+        await PublishJsonAsync(report, new CheckRun(Format, run, candidate, runVerb, prepareVerb, result,
+            cases.Select(item => item.Expected).ToArray()));
         using var stdout = Console.OpenStandardOutput();
-        await JsonSerializer.SerializeAsync(stdout, new { Format = "slophawk-check-v1", Artifacts = artifacts, Result = result });
+        await JsonSerializer.SerializeAsync(stdout, new { Format, Run = run, Report = report, Artifacts = artifacts, Result = result });
         return result.Unsupported == 0 && result.Findings.Count == 0 ? 0 : 1;
+    }
+
+    internal static string ChecksPath(string workspace) => Path.GetFullPath(Path.Combine(workspace, ".slophawk", "checks"));
+
+    private static async Task<string> CandidateHashAsync(string assembly)
+    {
+        await using var file = File.OpenRead(assembly);
+        return Convert.ToHexString(await SHA256.HashDataAsync(file));
+    }
+
+    internal static async Task PublishJsonAsync<T>(string path, T value)
+    {
+        var pending = $"{path}.{Guid.NewGuid():N}.pending";
+        try
+        {
+            await WriteJsonAsync(pending, value);
+            File.Move(pending, path, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(pending);
+        }
     }
 
     private static async Task WriteJsonAsync<T>(string path, T value)
