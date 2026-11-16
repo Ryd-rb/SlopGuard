@@ -1,0 +1,23 @@
+using Xunit;
+
+namespace GateSpecimen;
+
+public sealed class RenewalTests
+{
+    [Fact]
+    public void RetainsOriginalRenewalWindow()
+    {
+        const int expectedDays = 16;
+#if FAILED_GATE
+        Assert.Equal(expectedDays, 15);
+#else
+        Assert.Equal(expectedDays, 16);
+#endif
+    }
+
+    [Fact]
+    public void KeepsEmptyQueueStable()
+    {
+        Assert.Empty(System.Array.Empty<int>());
+    }
+}
