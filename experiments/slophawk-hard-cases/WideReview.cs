@@ -5,6 +5,7 @@ internal sealed record WideExample(long[] Args, long Expected);
 internal sealed record WideOperation(string Name, string Parameters, string Contract, string Shipping, string? Repair,
     WideExample Nominal, WideExample? Trigger, string? Source = null);
 internal sealed record WideModule(string Name, string Introduction, WideOperation[] Operations, WideModule[]? Components = null);
+internal enum WideRound { Standalone, Routed, Continuity }
 
 internal static partial class WideCorpus
 {
@@ -32,12 +33,13 @@ internal static class WideReview
         NumberHandling = JsonNumberHandling.AllowReadingFromString
     };
 
-    internal static async Task Package(string directory, Func<string, string[], Task<string>> dotnet, bool integrated = false)
+    internal static async Task Package(string directory, Func<string, string[], Task<string>> dotnet, WideRound round)
     {
         if (Directory.Exists(directory) || File.Exists(directory))
             throw new IOException("The corpus needs a new destination.");
         Directory.CreateDirectory(directory);
-        var modules = integrated ? WideCorpus.IntegratedModules() : WideCorpus.Modules();
+        var modules = Modules(round);
+        var integrated = round != WideRound.Standalone;
         if (modules.Select(module => module.Name).Distinct(StringComparer.Ordinal).Count() != modules.Length ||
             modules.Sum(module => module.Operations.Count(operation => operation.Trigger is not null)) < 100)
             throw new InvalidDataException("The trial requires at least 100 independently indexed seeds.");
@@ -144,17 +146,19 @@ internal static class WideReview
     }
 
     internal static async Task Adjudicate(string corpus, string reports, string destination, Func<string, string[], Task<string>> dotnet,
-        bool integrated = false)
+        WideRound round)
     {
         if (File.Exists(destination) || Directory.Exists(destination))
             throw new IOException("Choose a new adjudication output.");
         Directory.CreateDirectory(destination);
-        foreach (var module in integrated ? WideCorpus.IntegratedModules() : WideCorpus.Modules())
+        foreach (var module in Modules(round))
         {
             var author = Child(corpus, $"author/{module.Name}");
             var oracle = Read<Oracle[]>(author, "oracle.json").ToDictionary(item => item.Operation, StringComparer.Ordinal);
-            var raw = File.ReadAllText(Child(reports, module.Name + ".json"));
-            var submission = JsonSerializer.Deserialize<Submission>(raw, ReportJson)?.Findings
+            using var raw = JsonDocument.Parse(File.ReadAllText(Child(reports, module.Name + ".json")));
+            var submission = (raw.RootElement.ValueKind == JsonValueKind.Array
+                ? raw.RootElement.Deserialize<Finding[]>(ReportJson)
+                : raw.RootElement.Deserialize<Submission>(ReportJson)?.Findings)
                 ?? throw new InvalidDataException($"No findings array for {module.Name}.");
             var usable = submission.Where(finding => finding is not null && finding.Operation is not null &&
                 oracle.TryGetValue(finding.Operation, out var entry) && finding.Args is not null &&
@@ -180,6 +184,14 @@ internal static class WideReview
             Console.WriteLine($"{module.Name}: {rows.Where(item => item.Seeded && item.ExactCounterexample).Select(item => item.Operation).Distinct().Count()} exact reported counterexamples from {submission.Length} reports.");
         }
     }
+
+    private static WideModule[] Modules(WideRound round) => round switch
+    {
+        WideRound.Standalone => WideCorpus.Modules(),
+        WideRound.Routed => WideCorpus.IntegratedModules(),
+        WideRound.Continuity => WideCorpus.LifecycleModules(),
+        _ => throw new ArgumentOutOfRangeException(nameof(round))
+    };
 
     private static async Task<long?[]> Replay(string binary, string root, string relative, Func<string, string[], Task<string>> dotnet) =>
         JsonSerializer.Deserialize<long?[]>((await dotnet(root, [binary, "batch", Child(root, relative)])).Trim())

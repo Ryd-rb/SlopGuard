@@ -12,10 +12,10 @@ internal static partial class WideCorpus
             Compose("ReportingHub", "Combines billing calculations, catalog transformations, and editorial publication into one release.",
                 [original["Quarry"], original["Lattice"], original["Folio"], original["Council"], ReportHandoffs()])
         ];
-
-        static WideModule Compose(string name, string introduction, WideModule[] sources) => new(name, introduction,
-            sources.SelectMany(source => source.Operations.Select(operation => operation with { Source = source.Name })).ToArray(), sources);
     }
+
+    private static WideModule Compose(string name, string introduction, WideModule[] sources) => new(name, introduction,
+        sources.SelectMany(source => source.Operations.Select(operation => operation with { Source = source.Name })).ToArray(), sources);
 
     private static WideModule FieldHandoffs() => new("FieldHandoffs", "These operations reconcile the final reservation with the routing lease. Clock and depot fields are nonnegative.",
     [
