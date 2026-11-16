@@ -5,7 +5,7 @@ internal sealed record WideExample(long[] Args, long Expected);
 internal sealed record WideOperation(string Name, string Parameters, string Contract, string Shipping, string? Repair,
     WideExample Nominal, WideExample? Trigger, string? Source = null);
 internal sealed record WideModule(string Name, string Introduction, WideOperation[] Operations, WideModule[]? Components = null);
-internal enum WideRound { Standalone, Routed, Continuity }
+internal enum WideRound { Standalone, Routed, Continuity, Deployment }
 
 internal static partial class WideCorpus
 {
@@ -22,7 +22,7 @@ internal static class WideReview
     private const string Project = "Service.csproj";
     private static string Binary(string output) => Path.Combine(output, "bin/Service/debug/Service.dll");
 
-    private sealed record Probe(string Operation, long[] Args);
+    internal sealed record Probe(string Operation, long[] Args);
     private sealed record Example(string Operation, long[] Args, long Expected);
     private sealed record Oracle(string Operation, int Arity, bool Seeded, long[]? Args, long? Shipping, long? Corrected, long[]? Route);
     private sealed record Finding(string Operation, long[] Args, long Actual, long Expected, string Cause);
@@ -40,6 +40,7 @@ internal static class WideReview
         Directory.CreateDirectory(directory);
         var modules = Modules(round);
         var integrated = round != WideRound.Standalone;
+        var deployment = round == WideRound.Deployment;
         if (modules.Select(module => module.Name).Distinct(StringComparer.Ordinal).Count() != modules.Length ||
             modules.Sum(module => module.Operations.Count(operation => operation.Trigger is not null)) < 100)
             throw new InvalidDataException("The trial requires at least 100 independently indexed seeds.");
@@ -61,10 +62,13 @@ internal static class WideReview
                 smoke.AddRange(operations.Select(operation => new Example(operation.Name,
                     [.. routes![operation.Name].Take(2), 0, .. operation.Nominal.Args], long.MinValue)));
             var probes = witnesses.Select(operation => new Probe(operation.Name, Bind(operation, operation.Trigger!.Args))).ToArray();
-            Write(dossier, "profiles/standard.json", smoke);
+            if (deployment)
+                WideJournal.WriteProfile(dossier, smoke.Select(item => (new Probe(item.Operation, item.Args), item.Expected)));
+            else
+                Write(dossier, "profiles/standard.json", smoke);
             Write(author, "qualification.json", probes);
-            WriteApp(dossier, operations, corrected: false, routes);
-            WriteApp(repair, operations, corrected: true, routes);
+            WriteApp(dossier, operations, corrected: false, routes, deployment);
+            WriteApp(repair, operations, corrected: true, routes, deployment);
             var contracts = integrated
                 ? "Review the component contracts under `contracts/` together with the producer catalog in `profiles/routes.json`.\n\n" +
                   "A service request starts with `producer, evidenceRevision, proofAccepted`, followed by the business fields. The route catalog supplies each operation's producer and revision. A different producer, different revision, or proof flag other than 1 makes the request inapplicable and returns `long.MinValue`. An admitted request supplies the business fields to its configured operation."
@@ -73,9 +77,10 @@ internal static class WideReview
             {
                 Write(dossier, "profiles/routes.json", routes!.Select(item => new { Operation = item.Key, Producer = item.Value[0], Revision = item.Value[1] }));
                 foreach (var component in module.Components!)
-                    Put(dossier, $"contracts/{component.Name}.md", $"# {component.Name}\n\n{component.Introduction}\n\n{Contracts(component.Operations)}");
+                    Put(dossier, $"contracts/{component.Name}.md", $"# {component.Name}\n\n{component.Introduction}\n\n" +
+                        (deployment ? WideJournal.Catalog(component) : Contracts(component.Operations)));
             }
-            Put(dossier, "README.md", $$"""
+            Put(dossier, "README.md", deployment ? WideJournal.Handbook(module) : $$"""
                 # {{module.Name}} service handoff
 
                 {{module.Introduction}}
@@ -103,15 +108,17 @@ internal static class WideReview
             await dotnet(repair, ["build", Project, "--artifacts-path", fixedOutput, "-p:NuGetAudit=false"]);
             var original = Binary(deployed);
             var fixedBinary = Binary(fixedOutput);
+            if (deployment)
+                WideJournal.CopyPriorBuild(fixedBinary, dossier);
             Write(author, "ordinary.json", smoke.Select(item => new Probe(item.Operation, item.Args)).ToArray());
-            var nominalBefore = await Replay(original, author, "ordinary.json", dotnet);
-            var nominalAfter = await Replay(fixedBinary, author, "ordinary.json", dotnet);
+            var nominalBefore = await Replay(original, author, "ordinary.json", dotnet, deployment);
+            var nominalAfter = await Replay(fixedBinary, author, "ordinary.json", dotnet, deployment);
             var countBefore = errors.Count;
             for (var index = 0; index < smoke.Count; index++)
                 if (nominalBefore[index] != smoke[index].Expected || nominalAfter[index] != smoke[index].Expected)
                     errors.Add($"{module.Name}/{smoke[index].Operation}: public expected {smoke[index].Expected}, observed {nominalBefore[index]} -> {nominalAfter[index]}.");
-            var before = await Replay(original, author, "qualification.json", dotnet);
-            var after = await Replay(fixedBinary, author, "qualification.json", dotnet);
+            var before = await Replay(original, author, "qualification.json", dotnet, deployment);
+            var after = await Replay(fixedBinary, author, "qualification.json", dotnet, deployment);
             var scores = new List<Oracle>();
             foreach (var operation in operations)
             {
@@ -170,8 +177,8 @@ internal static class WideReview
                     ? [.. binding.Route, .. item.Args] : item.Args);
             }).ToArray();
             Write(destination, module.Name + "-input.json", probes);
-            var original = await Replay(Binary(Path.Combine(author, "candidate-bin")), destination, module.Name + "-input.json", dotnet);
-            var repaired = await Replay(Binary(Path.Combine(author, "corrected-bin")), destination, module.Name + "-input.json", dotnet);
+            var original = await Replay(Binary(Path.Combine(author, "candidate-bin")), destination, module.Name + "-input.json", dotnet, round == WideRound.Deployment);
+            var repaired = await Replay(Binary(Path.Combine(author, "corrected-bin")), destination, module.Name + "-input.json", dotnet, round == WideRound.Deployment);
             var rows = usable.Select((item, index) => new
             {
                 item.Operation, item.Args, ReplayedArgs = probes[index].Args, item.Actual, item.Expected, item.Cause, oracle[item.Operation].Seeded,
@@ -189,13 +196,22 @@ internal static class WideReview
     {
         WideRound.Standalone => WideCorpus.Modules(),
         WideRound.Routed => WideCorpus.IntegratedModules(),
-        WideRound.Continuity => WideCorpus.LifecycleModules(),
+        WideRound.Continuity or WideRound.Deployment => WideCorpus.LifecycleModules(),
         _ => throw new ArgumentOutOfRangeException(nameof(round))
     };
 
-    private static async Task<long?[]> Replay(string binary, string root, string relative, Func<string, string[], Task<string>> dotnet) =>
-        JsonSerializer.Deserialize<long?[]>((await dotnet(root, [binary, "batch", Child(root, relative)])).Trim())
-        ?? throw new IOException(relative);
+    private static async Task<long?[]> Replay(string binary, string root, string relative, Func<string, string[], Task<string>> dotnet,
+        bool deployment)
+    {
+        if (deployment)
+        {
+            var input = Read<Probe[]>(root, relative);
+            relative += ".journal.json";
+            WideJournal.WriteBatch(Child(root, relative), input);
+        }
+        return JsonSerializer.Deserialize<long?[]>((await dotnet(root, [binary, "batch", Child(root, relative)])).Trim())
+            ?? throw new IOException(relative);
+    }
 
     private static string Contracts(WideOperation[] operations) => string.Join("\n\n", operations.Select(operation =>
         $"- `{operation.Name}({operation.Parameters.Replace("long ", "", StringComparison.Ordinal)})` {operation.Contract}"));
@@ -208,7 +224,8 @@ internal static class WideReview
         return [producer + 1, 300 + producer * 11, 1];
     }
 
-    private static void WriteApp(string root, WideOperation[] operations, bool corrected, Dictionary<string, long[]>? routes)
+    private static void WriteApp(string root, WideOperation[] operations, bool corrected, Dictionary<string, long[]>? routes,
+        bool deployment)
     {
         Put(root, Project, """
             <Project Sdk="Microsoft.NET.Sdk">
@@ -267,7 +284,7 @@ internal static class WideReview
                 }
                 """);
         }
-        Put(root, "Program.cs", """
+        Put(root, "Program.cs", deployment ? WideJournal.ServiceProgram : """
             using System.Text.Json;
 
             if (args is ["probe", var operation, var values])

@@ -22,7 +22,7 @@ if (args is ["incidents", var incidentSuite] && Path.IsPathFullyQualified(incide
     return 0;
 }
 
-if (args is [var wideMode, var corpus] && wideMode is "wide" or "wide-integrated" or "wide-continuity" &&
+if (args is [var wideMode, var corpus] && wideMode is "wide" or "wide-integrated" or "wide-continuity" or "wide-deployment" &&
     Path.IsPathFullyQualified(corpus))
 {
     await WideReview.Package(corpus, Dotnet, WideMode(wideMode));
@@ -30,7 +30,7 @@ if (args is [var wideMode, var corpus] && wideMode is "wide" or "wide-integrated
 }
 
 if (args is [var scoreMode, var corpusPath, var reports, var score] &&
-    scoreMode is "adjudicate" or "adjudicate-integrated" or "adjudicate-continuity" &&
+    scoreMode is "adjudicate" or "adjudicate-integrated" or "adjudicate-continuity" or "adjudicate-deployment" &&
     Path.IsPathFullyQualified(corpusPath) && Path.IsPathFullyQualified(reports) && Path.IsPathFullyQualified(score))
 {
     await WideReview.Adjudicate(corpusPath, reports, score, Dotnet, WideMode(scoreMode));
@@ -44,8 +44,8 @@ if (pack)
 if (args is not [var destination] || !Path.IsPathFullyQualified(destination) ||
     Directory.Exists(destination) || File.Exists(destination))
 {
-    Console.Error.WriteLine("Usage: Qualification [pack|pack-hard|matrix|incidents|wide|wide-integrated|wide-continuity] NEW_ABSOLUTE_SCRATCH_DIRECTORY");
-    Console.Error.WriteLine("       Qualification adjudicate[-integrated|-continuity] CORPUS ANSWERS NEW_OUTPUT");
+    Console.Error.WriteLine("Usage: Qualification [pack|pack-hard|matrix|incidents|wide|wide-integrated|wide-continuity|wide-deployment] NEW_ABSOLUTE_SCRATCH_DIRECTORY");
+    Console.Error.WriteLine("       Qualification adjudicate[-integrated|-continuity|-deployment] CORPUS ANSWERS NEW_OUTPUT");
     Console.Error.WriteLine("       Qualification fingerprint ABSOLUTE_DIRECTORY");
     return 2;
 }
@@ -69,6 +69,7 @@ static WideRound WideMode(string mode) => mode switch
     "wide" or "adjudicate" => WideRound.Standalone,
     "wide-integrated" or "adjudicate-integrated" => WideRound.Routed,
     "wide-continuity" or "adjudicate-continuity" => WideRound.Continuity,
+    "wide-deployment" or "adjudicate-deployment" => WideRound.Deployment,
     _ => throw new ArgumentOutOfRangeException(nameof(mode))
 };
 
