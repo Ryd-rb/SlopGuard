@@ -16,6 +16,12 @@ if (args is ["matrix", var suite] && Path.IsPathFullyQualified(suite))
     return 0;
 }
 
+if (args is ["incidents", var incidentSuite] && Path.IsPathFullyQualified(incidentSuite))
+{
+    await IncidentMatrix.Package(incidentSuite, Dotnet);
+    return 0;
+}
+
 var hard = args is ["pack-hard", _];
 var pack = args is ["pack", _] || hard;
 if (pack)

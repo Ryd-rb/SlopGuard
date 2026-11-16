@@ -1,0 +1,46 @@
+using System.Text.Json;
+
+internal sealed record FeedRequest(string[] Columns, string[] Preview, string SortBy, string[][] North, string[][] South);
+
+internal sealed class Layout(string[] columns, int[] ranks)
+{
+    internal static Layout Prepare(string[] columns, string sortBy) => new(columns, [Array.IndexOf(columns, sortBy)]);
+
+    internal Layout ForPreview(string[] selection)
+    {
+        var mapping = ranks;
+        for (var index = 0; index < mapping.Length; index++)
+        {
+            var name = columns[mapping[index]];
+            var position = Array.IndexOf(selection, name);
+            if (position < 0)
+                throw new InvalidDataException("The preview projection needs the requested ordering column.");
+            mapping[index] = position;
+        }
+        return new Layout(selection, mapping);
+    }
+
+    internal string[] Order(IEnumerable<string[]> rows) => rows.OrderBy(row => int.Parse(row[ranks[0]]))
+        .Select(row => row[Array.IndexOf(columns, "job")]).ToArray();
+
+    internal static IEnumerable<string[]> Pick(string[] original, string[] selection, IEnumerable<string[]> rows)
+    {
+        var indexes = selection.Select(name => Array.IndexOf(original, name)).ToArray();
+        return rows.Select(row => indexes.Select(index => row[index]).ToArray());
+    }
+}
+
+internal static class Scenario
+{
+    internal static string Run(string path) => Run(JsonSerializer.Deserialize<FeedRequest>(File.ReadAllText(path))!);
+
+    internal static string Run(FeedRequest request)
+    {
+        var merged = request.North.Concat(request.South).ToArray();
+        var main = Layout.Prepare(request.Columns, request.SortBy);
+        var preview = main.ForPreview(request.Preview);
+        var opening = preview.Order(Layout.Pick(request.Columns, request.Preview, request.North));
+        var delivery = main.Order(merged);
+        return $"preview={string.Join(',', opening)};delivery={string.Join(',', delivery)}";
+    }
+}

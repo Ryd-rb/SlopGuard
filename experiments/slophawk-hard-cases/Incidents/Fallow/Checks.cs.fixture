@@ -1,0 +1,14 @@
+using Xunit;
+
+public sealed class ExportChecks
+{
+    [Fact]
+    public void LoadsTheSelectedStream()
+    {
+        var spec = new ExportSpec("meter", "active", 2, [
+            new("active", "meter", 0, "pulse", "ticks"),
+            new("active", "meter", 1, "window", "seconds"),
+            new("active", "audit", 0, "tag", "text")]);
+        Assert.Equal("loaded;pulse:ticks,window:seconds", Scenario.Run(spec));
+    }
+}

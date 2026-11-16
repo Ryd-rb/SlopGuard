@@ -1,0 +1,34 @@
+using System.Text.Json;
+
+internal sealed record RuleColumn(string Catalog, string Stream, int Position, string Key, string Unit);
+internal sealed record ExportSpec(string Stream, string SelectedCatalog, int Width, RuleColumn[] VisibleColumns);
+internal sealed record ColumnBinding(int Position, string Key, string Unit);
+
+internal static class Registry
+{
+    internal static ColumnBinding[] Discover(ExportSpec spec)
+    {
+        var layout = spec.VisibleColumns.Where(column => column.Catalog == spec.SelectedCatalog && column.Stream == spec.Stream)
+            .Select(column => column.Position).ToHashSet();
+        var names = spec.VisibleColumns.Where(column => column.Stream == spec.Stream && layout.Contains(column.Position));
+        return names.OrderBy(column => column.Position).ThenBy(column => column.Key, StringComparer.Ordinal)
+            .Select(column => new ColumnBinding(column.Position, column.Key, column.Unit)).ToArray();
+    }
+}
+
+internal static class VectorConsumer
+{
+    internal static string Open(ColumnBinding[] bindings, int width)
+    {
+        if (bindings.Length != width || !bindings.Select(column => column.Position).SequenceEqual(Enumerable.Range(0, width)))
+            return $"unavailable;columns={bindings.Length}";
+
+        return "loaded;" + string.Join(',', bindings.Select(column => column.Key + ":" + column.Unit));
+    }
+}
+
+internal static class Scenario
+{
+    internal static string Run(string path) => Run(JsonSerializer.Deserialize<ExportSpec>(File.ReadAllText(path))!);
+    internal static string Run(ExportSpec spec) => VectorConsumer.Open(Registry.Discover(spec), spec.Width);
+}

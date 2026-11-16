@@ -8,5 +8,6 @@
     <Compile Include="../slophawk-receipt-benchmark/Factory/Snapshot.cs" Link="Snapshot.cs" />
     <Compile Remove="Inspector/**/*.cs" />
     <None Update="Board/**/*.fixture" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Incidents/**/*.fixture" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

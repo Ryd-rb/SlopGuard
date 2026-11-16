@@ -1,0 +1,12 @@
+using Xunit;
+
+public sealed class LayoutChecks
+{
+    [Fact]
+    public void PublishesTheStandardProjection()
+    {
+        var request = new FeedRequest(["job", "window", "priority"], ["job", "window", "priority"], "priority",
+            [["A", "18", "10"], ["B", "4", "30"]], [["C", "12", "20"]]);
+        Assert.Equal("preview=A,B;delivery=A,C,B", Scenario.Run(request));
+    }
+}

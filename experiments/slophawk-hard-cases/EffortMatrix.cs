@@ -261,37 +261,9 @@ internal static class EffortMatrix
             return Path.Combine(build, "bin/Proof/debug/Proof.dll");
         }
 
-        async Task<(string Record, ArchivedRun Archive)> Test(string root, string dll, int id, string target,
-            string[] options, string? settings = null, BuildIdentityStamp? build = null)
-        {
-            var path = $"exports/{id}";
-            var results = Directory.CreateDirectory(PilotArchive.Child(root, path)).FullName;
-            string[] origin = [.. options];
-            if (settings is not null)
-                origin = [$"/Settings:{PilotArchive.Child(root, settings)}", .. origin];
-            var start = DateTimeOffset.UtcNow;
-            await dotnet(root, ["vstest", dll, .. origin, $"/ResultsDirectory:{results}", $"/Logger:trx;LogFileName={Report}"]);
-            var finish = DateTimeOffset.UtcNow;
-            var report = $"{path}/{Report}";
-            var trx = VstestTrxClassifier.Parse(File.ReadAllBytes(PilotArchive.Child(root, report)));
-            var facts = new VstestProcessFacts(id, start, finish, true, null, true, 0);
-            var fence = new ScheduleFence(Guid.NewGuid(), 10, 42, RootIdentity.Read(root), new GitRevision("refs/heads/release", new string('A', 40)));
-            var selection = new SelectedTarget(target, EffortInspection.Digest(root, "workload/Checks.cs"), []);
-            var attempt = new TestAttempt(id, 1, fence, selection, "release-profile");
-            var lease = $"lease-{id}";
-            var receipt = new TestRunReceiptDetails(id, fence.Revision, fence.Epoch, fence.Sequence, TestRunReceiptDetails.GitIdentity(fence.Git),
-                fence.RootIdentity, target, selection.InputFingerprint, attempt.ProfileRevision, lease, build?.DomainVersion, build?.Sha256, null,
-                trx.Sha256, trx.ByteLength, trx.RunId, VstestDisposition.Passed, VstestRunnerHealth.ZeroExit, VstestArtifactHealth.Complete,
-                VstestExecution.Passed, trx.Counters, "passed");
-            receipt.Validate(attempt, TestOutcome.Passed, lease);
-            var archive = new ArchivedRun(report, facts, new RunPacket(attempt, fence, lease, receipt));
-            Require(EffortInspection.Classify(root, archive).Disposition == VstestDisposition.Passed, $"Native run {id} replay");
-            PilotArchive.Write(root, $"{path}/dispatch.json", new { Target = target, Settings = settings, Options = options,
-                BinarySha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(dll))) });
-            var record = $"{path}/observation.json";
-            PilotArchive.Write(root, record, archive);
-            return (record, archive);
-        }
+        Task<(string Record, ArchivedRun Archive)> Test(string root, string dll, int id, string target,
+            string[] options, string? settings = null, BuildIdentityStamp? build = null) =>
+            RecordRun(root, dll, id, target, dotnet, options, settings, build);
 
         async Task Replay(string root, string program, string fixedProgram, string? include, string docs)
         {
@@ -337,6 +309,36 @@ internal static class EffortMatrix
                 Console.WriteLine($"{label}: smoke passed; candidate {candidate}; standing ready.");
             }
         }
+    }
+
+    internal static async Task<(string Record, ArchivedRun Archive)> RecordRun(string root, string dll, int id, string target,
+        Func<string, string[], Task<string>> dotnet, string[] options, string? settings = null, BuildIdentityStamp? build = null)
+    {
+        var path = $"exports/{id}";
+        var results = Directory.CreateDirectory(PilotArchive.Child(root, path)).FullName;
+        var origin = settings is null ? options : [$"/Settings:{PilotArchive.Child(root, settings)}", .. options];
+        var start = DateTimeOffset.UtcNow;
+        await dotnet(root, ["vstest", dll, .. origin, $"/ResultsDirectory:{results}", $"/Logger:trx;LogFileName={Report}"]);
+        var finish = DateTimeOffset.UtcNow;
+        var report = $"{path}/{Report}";
+        var trx = VstestTrxClassifier.Parse(File.ReadAllBytes(PilotArchive.Child(root, report)));
+        var facts = new VstestProcessFacts(id, start, finish, true, null, true, 0);
+        var fence = new ScheduleFence(Guid.NewGuid(), 10, 42, RootIdentity.Read(root), new GitRevision("refs/heads/release", new string('A', 40)));
+        var selection = new SelectedTarget(target, EffortInspection.Digest(root, "workload/Checks.cs"), []);
+        var attempt = new TestAttempt(id, 1, fence, selection, "release-profile");
+        var lease = $"lease-{id}";
+        var receipt = new TestRunReceiptDetails(id, fence.Revision, fence.Epoch, fence.Sequence, TestRunReceiptDetails.GitIdentity(fence.Git),
+            fence.RootIdentity, target, selection.InputFingerprint, attempt.ProfileRevision, lease, build?.DomainVersion, build?.Sha256, null,
+            trx.Sha256, trx.ByteLength, trx.RunId, VstestDisposition.Passed, VstestRunnerHealth.ZeroExit, VstestArtifactHealth.Complete,
+            VstestExecution.Passed, trx.Counters, "passed");
+        receipt.Validate(attempt, TestOutcome.Passed, lease);
+        var archive = new ArchivedRun(report, facts, new RunPacket(attempt, fence, lease, receipt));
+        Require(EffortInspection.Classify(root, archive).Disposition == VstestDisposition.Passed, $"Native run {id} replay");
+        PilotArchive.Write(root, $"{path}/dispatch.json", new { Target = target, Settings = settings, Options = options,
+            BinarySha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(dll))) });
+        var record = $"{path}/observation.json";
+        PilotArchive.Write(root, record, archive);
+        return (record, archive);
     }
 
     private static string Gate(string logic, string smoke) => $$"""

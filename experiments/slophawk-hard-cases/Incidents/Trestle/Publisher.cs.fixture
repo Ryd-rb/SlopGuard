@@ -1,0 +1,80 @@
+using System.Text.Json;
+
+internal sealed record RoutePlan(int Generation, string[] Routes);
+internal sealed record Batch(RoutePlan Initial, RoutePlan[] Plans, Operation[] Work);
+internal sealed record Operation(string Command, string Worker, int Generation);
+internal sealed record Publication(int Revision, int Generation);
+internal sealed record Admission(RoutePlan Plan, int SeenRevision);
+
+internal sealed class RouteBook(RoutePlan initial)
+{
+    private readonly Dictionary<int, RoutePlan> plans = new() { [initial.Generation] = initial };
+    private Publication current = new(0, initial.Generation);
+
+    internal Publication Head() => current;
+
+    internal bool CompareExchange(int expectedRevision, RoutePlan next)
+    {
+        if (expectedRevision != current.Revision)
+            return false;
+        plans[next.Generation] = next;
+        current = new(current.Revision + 1, next.Generation);
+        return true;
+    }
+
+    internal void Compact(int retainedGeneration)
+    {
+        foreach (var key in plans.Keys.Where(key => key < retainedGeneration).ToArray())
+            plans.Remove(key);
+    }
+
+    internal string[] Deliver() => plans.TryGetValue(current.Generation, out var plan) ? plan.Routes : [];
+}
+
+internal sealed class Publisher(RouteBook book)
+{
+    internal Admission? Prepare(RoutePlan plan)
+    {
+        var visible = book.Head();
+        return plan.Generation > visible.Generation ? new Admission(plan, visible.Revision) : null;
+    }
+
+    internal bool Complete(Admission admission)
+    {
+        if (book.CompareExchange(admission.SeenRevision, admission.Plan))
+            return true;
+        var visible = book.Head();
+        return book.CompareExchange(visible.Revision, admission.Plan);
+    }
+}
+
+internal static class Scenario
+{
+    internal static string Run(string path) => Run(JsonSerializer.Deserialize<Batch>(File.ReadAllText(path))!);
+
+    internal static string Run(Batch batch)
+    {
+        var book = new RouteBook(batch.Initial);
+        var publisher = new Publisher(book);
+        var inFlight = new Dictionary<string, Admission?>();
+        foreach (var item in batch.Work)
+        {
+            switch (item.Command)
+            {
+                case "prepare":
+                    inFlight[item.Worker] = publisher.Prepare(batch.Plans.Single(plan => plan.Generation == item.Generation));
+                    break;
+                case "complete":
+                    if (inFlight.Remove(item.Worker, out var admission) && admission is not null)
+                        publisher.Complete(admission);
+                    break;
+                case "compact":
+                    book.Compact(item.Generation);
+                    break;
+                default:
+                    throw new InvalidDataException(item.Command);
+            }
+        }
+        return $"plan={book.Head().Generation};routes={string.Join(',', book.Deliver())}";
+    }
+}

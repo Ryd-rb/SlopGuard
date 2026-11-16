@@ -1,0 +1,12 @@
+using Xunit;
+
+public sealed class DispatchChecks
+{
+    [Fact]
+    public void InstallsAndCompactsAStandardPlan()
+    {
+        var batch = new Batch(new RoutePlan(23, ["A1"]), [new RoutePlan(24, ["B1", "B3"])],
+            [new("prepare", "east", 24), new("complete", "east", 0), new("compact", "maint", 24)]);
+        Assert.Equal("plan=24;routes=B1,B3", Scenario.Run(batch));
+    }
+}
