@@ -19,6 +19,7 @@ After each pass, the coordinator replayed the submitted examples against the sea
 | 7 | Executable public-contract models and fresh input grids | 124 | 1 | 2,150,289 | 31,536 | 22 |
 | 8 | Audited reference clauses and crossed input conditions | 125 | 1 | 1,981,736 | 33,657 | 15 |
 | 9 | Independently audited every submitted flag | 126 | 0 | 5,598,049 | 115,224 | 30 |
+| 10 | Tested cases that distinguish competing public-contract interpretations | 127 | 0 | 5,052,483 | 116,034 | 59 |
 
 The first turn compared batches of public inputs against a placeholder expected value of zero. It submitted one supported defect and left the review open. The next turn used `check-observe` for exploration and a file of 158 ordinary inputs with their published expectations. The coordinator constructed that file from the two public fixtures and verified that each normalized input produced the exact published journal before binding its expected value. The checker then passed all 158 ordinary cases. Those cases let the worker rerun and acknowledge the erroneous ordinary comparisons without receiving a novel test or answer.
 
@@ -32,4 +33,4 @@ One submitted claim survived the worker's exact retest using the same incorrect 
 
 The earlier [coverage-guided unassisted runs](wide-low-results.md#per-run-usage) verified 88 and 50 of 132. The most recent [short-prompt blinded pairs](foreground-check-results.md#results) verified five distinct defects in the ordinary arm and zero assisted. The protocols and work invested differ across these runs.
 
-The checker revisions were `df83e79` (durable reports), `0d78103` (observation mode), `ff22a92` (scope), and `aacfd83` (distinct-input depth). The skill added contract-derived batch guidance in `0c92890`. The dedicated session was `01a1e637-3068-7a32-82e7-efec310732a9`.
+The checker revisions were `df83e79` (durable reports), `0d78103` (observation mode), `ff22a92` (scope), and `aacfd83` (distinct-input depth). The skill added contract-derived batch guidance in `0c92890` and paired probes in `c74c54f`. The dedicated session was `01a1e637-3068-7a32-82e7-efec310732a9`.
