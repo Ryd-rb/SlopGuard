@@ -2,6 +2,8 @@
 **/obj/
 **/TestResults/
 /.artifacts/
+/.slophawk/
+/.slophawk.pending.json
 /.slopguard/
 /.slopguard.pending.json
 /.vs/

@@ -58,7 +58,7 @@ Use the existing verification states for evidence availability. Carry the check'
 
 ### A deferred effect outlives its freshness check
 
-**Trigger.** An edit touches a declared effect, the validation it depends on, or the control flow between them. Start with one SlopGuard contract for publishing a report tied to a source epoch. Bind the production methods by symbol. Track validation of the same epoch and root, relevant invalidation boundaries such as suspension or queued execution, and protection across the final effect. Recognize only declared helper contracts, including a commit wrapper that validates and commits under the same synchronization or transaction. Track the underlying state identity through supported copies. A passing check on one branch says nothing about other paths to the effect. [Roslyn control-flow graph](https://github.com/dotnet/roslyn/blob/main/src/Compilers/Core/Portable/Operations/ControlFlowGraph.cs), [SlopGuard publication contract](result-publication.md)
+**Trigger.** An edit touches a declared effect, the validation it depends on, or the control flow between them. Start with one SlopHawk contract for publishing a report tied to a source epoch. Bind the production methods by symbol. Track validation of the same epoch and root, relevant invalidation boundaries such as suspension or queued execution, and protection across the final effect. Recognize only declared helper contracts, including a commit wrapper that validates and commits under the same synchronization or transaction. Track the underlying state identity through supported copies. A passing check on one branch says nothing about other paths to the effect. [Roslyn control-flow graph](https://github.com/dotnet/roslyn/blob/main/src/Compilers/Core/Portable/Operations/ControlFlowGraph.cs), [SlopHawk publication contract](result-publication.md)
 
 **Finding.** Show the changed reachable path from the last relevant validation through the boundary to the effect. Call this a candidate until a controlled fixture demonstrates the outcome. With a deterministic gate in owned fixture code, pause after validation, invalidate the epoch, resume and record whether a stale report was committed. An unresolved delegate, alias or helper exposes an unknown frontier. A wait by itself is insufficient evidence.
 
@@ -114,7 +114,7 @@ Detectors search evaluated project and test metadata, C# symbols and registratio
 
 ### Pre-production
 
-| Category | Evidence SlopGuard can detect |
+| Category | Evidence SlopHawk can detect |
 | --- | --- |
 | Unit tests | Test adapter IDs, test entry points and assertions targeting a changed unit, plus matching run records. |
 | Functional tests | Scenarios and assertions exercising observable feature behavior. |
@@ -139,7 +139,7 @@ Detectors search evaluated project and test metadata, C# symbols and registratio
 
 ### Deploy
 
-| Category | Evidence SlopGuard can detect |
+| Category | Evidence SlopHawk can detect |
 | --- | --- |
 | Integration tests | Test projects and environment fixtures that exercise an actual service, datastore or adapter boundary. |
 | Tap compare | Traffic capture or tap configuration, paired output comparison and divergence reports for old and new behavior. |
@@ -150,7 +150,7 @@ Detectors search evaluated project and test metadata, C# symbols and registratio
 
 ### Release
 
-| Category | Evidence SlopGuard can detect |
+| Category | Evidence SlopHawk can detect |
 | --- | --- |
 | Canarying | Staged rollout configuration, success and rollback criteria, and evaluation receipts. |
 | Monitoring | Release-specific dashboards, alert rules and gate receipts tied to the rollout. |
@@ -160,7 +160,7 @@ Detectors search evaluated project and test metadata, C# symbols and registratio
 
 ### Post-release
 
-| Category | Evidence SlopGuard can detect |
+| Category | Evidence SlopHawk can detect |
 | --- | --- |
 | Teeing | Traffic or event fan-out, destination mappings, isolation constraints and routed-volume receipts. |
 | Profiling | Profiler configuration or imported summaries mapped to binaries and changed symbols. |

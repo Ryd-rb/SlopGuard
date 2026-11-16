@@ -1,12 +1,12 @@
 # Portable Linux .NET 10 toolchain
 
-The [GitHub toolchain release](https://github.com/Ryd-rb/SlopGuard/releases/tag/dotnet-linux-x64-10.0.404-r1) contains the original Microsoft Linux x64 SDK archive and the NuGet archives required by the solution locks at this release's tag. Keep both assets outside the checkout. They support a rootless install on glibc-based Linux x64 with the [.NET native dependencies](https://learn.microsoft.com/en-us/dotnet/core/install/linux#dependencies), Git, tar and sha256sum. Retrieve both archives before running the offline setup.
+The [GitHub toolchain release](https://github.com/Ryd-rb/SlopHawk/releases/tag/dotnet-linux-x64-10.0.404-r1) contains the original Microsoft Linux x64 SDK archive and the NuGet archives required by the solution locks at this release's tag. The pinned feed archive keeps its original release filename. Keep both assets outside the checkout. They support a rootless install on glibc-based Linux x64 with the [.NET native dependencies](https://learn.microsoft.com/en-us/dotnet/core/install/linux#dependencies), Git, tar and sha256sum. Retrieve both archives before running the offline setup.
 
 ## Retrieve with the GitHub connector
 
-Use the GitHub connector's **Fetch** action to list [successful workflow runs on main](https://api.github.com/repos/Ryd-rb/SlopGuard/actions/runs?event=workflow_dispatch&branch=main&status=success&per_page=10). Choose the newest run for `.github/workflows/portable-linux-toolchain.yml` and note its numeric run ID. Call **Fetch workflow run artifacts** with that run ID and `repo_full_name = Ryd-rb/SlopGuard`. Use the numeric IDs of the unexpired `slopguard-dotnet-sdk-10.0.404-linux-x64-r1` and `slopguard-nuget-feed-10.0.404-r1` assets. If there are more runs, page the listing.
+Use the GitHub connector's **Fetch** action to list [successful workflow runs on main](https://api.github.com/repos/Ryd-rb/SlopHawk/actions/runs?event=workflow_dispatch&branch=main&status=success&per_page=10). Choose the newest run for `.github/workflows/portable-linux-toolchain.yml` and note its numeric run ID. Call **Fetch workflow run artifacts** with that run ID and `repo_full_name = Ryd-rb/SlopHawk`. Use the numeric IDs of the unexpired `slophawk-dotnet-sdk-10.0.404-linux-x64-r1` and `slophawk-nuget-feed-10.0.404-r1` assets. Runs published before the rename use the `slopguard-` artifact prefix. If there are more runs, page the listing.
 
-Call the GitHub connector's **Download workflow artifact** action with `repo_full_name = Ryd-rb/SlopGuard` and each numeric artifact ID. Save the returned ZIP file references into the VM using its attachment or file tools. This transfer uses the GitHub connection. The VM shell can stay offline. Use `unzip` or an equivalent local ZIP reader to extract the two files into a fresh directory.
+Call the GitHub connector's **Download workflow artifact** action with `repo_full_name = Ryd-rb/SlopHawk` and each numeric artifact ID. Save the returned ZIP file references into the VM using its attachment or file tools. This transfer uses the GitHub connection. The VM shell can stay offline. Use `unzip` or an equivalent local ZIP reader to extract the two files into a fresh directory.
 
 ```sh
 set -eu
@@ -22,7 +22,7 @@ GitHub expires Actions artifacts. If either artifact has expired, the repository
 ```sh
 set -eu
 tools_dir="$(mktemp -d)"
-release=https://github.com/Ryd-rb/SlopGuard/releases/download/dotnet-linux-x64-10.0.404-r1
+release=https://github.com/Ryd-rb/SlopHawk/releases/download/dotnet-linux-x64-10.0.404-r1
 sdk=dotnet-sdk-10.0.404-linux-x64.tar.gz
 feed=slopguard-nuget-feed.tar.gz
 curl --fail --location --retry 3 --output "$tools_dir/$sdk" "$release/$sdk"
@@ -31,7 +31,7 @@ curl --fail --location --retry 3 --output "$tools_dir/$feed" "$release/$feed"
 
 ## Verify, install and test offline
 
-Run from the local SlopGuard checkout in the same shell that set `tools_dir`.
+Run from the local SlopHawk checkout in the same shell that set `tools_dir`.
 
 ```sh
 set -eu
@@ -53,9 +53,9 @@ export DOTNET_CLI_HOME="$tools_dir/cli"
 export NUGET_PACKAGES="$tools_dir/packages"
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 test "$(dotnet --version)" = 10.0.404
-dotnet restore SlopGuard.slnx --locked-mode --source "$tools_dir/feed" --no-http-cache -p:NuGetAudit=false
-dotnet build SlopGuard.slnx --no-restore
-dotnet test SlopGuard.slnx --no-build
+dotnet restore SlopHawk.slnx --locked-mode --source "$tools_dir/feed" --no-http-cache -p:NuGetAudit=false
+dotnet build SlopHawk.slnx --no-restore
+dotnet test SlopHawk.slnx --no-build
 ```
 
 The pinned SDK is for this Linux asset. The root SDK policy also accepts compatible .NET 10 feature bands for normal development. A VM with the Linux SDK can build and run the applicable tests. Linux supervision of repository code has separate [product prerequisites](architecture.md#worker-admission-and-recovery).
