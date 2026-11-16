@@ -32,13 +32,17 @@ internal sealed class WorkspaceMonitor : IDisposable
     private string? lastError;
     private string? recordingError;
 
-    internal WorkspaceMonitor(Workspace workspace, GitContext git, ITestAdapter? adapter)
+    private sealed record PublicationFence(Guid Epoch, long Sequence, long CommittedRevision,
+        string RootIdentity, GitRevision Git);
+
+    internal WorkspaceMonitor(Workspace workspace, GitContext git, ITestAdapter? adapter,
+        Func<CancellationToken, Task>? afterStaging = null)
     {
         this.workspace = workspace;
         gitContext = git;
         scanner = new SourceScanner(workspace);
         inventory = new SourceInventory(workspace);
-        reportFile = new ReportFile(workspace);
+        reportFile = new ReportFile(workspace, afterStaging);
         scheduler = adapter is null ? null : new DurableTestScheduler(inventory, this, adapter, workspace);
         scheduleStatus = new TestSchedulerStatus(adapter is null ? "awaiting_adapter" : "pending_reconciliation");
     }
@@ -104,21 +108,25 @@ internal sealed class WorkspaceMonitor : IDisposable
     {
         long current;
         lock (gate)
-        {
-            current = ++revision;
-            if (restart || transition)
-                epoch = Guid.NewGuid();
-            restartWatchers |= restart;
-            if (path is null || pending.Count == MaxPendingPaths)
-            {
-                scanAll = true;
-                pending.Clear();
-            }
-            if (!scanAll && path is not null)
-                pending.Add(path);
-            wakeup.Writer.TryWrite(true);
-        }
+            current = InvalidateUnderLock(path, restart, transition);
         scheduler?.Signal();
+        return current;
+    }
+
+    private long InvalidateUnderLock(string? path, bool restart, bool transition)
+    {
+        var current = ++revision;
+        if (restart || transition)
+            epoch = Guid.NewGuid();
+        restartWatchers |= restart;
+        if (path is null || pending.Count == MaxPendingPaths)
+        {
+            scanAll = true;
+            pending.Clear();
+        }
+        if (!scanAll && path is not null)
+            pending.Add(path);
+        wakeup.Writer.TryWrite(true);
         return current;
     }
 
@@ -126,7 +134,9 @@ internal sealed class WorkspaceMonitor : IDisposable
     {
         lock (gate)
         {
-            var snapshot = report?.Revision == revision ? report : null;
+            var snapshot = report is { } candidate && candidate.Revision == revision &&
+                candidate.Epoch == epoch && candidate.CommittedRevision == committed?.Revision
+                ? candidate : null;
             return new
             {
                 workspace.Root, epoch, revision, committedRevision = committed?.Revision,
@@ -145,27 +155,20 @@ internal sealed class WorkspaceMonitor : IDisposable
     internal async Task<WorkspaceReport?> ReadCurrentAsync(CancellationToken cancellationToken)
     {
         WorkspaceReport? snapshot;
-        string? rootIdentity;
+        PublicationFence? fence;
         lock (gate)
         {
-            snapshot = report?.Revision == revision ? report : null;
-            rootIdentity = committed?.RootIdentity;
+            snapshot = report;
+            fence = snapshot is not null && committed is { RootIdentity: { } root } state &&
+                snapshot.Revision == revision && snapshot.Epoch == epoch &&
+                snapshot.CommittedRevision == state.Revision
+                ? new PublicationFence(epoch, revision, state.Revision, root,
+                    new GitRevision(snapshot.Branch, snapshot.Commit)) : null;
         }
-        if (snapshot is null)
+        if (fence is null || snapshot is null || !await VerifyPublicationAsync(fence, cancellationToken))
             return null;
-
-        try
-        {
-            if (await gitContext.ReadAsync(cancellationToken) == new GitRevision(snapshot.Branch, snapshot.Commit)
-                && RootIdentity.Read(workspace.Root) == rootIdentity)
-                return IsCurrent(snapshot.Revision) ? snapshot : null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            RecordError(ex.Message);
-        }
-        Invalidate(restart: true);
-        return null;
+        lock (gate)
+            return ReferenceEquals(report, snapshot) && IsPublicationCurrentUnderLock(fence) ? snapshot : null;
     }
 
     internal async Task RunAsync(CancellationToken cancellationToken)
@@ -196,7 +199,7 @@ internal sealed class WorkspaceMonitor : IDisposable
                     StartWorkspaceWatchers();
                     reconnect = false;
                 }
-                var startingGit = await gitContext.ReadAsync(cancellationToken);
+                var startingGit = await gitContext.ReadLiveAsync(cancellationToken);
                 var rootIdentity = RootIdentity.Read(workspace.Root);
                 recording = true;
                 var basis = committed ?? LoadInventory();
@@ -204,7 +207,7 @@ internal sealed class WorkspaceMonitor : IDisposable
                 var startup = reconciled is null;
                 var fullScan = startup || batch.FullScan || reconciled!.Partial || basis.RootIdentity != rootIdentity;
                 var scan = await scanner.ScanAsync(fullScan ? null : batch.Paths, reconciled, cancellationToken);
-                if (await gitContext.ReadAsync(cancellationToken) != startingGit ||
+                if (await gitContext.ReadLiveAsync(cancellationToken) != startingGit ||
                     RootIdentity.Read(workspace.Root) != rootIdentity)
                 {
                     Invalidate(restart: true);
@@ -239,26 +242,33 @@ internal sealed class WorkspaceMonitor : IDisposable
 
                 if (withdrawalError is not null)
                     throw withdrawalError;
-                if (!IsCurrent(batch.Revision))
+                var fence = new PublicationFence(batch.Epoch, batch.Revision, next.Revision,
+                    rootIdentity, startingGit);
+                if (!IsPublicationCurrent(fence))
                     continue;
                 var snapshot = new WorkspaceReport(ReportFile.SchemaVersion, ReportFile.Producer, workspace.Root,
                     batch.Epoch, batch.Revision, startingGit.Branch, startingGit.Commit, scan.Files.Count,
                     scan.Partial, next.Revision);
-                if (await gitContext.ReadAsync(cancellationToken) != startingGit ||
-                    RootIdentity.Read(workspace.Root) != rootIdentity)
-                {
-                    Invalidate(restart: true);
+                if (!await VerifyPublicationAsync(fence, cancellationToken))
                     continue;
-                }
-                if (!reportFile.Publish(snapshot, () => IsCurrent(batch.Revision)))
+                if (!await reportFile.PublishAsync(snapshot, fence.RootIdentity,
+                    token => VerifyPublicationAsync(fence, token),
+                    move => CommitPublication(fence, move), cancellationToken))
                     continue;
 
+                // A Git command may complete after the rename. Do not make its
+                // old snapshot available through validated readers in that case.
+                var current = await VerifyPublicationAsync(fence, cancellationToken);
                 lock (gate)
                 {
-                    report = snapshot;
-                    lastError = null;
+                    current &= IsPublicationCurrentUnderLock(fence);
+                    if (current)
+                    {
+                        report = snapshot;
+                        lastError = null;
+                    }
                 }
-                if (!IsCurrent(batch.Revision))
+                if (!current || !IsPublicationCurrent(fence))
                     reportFile.Withdraw();
                 retryDelay = 250;
             }
@@ -295,6 +305,56 @@ internal sealed class WorkspaceMonitor : IDisposable
             restartWatchers = false;
             return batch;
         }
+    }
+
+    private bool IsPublicationCurrent(PublicationFence fence)
+    {
+        lock (gate)
+            return IsPublicationCurrentUnderLock(fence);
+    }
+
+    private bool IsPublicationCurrentUnderLock(PublicationFence fence) =>
+        fence.Sequence == revision && fence.Epoch == epoch &&
+        committed is { } state && state.Revision == fence.CommittedRevision &&
+        state.RootIdentity == fence.RootIdentity;
+
+    private bool CommitPublication(PublicationFence fence, Action move)
+    {
+        lock (gate)
+        {
+            if (!IsPublicationCurrentUnderLock(fence))
+                return false;
+            move();
+            return true;
+        }
+    }
+
+    private async Task<bool> VerifyPublicationAsync(PublicationFence fence, CancellationToken cancellationToken)
+    {
+        if (!IsPublicationCurrent(fence))
+            return false;
+        string? error = null;
+        try
+        {
+            if (await gitContext.ReadLiveAsync(cancellationToken) == fence.Git &&
+                RootIdentity.Read(workspace.Root) == fence.RootIdentity)
+                return IsPublicationCurrent(fence);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                    System.ComponentModel.Win32Exception)
+        {
+            error = ex.Message;
+        }
+        lock (gate)
+        {
+            if (!IsPublicationCurrentUnderLock(fence))
+                return false;
+            if (error is not null)
+                lastError = error;
+            InvalidateUnderLock(null, restart: true, transition: false);
+        }
+        scheduler?.Signal();
+        return false;
     }
 
     private bool IsCurrent(long candidate)

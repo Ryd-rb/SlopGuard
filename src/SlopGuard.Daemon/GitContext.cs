@@ -6,6 +6,9 @@ internal sealed record GitRevision(string? Branch, string? Commit);
 
 internal sealed class GitContext(string root, string? gitDir, string? commonDir, string? executable)
 {
+    private readonly string? gitDir = gitDir;
+    private readonly string? commonDir = commonDir;
+
     internal IEnumerable<string> MetadataDirectories =>
         new[] { gitDir, commonDir }.OfType<string>().Distinct(Workspace.PathComparer);
 
@@ -53,6 +56,25 @@ internal sealed class GitContext(string root, string? gitDir, string? commonDir,
         return new GitRevision(branch, commit.Length == 0 ? null : commit);
     }
 
+    // Reading the cached HEAD alone is not sufficient: a linked worktree's .git
+    // file can be replaced while the previous git directory remains readable.
+    internal async Task<GitRevision> ReadLiveAsync(CancellationToken cancellationToken)
+    {
+        var before = await DiscoverAsync(root, cancellationToken);
+        if (!SameMetadata(before))
+            throw new IOException("Git metadata no longer belongs to this workspace.");
+
+        var revision = await ReadAsync(cancellationToken);
+        var after = await DiscoverAsync(root, cancellationToken);
+        if (!SameMetadata(after))
+            throw new IOException("Git metadata changed during verification.");
+        return revision;
+    }
+
+    private bool SameMetadata(GitContext other) =>
+        Workspace.PathComparer.Equals(gitDir, other.gitDir) &&
+        Workspace.PathComparer.Equals(commonDir, other.commonDir);
+
     internal static bool IsContextChange(string directory, string path)
     {
         var relative = Path.GetRelativePath(directory, path).Replace(Path.DirectorySeparatorChar, '/');
@@ -97,18 +119,35 @@ internal sealed class GitContext(string root, string? gitDir, string? commonDir,
         using var process = Process.Start(info) ?? throw new IOException("Could not start Git.");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        var completed = Task.WhenAll(stdout, stderr, process.WaitForExitAsync());
         try
         {
-            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.WaitForExitAsync(timeout.Token);
-            await stderr;
+            await completed.WaitAsync(timeout.Token);
             return process.ExitCode == 0 ? await stdout : string.Empty;
         }
         catch (OperationCanceledException)
         {
-            if (!process.HasExited)
-                process.Kill();
+            // Git for Windows may launch a second git.exe holding the checkout as
+            // its working directory. Drain redirected handles as well as the launcher.
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException) when (process.HasExited)
+            {
+                // The process exited between observation and cancellation.
+            }
+            try
+            {
+                await completed.WaitAsync(TimeSpan.FromSeconds(3));
+            }
+            catch (TimeoutException ex)
+            {
+                throw new IOException("The cancelled Git process did not drain.", ex);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             throw new IOException("Git metadata lookup timed out.");
         }
