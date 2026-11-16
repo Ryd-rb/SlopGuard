@@ -5,5 +5,8 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
+    <Compile Include="../slophawk-receipt-benchmark/Factory/Snapshot.cs" Link="Snapshot.cs" />
+    <Compile Remove="Inspector/**/*.cs" />
+    <None Update="Board/**/*.fixture" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

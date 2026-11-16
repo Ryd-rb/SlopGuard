@@ -1,0 +1,21 @@
+# Norchester Dispatch promotion board
+
+Norchester Dispatch quotes haulage rates, then promotes a small bundle of rules and prebuilt services to each dispatch lane. The board evaluates exported evidence from the release supervisor. Operators use its `ready` or `hold` result before promoting a lane.
+
+This change stages the Delta carrier cutover from the old tariff to the regional tariff. Ember is already live. Its fallback tariff should stay in service during the cutover. The rollout brief requires Delta’s selected restore graph and qualification to belong to this workspace incarnation. Reusing the prior package is fine when the chosen lane would still quote the approved rates. The renewal-window change needs observed execution for the lane’s requested build target. A failure elsewhere in a compatibility run does not invalidate an otherwise applicable observation.
+
+`board/` contains the operator program. `releases/` holds the lane requests and `records/` holds the supervisor exports. `dispatch/` contains the service and smoke project graph. `rating/` contains the quote executable, its catalog and staged files. The prebuilt programs and the archived files are part of the handoff.
+
+From the dossier root, use PowerShell. Set `$out` to a fresh directory outside this checkout. The board makes no network calls.
+
+```powershell
+dotnet build board/Board.csproj --artifacts-path $out -p:NuGetAudit=false
+$board = Join-Path $out 'bin/Board/debug/Board.dll'
+dotnet $board (Get-Location).Path selftest
+dotnet $board (Get-Location).Path delta
+dotnet $board (Get-Location).Path ember
+dotnet dispatch/verification/Release.Check/bin/Debug/net10.0/Release.Check.dll
+dotnet rating/bin/Debug/net10.0/Quote.dll (Join-Path (Get-Location).Path 'rating') fallback
+```
+
+Ordinary build outputs for new commands belong outside the checkout. The archived `bin` and `obj` evidence should stay byte-for-byte intact during review.

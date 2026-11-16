@@ -1,0 +1,104 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Xml.Linq;
+
+if (args is not [var directory, var lane])
+{
+    Console.Error.WriteLine("Usage: Board WORKSPACE {delta|ember|selftest}");
+    return 2;
+}
+
+var board = new PromotionBoard(directory);
+if (lane == "selftest")
+{
+    if (board.Decide("ember") != "ready" || board.Decide("pending") != "hold")
+        return 1;
+    Console.WriteLine("Promotion smoke checks passed.");
+    return 0;
+}
+
+Console.WriteLine(board.Decide(lane));
+return 0;
+
+internal sealed class PromotionBoard(string workspace)
+{
+    internal string Decide(string lane)
+    {
+        var request = Read<PromotionRequest>($"releases/{lane}.json");
+        if (request.Paused)
+            return "hold";
+
+        var graph = Read<DispatchProject[]>("records/dispatch.json");
+        var selected = graph.Single(project => project.ProjectPath == request.Project);
+        var run = Read<RunArchive>($"records/runs/{request.Run}.json");
+        var checks = new[]
+        {
+            OwnsRestore(selected),
+            CanReuse(request),
+            Cleared(run),
+            Executed(request)
+        };
+        return checks.All(ok => ok) ? "ready" : "hold";
+    }
+
+    private bool OwnsRestore(DispatchProject project)
+    {
+        var expected = PathInWorkspace($"dispatch/{project.ProjectPath}");
+        var directory = Path.GetDirectoryName(expected)!;
+        var receipt = Path.Combine(directory, "obj", "project.assets.json");
+        using var json = JsonDocument.Parse(File.ReadAllText(receipt));
+        var owner = json.RootElement.GetProperty("project").GetProperty("restore").GetProperty("projectPath").GetString();
+        return string.Equals(expected, owner, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool CanReuse(PromotionRequest request)
+    {
+        var receipt = Read<ApprovedInputs>("records/rating.json");
+        return receipt.Paths.All(MatchesApproved);
+    }
+
+    private bool MatchesApproved(string relative)
+    {
+        using var deployed = File.OpenRead(PathInWorkspace($"rating/{relative}"));
+        using var approved = File.OpenRead(PathInWorkspace($"records/approved/{relative}"));
+        return SHA256.HashData(deployed).SequenceEqual(SHA256.HashData(approved));
+    }
+
+    private static bool Cleared(RunArchive run)
+    {
+        var admitted = run.Attempt.Fence;
+        return run.Receipt.Execution == "Passed" && run.Live.Revision == admitted.Revision &&
+            run.Live.Git == admitted.Git && run.Attempt.Target.Id == run.Receipt.Target &&
+            run.Attempt.Target.InputFingerprint == run.Receipt.InputFingerprint;
+    }
+
+    private bool Executed(PromotionRequest request)
+    {
+        var location = $"records/coverage/{request.Coverage}";
+        var run = Read<CoverageArchive>($"{location}/capture.json");
+        var source = run.Attempt.VerifiedAliases.Single(entry => entry.SourcePath == request.Document);
+        var archive = XDocument.Load(PathInWorkspace($"{location}/{run.Report}"));
+        return archive.Descendants("class").Where(type => (string?)type.Attribute("filename") == source.CollectorPath)
+            .SelectMany(type => type.Descendants("line"))
+            .Any(line => (int?)line.Attribute("number") == request.Line && (int?)line.Attribute("hits") > 0);
+    }
+
+    private string PathInWorkspace(string path) => Path.GetFullPath(Path.Combine(workspace, path));
+
+    private T Read<T>(string path) => JsonSerializer.Deserialize<T>(File.ReadAllText(PathInWorkspace(path)))
+        ?? throw new InvalidDataException(path);
+}
+
+internal sealed record PromotionRequest(string Project, string Route, string Run, string Coverage,
+    string Target, string Document, int Line, bool Paused = false);
+internal sealed record DispatchProject(string Id, string ProjectPath, string[] References);
+internal sealed record ApprovedInputs(string[] Paths);
+internal sealed record RunArchive(AttemptRecord Attempt, FenceRecord Live, TestRecord Receipt);
+internal sealed record AttemptRecord(FenceRecord Fence, TargetRecord Target);
+internal sealed record FenceRecord(Guid Epoch, long Revision, GitRecord Git);
+internal sealed record GitRecord(string? Branch, string? Commit);
+internal sealed record TargetRecord(string Id, string InputFingerprint);
+internal sealed record TestRecord(string Target, string InputFingerprint, string Execution);
+internal sealed record CoverageArchive(CoverageAttempt Attempt, string Report);
+internal sealed record CoverageAttempt(string Target, CoverageAlias[] VerifiedAliases);
+internal sealed record CoverageAlias(string CollectorPath, string SourcePath);

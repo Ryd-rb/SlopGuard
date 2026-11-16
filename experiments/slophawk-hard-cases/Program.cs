@@ -4,27 +4,39 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using SlopHawk.Daemon;
 
+if (args is ["fingerprint", var snapshot] && Path.IsPathFullyQualified(snapshot))
+{
+    Snapshot.Report(snapshot);
+    return 0;
+}
+
+var pack = args is ["pack", _];
+if (pack)
+    args = args[1..];
 if (args is not [var destination] || !Path.IsPathFullyQualified(destination) ||
     Directory.Exists(destination) || File.Exists(destination))
 {
-    Console.Error.WriteLine("Usage: Qualification NEW_ABSOLUTE_SCRATCH_DIRECTORY");
+    Console.Error.WriteLine("Usage: Qualification [pack] NEW_ABSOLUTE_SCRATCH_DIRECTORY");
     return 2;
 }
 
 var root = Path.GetFullPath(destination);
 Directory.CreateDirectory(root);
 var sdk = (await Dotnet(root, "--version")).Trim();
+var pilot = pack ? new Pilot(root) : null;
 
-await QualifyBuildPlan(Path.Combine(root, "planning"));
-await QualifyReuse(Path.Combine(root, "reuse"), sdk);
-QualifyReceipt(Path.Combine(root, "reconciliation"));
-QualifyCoverage(Path.Combine(root, "coverage"));
+await QualifyBuildPlan(Path.Combine(root, "planning"), pilot);
+await QualifyReuse(pilot?.Rating ?? Path.Combine(root, "reuse"), sdk, pilot);
+QualifyReceipt(Path.Combine(root, "reconciliation"), pilot);
+QualifyCoverage(Path.Combine(root, "coverage"), pilot);
+if (pilot is not null)
+    await pilot.Replay(root, Dotnet);
 Console.WriteLine("Four counterexamples and their neighboring controls qualified.");
 return 0;
 
-static async Task QualifyBuildPlan(string root)
+static async Task QualifyBuildPlan(string root, Pilot? pilot)
 {
-    var checkout = Path.Combine(root, "checkout");
+    var checkout = pilot?.Dispatch ?? Path.Combine(root, "checkout");
     const string current = "services/v2/Tariff/Tariff.csproj";
     const string legacy = "services/v1/Tariff/Tariff.csproj";
     const string router = "services/Route/Route.csproj";
@@ -96,10 +108,11 @@ static async Task QualifyBuildPlan(string root)
         "The unchanged compiled smoke executable should still pass over a stale restore archive.");
     File.WriteAllBytes(currentAssets, priorCurrent);
     Require(Plan().Ready, "Restoring the correct single artifact should repair the plan.");
+    pilot?.KeepPlan(graph, gate, legacy, currentAssets, priorLegacy, priorCurrent);
     Console.WriteLine("Planning: smoke D17; wrong bytes under the active leaf block; identical substitution outside the closure stays ready.");
 }
 
-static async Task QualifyReuse(string root, string sdk)
+static async Task QualifyReuse(string root, string sdk, Pilot? pilot)
 {
     Write(root, "Quote.csproj", Project("<OutputType>Exe</OutputType>"));
     Write(root, "Program.cs", """
@@ -127,11 +140,11 @@ static async Task QualifyReuse(string root, string sdk)
     var manifest = new BuildArtifactManifest(target, true, "evaluated-profile-v1", "dotnet/app", "fixture",
         [new("Program.cs", null)], [], ["catalog/index.json"], [], [], outputs);
     var observedManifest = manifest with { RuntimeAssets = ["catalog/index.json", "assets/regional.json"] };
-    var mapped = outputs.Concat(["Program.cs", "catalog/index.json", "assets/regional.json"]).Select(path =>
-        new BuildArtifactPathMapping(path, Path.GetFullPath(Path.Combine(root, path)))).ToArray();
-    var scope = new BuildArtifactReadScope([root], mapped, MappingTrusted: true);
     BuildIdentityStamp Capture(BuildArtifactManifest selected)
     {
+        var mapped = outputs.Append("Program.cs").Concat(selected.RuntimeAssets!).Select(path =>
+            new BuildArtifactPathMapping(path, Path.GetFullPath(Path.Combine(root, path)))).ToArray();
+        var scope = new BuildArtifactReadScope([root], mapped, MappingTrusted: true);
         var result = BuildArtifactCapture.Capture(selected, scope);
         Require(result.Stamp.Complete, "Scoped capture incomplete: " + string.Join(", ", result.Stamp.Problems));
         return result.Stamp;
@@ -142,6 +155,7 @@ static async Task QualifyReuse(string root, string sdk)
 
     var prior = Capture(manifest);
     var priorObserved = Capture(observedManifest);
+    pilot?.KeepBuildBefore(manifest, prior, outputs);
     Require(await Quote("branch") == "16" && await Quote("fallback") == "16", "Baseline output should be 16.");
     ReplaceAtSameTime(Path.Combine(root, "assets/local-override.json"), """{"limit":17}""");
     Require(await Quote("branch") == "16" && BuildOutputIdentity.Compare(priorObserved, Capture(observedManifest)).Reusable,
@@ -157,17 +171,17 @@ static async Task QualifyReuse(string root, string sdk)
     Console.WriteLine("Reuse: fallback remains 16, branch becomes 17; omitted asset reuses, captured asset invalidates.");
 }
 
-static void QualifyReceipt(string root)
+static void QualifyReceipt(string root, Pilot? pilot)
 {
-    var bad = Settle(Path.Combine(root, "cycle-1"), replaced: true);
-    var good = Settle(Path.Combine(root, "cycle-2"), replaced: false);
+    var bad = Settle(Path.Combine(root, "cycle-1"), "delta", replaced: true);
+    var good = Settle(Path.Combine(root, "cycle-2"), "ember", replaced: false);
     Require(bad == ("superseded", "passed", 1, 0L) && good == ("passed", "passed", 0, 0L),
         $"Expected historical pass with pending intent versus current pass with resolved intent: {bad} / {good}.");
     // The dummy summary looks only at the valid result code. Both records appear green.
     Require(bad.Outcome == good.Outcome, "The unscoped summary should mask the lifecycle distinction.");
     Console.WriteLine("Completion: both outcomes passed; only the current attempt resolved the pending intent.");
 
-    static (string State, string? Outcome, int Pending, long Evidence) Settle(string scope, bool replaced)
+    (string State, string? Outcome, int Pending, long Evidence) Settle(string scope, string lane, bool replaced)
     {
         var workspace = new Workspace(Directory.CreateDirectory(Path.Combine(scope, "checkout")).FullName,
             Path.Combine(scope, "state"));
@@ -180,12 +194,13 @@ static void QualifyReceipt(string root)
         var work = new TestWork(new TestSelectionInput(old, [cause]), [], new PendingIntents(1, 8, 8, null), null);
         var selection = new ValidatedSelection(work, new TestSelection(true, [selected]));
         var attempt = new TestAttempt(11, 1, old, selected, "release");
+        const string lease = "fixture-lease";
         var details = new TestRunReceiptDetails(11, old.Revision, old.Epoch, old.Sequence, TestRunReceiptDetails.GitIdentity(old.Git),
-            old.RootIdentity, selected.Id, selected.InputFingerprint, "release", "fixture-lease",
+            old.RootIdentity, selected.Id, selected.InputFingerprint, "release", lease,
             BuildOutputIdentity.DomainVersion, new string('A', 64), new string('B', 64), new string('C', 64),
             214, Guid.NewGuid(), VstestDisposition.Passed, VstestRunnerHealth.ZeroExit, VstestArtifactHealth.Complete,
             VstestExecution.Passed, new VstestTrxCounters(2, 2, 2, 0, 0, 0), "passed");
-        details.Validate(attempt, TestOutcome.Passed, "fixture-lease");
+        details.Validate(attempt, TestOutcome.Passed, lease);
 
         using var db = new SqliteConnection(new SqliteConnectionStringBuilder
         {
@@ -199,12 +214,13 @@ static void QualifyReceipt(string root)
                 UPDATE workspace SET revision=9, root_identity=$root;
                 INSERT INTO test_intent VALUES (8, 'src/Policy.cs', 'src/Policy.cs', 'earlier', 'src/Policy.cs', 'later', 'graph_unavailable');
                 INSERT INTO test_attempt(id, number, revision, epoch, target, fingerprint, causes, plan_key, state, lease_id, profile_revision)
-                VALUES (11, 1, 9, $epoch, 'unit-net10', $fingerprint, $causes, 'plan-one', 'running', 'fixture-lease', 'release');
+                VALUES (11, 1, 9, $epoch, 'unit-net10', $fingerprint, $causes, 'plan-one', 'running', $lease, 'release');
                 """;
             seed.Parameters.AddWithValue("$root", old.RootIdentity);
             seed.Parameters.AddWithValue("$epoch", old.Epoch.ToString());
             seed.Parameters.AddWithValue("$fingerprint", selected.InputFingerprint);
             seed.Parameters.AddWithValue("$causes", JsonSerializer.Serialize(selected.CauseIds));
+            seed.Parameters.AddWithValue("$lease", lease);
             seed.ExecuteNonQuery();
         }
 
@@ -215,20 +231,22 @@ static void QualifyReceipt(string root)
             () => live == attempt.Fence, details);
         var reopened = new SourceInventory(workspace);
         Require(reopened.ReadTestRunReceipt(attempt.Id) == details, "The original passed receipt must survive in both cases.");
+        pilot?.KeepRun(lane, new RunPacket(attempt, live, lease, details));
         using var query = db.CreateCommand();
         query.CommandText = "SELECT count(*) FROM test_evidence";
         return (settled.Receipt.State, settled.Receipt.Outcome, reopened.Load().Pending.DetailedCount, (long)query.ExecuteScalar()!);
     }
 }
 
-static void QualifyCoverage(string root)
+static void QualifyCoverage(string root, Pilot? pilot)
 {
     const string compatible = "compat-net10";
     const string shipping = "release-net10";
     const string source = "src/Renewal.cs";
     const string alias = "maps/src/Renewal.cs";
-    Write(root, source, "internal static class Renewal { public static int Window() => 16; }");
-    var sourceDigest = Digest(Path.Combine(root, source));
+    var workspace = pilot?.Dossier ?? root;
+    Write(workspace, source, "internal static class Renewal { public static int Window() => 16; }");
+    var sourceDigest = Digest(Path.Combine(workspace, source));
     var other = Observe(compatible, "compat", 7, TestOutcome.Failed);
     var actual = Observe(shipping, "release", 0, TestOutcome.Passed);
 
@@ -245,7 +263,7 @@ static void QualifyCoverage(string root)
     CoberturaImportResult Observe(string target, string folder, int hits, TestOutcome outcome)
     {
         var now = DateTimeOffset.UtcNow;
-        var leaseRoot = Path.Combine(root, folder);
+        var leaseRoot = pilot?.PathInDossier($"records/coverage/{folder}") ?? Path.Combine(root, folder);
         const string report = "coverage.xml";
         Write(leaseRoot, report, $"""
             <coverage lines-covered="{(hits == 0 ? 0 : 1)}" lines-valid="1" branches-covered="0" branches-valid="0" version="1.9">
@@ -262,6 +280,7 @@ static void QualifyCoverage(string root)
         var captured = CoverageReceiptCapture.Capture(attempt, lease, new CoverageArtifactDeclaration(report));
         Require(captured.Result.State == CoberturaImportState.Imported && captured.Receipt is not null,
             $"The record itself should be valid: {captured.Result.State}/{captured.Result.Reason}");
+        pilot?.KeepCoverage(folder, new CoveragePacket(attempt, lease with { ResultsDirectory = "" }, report));
         return captured.Result;
     }
 }
