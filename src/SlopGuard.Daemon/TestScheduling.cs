@@ -36,7 +36,10 @@ internal sealed record TestCause(long Revision, string PathKey, string? OldPath,
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 
-internal sealed record TestSelection(bool Complete, IReadOnlyList<SelectedTarget> Targets);
+internal sealed record TestSelection(bool Complete, IReadOnlyList<SelectedTarget> Targets)
+{
+    internal TestSelectionProjection? Projection { get; init; }
+}
 internal sealed record SelectedTarget(string Id, string InputFingerprint, IReadOnlyList<string> CauseIds);
 internal sealed record TestEvidence(string CauseId, string Target, string InputFingerprint);
 internal sealed record TestWork(TestSelectionInput Input, HashSet<TestEvidence> Evidence,
