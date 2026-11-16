@@ -4,7 +4,7 @@
 
 This workflow describes the full agent integration. Version 0.1 and incremental 0.2 builds expose the subset advertised by their daemon. The skill uses status and the available recheck when baseline or checkpoint tools are unavailable, then reports the coverage it could verify.
 
-Package the [SlopGuard skill](../skills/slopguard/SKILL.md) alongside the CLI. It is the sole skill an agent needs to start the daemon, use all configured checkers, read reports and submit status changes. Keep provider routing and scheduling in the daemon.
+Package the [SlopHawk skill](../skills/slophawk/SKILL.md) alongside the CLI. It is the sole skill an agent needs to start the daemon, use all configured checkers, read reports and submit status changes. Keep provider routing and scheduling in the daemon.
 
 1. Start from the checkout the agent is about to edit. Resolve the workspace through the CLI and start or reuse the daemon. Connect the MCP stdio bridge and read the effective policy, provider readiness and discovered build contexts.
 2. Capture a baseline for the intended scope. If inspection is pending, pin the revision and report the baseline as incomplete until the required checks finish.

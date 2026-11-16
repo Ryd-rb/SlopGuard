@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>slophawk</AssemblyName>
+    <Version>0.2.0-preview.1</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
+    <PackageReference Include="ModelContextProtocol.Core" Version="2.3.0" />
+  </ItemGroup>
+</Project>

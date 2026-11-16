@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../SlopHawk.Core/SlopHawk.Core.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+    <PackageReference Include="NuGet.Frameworks" Version="7.3.0" />
+    <InternalsVisibleTo Include="SlopHawk.IntegrationTests" />
+    <InternalsVisibleTo Include="SlopHawk.WorkerFixture" />
+  </ItemGroup>
+</Project>

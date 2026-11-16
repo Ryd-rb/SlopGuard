@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SlopHawk.Cli/SlopHawk.Cli.csproj" />
+    <Project Path="src/SlopHawk.Core/SlopHawk.Core.csproj" />
+    <Project Path="src/SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
+    <Project Path="src/SlopHawk.Providers.CSharp/SlopHawk.Providers.CSharp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SlopHawk.IntegrationTests/SlopHawk.IntegrationTests.csproj" />
+    <Project Path="tests/SlopHawk.WorkerFixture/SlopHawk.WorkerFixture.csproj" />
+  </Folder>
+</Solution>
