@@ -68,4 +68,19 @@ The daemon reports the user-owned profile path and current root identity under `
 
 Use absolute physical directory paths for outputs. Each grant is explicit. The other operations are `build`, `restore`, `network` and `compilerExtensions`. Replace the profile file atomically to change grants while the daemon is running. A missing, invalid or revoked profile blocks scheduled execution and leaves source intents pending. The explicit `projects` invocation authorizes a single evaluation. [Execution profile and worker behavior](docs/architecture.md#repository-execution)
 
+### Differential probes
+
+`slophawk probes plan` accepts a JSON array of known examples such as `[{"Operation":"quote","Args":[5,7]}]`. It generates bounded signed-integer probes around those examples, including neighboring values, ties and correlated changes. The count is per operation. An optional random seed varies sampling. An optional JSON array of positive scales greater than one adds compensating changes across pairs of fields, which can expose behavior around scaled quantities and composite keys.
+
+```sh
+slophawk probes plan seeds.json 512 > probes.json
+slophawk probes plan seeds.json 512 0 scales.json > scaled-probes.json
+slophawk probes methods candidate.dll reference.dll > methods.json
+slophawk probes compare probes.json candidate-results.json reference-results.json > comparison.json
+```
+
+Use the project's own runner or adapter to replay the **same ordered probes** against both versions. Each result file must be a JSON array with one entry per input in that order. Use `null` for an unsupported input. The comparison reports counts, support mismatches, and the first differing supported result per operation with both observed values and its input. A bounded search can miss differences. Replay evidence applies to the supplied inputs and reference behavior.
+
+The optional method comparison reads managed metadata and shows changed bodies, instruction excerpts and integer literals without loading either assembly for execution. Use the method results to prioritize investigation or derive scales. Method changes can include semantic equivalents and compiler-generated code. Confirm observable differences with replay before treating a method change as a regression.
+
 Released under the [MIT License](LICENSE).

@@ -11,13 +11,16 @@ if (args is [] or ["--help"] or ["-h"])
         Read results  slophawk results [--root <checkout>]
         Projects      slophawk projects [--root <checkout>]
         Recheck       slophawk recheck [--root <checkout>]
+        Plan probes   slophawk probes plan <seeds.json> <per-operation> [seed [scales.json]]
+        Compare       slophawk probes compare <probes.json> <candidate.json> <reference.json>
+        Compare IL    slophawk probes methods <candidate.dll> <reference.dll>
         MCP server    slophawk mcp [--root <checkout>]
         Stop          slophawk stop [--root <checkout>]
         """);
     return 0;
 }
 
-if (args is not [_] and not [_, "--root", _])
+if (args is not ["probes", ..] and not [_] and not [_, "--root", _])
 {
     Console.Error.WriteLine("Invalid arguments. Run slophawk --help.");
     return 2;
@@ -25,6 +28,9 @@ if (args is not [_] and not [_, "--root", _])
 
 try
 {
+    if (args is ["probes", ..])
+        return await SlopHawk.Cli.ProbeCommands.RunAsync(args);
+
     var workspace = new Workspace(args.Length == 3 ? args[2] : Environment.CurrentDirectory);
     var connection = new DaemonConnection(workspace);
     switch (args[0])
@@ -61,7 +67,7 @@ try
     }
 }
 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
-                           or System.ComponentModel.Win32Exception or JsonException)
+                           or System.ComponentModel.Win32Exception or JsonException or BadImageFormatException or OverflowException)
 {
     Console.Error.WriteLine(ex.Message);
     return 1;
