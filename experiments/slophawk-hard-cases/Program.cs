@@ -22,6 +22,19 @@ if (args is ["incidents", var incidentSuite] && Path.IsPathFullyQualified(incide
     return 0;
 }
 
+if (args is ["wide", var corpus] && Path.IsPathFullyQualified(corpus))
+{
+    await WideReview.Package(corpus, Dotnet);
+    return 0;
+}
+
+if (args is ["adjudicate", var corpusPath, var reports, var score] &&
+    Path.IsPathFullyQualified(corpusPath) && Path.IsPathFullyQualified(reports) && Path.IsPathFullyQualified(score))
+{
+    await WideReview.Adjudicate(corpusPath, reports, score, Dotnet);
+    return 0;
+}
+
 var hard = args is ["pack-hard", _];
 var pack = args is ["pack", _] || hard;
 if (pack)
