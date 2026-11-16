@@ -5,7 +5,7 @@ using SlopHawk.Core;
 namespace SlopHawk.Cli;
 
 internal sealed record CheckRun(string Format, string Run, string Candidate, string? RunVerb, string? PrepareVerb,
-    ProbeCheckResult Result, JsonElement[] Expected);
+    ProbeCheckResult Result, JsonElement[]? Expected);
 
 internal static class CheckReview
 {
@@ -34,7 +34,7 @@ internal static class CheckReview
             var observed = await ReadAsync<JsonElement[]>(Path.Combine(runPath, "observed.json"));
             if (report.Format != ForegroundCheck.Format || report.Run != run ||
                 report.Result.Cases != requests.Length || requests.Length != observed.Length ||
-                requests.Length != report.Expected.Length)
+                (report.Expected is not null && requests.Length != report.Expected.Length))
                 throw new IOException($"Inconsistent checker evidence in run {run}.");
             runs.Add(run, new(report, requests, observed));
         }
@@ -49,7 +49,7 @@ internal static class CheckReview
         {
             if (item is null || string.IsNullOrWhiteSpace(item.Run) || string.IsNullOrWhiteSpace(item.RetestRun) ||
                 !runs.TryGetValue(item.Run, out var original) || !runs.TryGetValue(item.RetestRun, out var retest) ||
-                item.Run == item.RetestRun || !SameAdapter(original, retest) ||
+                item.Run == item.RetestRun || !SameAdapter(original, retest) || retest.Report.Expected is null ||
                 item.RetestIndex < 0 || item.RetestIndex >= retest.Requests.Length ||
                 string.IsNullOrWhiteSpace(item.Reason))
                 throw new ArgumentException("Each acknowledgment needs a finding, a separate retest of the same candidate and adapter, and a reason.");
@@ -84,13 +84,14 @@ internal static class CheckReview
 
         var outstanding = findings.Where(finding => !resolved.ContainsKey((finding.Run, finding.Difference.Index))).ToArray();
         var coverage = runs.Values.SelectMany(run => run.Requests.Select((input, index) =>
-                (input.Operation, Compared: run.Observed[index].ValueKind is not JsonValueKind.Null)))
+                (input.Operation, Supported: run.Observed[index].ValueKind is not JsonValueKind.Null, ObserveOnly: run.Report.Expected is null)))
             .GroupBy(item => item.Operation, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal)
             .Select(group => new
             {
                 Operation = group.Key,
-                Compared = group.Count(item => item.Compared),
-                Unsupported = group.Count(item => !item.Compared)
+                Compared = group.Count(item => item.Supported && !item.ObserveOnly),
+                ObservedOnly = group.Count(item => item.Supported && item.ObserveOnly),
+                Unsupported = group.Count(item => !item.Supported)
             }).ToArray();
         var complete = outstanding.Length == 0 && coverage.Any(operation => operation.Compared > 0);
         var review = Path.Combine(directory, "review.json");

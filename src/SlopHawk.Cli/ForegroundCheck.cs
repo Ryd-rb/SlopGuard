@@ -14,8 +14,9 @@ internal static class ForegroundCheck
 
     internal static async Task<int> RunAsync(string[] args)
     {
+        var observe = args[0] == "check-observe";
         if (args.Length is < 4 or > 6)
-            throw new ArgumentException("Usage: slophawk check <assembly.dll> <cases.json> <workspace> [run-verb [prepare-verb]]");
+            throw new ArgumentException($"Usage: slophawk {args[0]} <assembly.dll> <input.json> <workspace> [run-verb [prepare-verb]]");
 
         var assembly = Path.GetFullPath(args[1]);
         var workspace = Path.GetFullPath(args[3]);
@@ -29,9 +30,21 @@ internal static class ForegroundCheck
         await using var caseFile = File.OpenRead(args[2]);
         if (caseFile.Length > MaximumCharacters)
             throw new IOException("The check cases exceed the input budget.");
-        var cases = await JsonSerializer.DeserializeAsync<ProbeExpectation[]>(caseFile, Json)
-            ?? throw new JsonException("A JSON array of check cases was expected.");
-        var inputs = ProbeReplay.InputsForCheck(cases);
+        ProbeExpectation[]? cases = null;
+        ProbeInput[] inputs;
+        if (observe)
+        {
+            inputs = await JsonSerializer.DeserializeAsync<ProbeInput[]>(caseFile, Json)
+                ?? throw new JsonException("A JSON array of requests was expected.");
+            if (inputs.Length == 0 || inputs.Any(input => input is null || string.IsNullOrWhiteSpace(input.Operation) || input.Args is null))
+                throw new ArgumentException("Provide at least one request with an operation and arguments.");
+        }
+        else
+        {
+            cases = await JsonSerializer.DeserializeAsync<ProbeExpectation[]>(caseFile, Json)
+                ?? throw new JsonException("A JSON array of check cases was expected.");
+            inputs = ProbeReplay.InputsForCheck(cases);
+        }
 
         var candidate = await CandidateHashAsync(assembly);
         var run = Guid.NewGuid().ToString("N");
@@ -52,15 +65,19 @@ internal static class ForegroundCheck
         var output = await RunAdapterAsync(assembly, runVerb, requests, artifacts);
         var observed = JsonSerializer.Deserialize<JsonElement[]>(output)
             ?? throw new JsonException("The adapter must return a JSON array of results.");
+        if (observed.Length != inputs.Length)
+            throw new ArgumentException("The adapter must return exactly one result per request, in input order.");
         await WriteJsonAsync(Path.Combine(artifacts, "observed.json"), observed);
-        var result = ProbeReplay.Check(cases, observed);
+        var result = cases is null
+            ? new ProbeCheckResult(inputs.Length, 0, observed.Count(item => item.ValueKind is JsonValueKind.Null), [])
+            : ProbeReplay.Check(cases, observed);
         if (candidate != await CandidateHashAsync(assembly))
             throw new IOException("The candidate assembly changed during this check.");
         var report = Path.Combine(artifacts, "report.json");
         await PublishJsonAsync(report, new CheckRun(Format, run, candidate, runVerb, prepareVerb, result,
-            cases.Select(item => item.Expected).ToArray()));
+            cases?.Select(item => item.Expected).ToArray()));
         using var stdout = Console.OpenStandardOutput();
-        await JsonSerializer.SerializeAsync(stdout, new { Format, Run = run, Report = report, Artifacts = artifacts, Result = result });
+        await JsonSerializer.SerializeAsync(stdout, new { Format, Run = run, Report = report, Artifacts = artifacts, ObserveOnly = observe, Result = result });
         return result.Unsupported == 0 && result.Findings.Count == 0 ? 0 : 1;
     }
 
