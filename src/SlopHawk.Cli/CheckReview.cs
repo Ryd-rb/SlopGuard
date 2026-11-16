@@ -13,7 +13,7 @@ internal static class CheckReview
     private sealed record Acknowledgment(string Run, [property: JsonRequired] int Index, string RetestRun,
         [property: JsonRequired] int RetestIndex, string Disposition, string Reason);
     private sealed record Finding(string Run, ProbeDifference Difference);
-    private sealed record ReviewScope(string[] Operations, ProbeInput[] Ordinary);
+    private sealed record ReviewScope(string[] Operations, ProbeInput[] Ordinary, int MinimumOutsideOrdinary = 1);
 
     internal static async Task<int> RunAsync(string[] args)
     {
@@ -22,8 +22,9 @@ internal static class CheckReview
         var scope = args.Length == 4 ? await ReadAsync<ReviewScope>(args[3]) : null;
         if (scope is not null &&
             (scope.Operations is not { Length: > 0 } || scope.Operations.Any(string.IsNullOrWhiteSpace) ||
-             scope.Ordinary is null || scope.Ordinary.Any(input => input is null || string.IsNullOrWhiteSpace(input.Operation) || input.Args is null)))
-            throw new ArgumentException("The scope needs a nonempty Operations array and an Ordinary array of public input examples.");
+             scope.Ordinary is null || scope.Ordinary.Any(input => input is null || string.IsNullOrWhiteSpace(input.Operation) || input.Args is null) ||
+             scope.MinimumOutsideOrdinary <= 0))
+            throw new ArgumentException("The scope needs Operations, an Ordinary array of public examples, and a positive minimum if specified.");
         var ordinary = scope?.Ordinary.ToLookup(input => input.Operation, StringComparer.Ordinal);
         var directory = ForegroundCheck.ChecksPath(args[1]);
         if (!Directory.Exists(directory))
@@ -97,13 +98,15 @@ internal static class CheckReview
             {
                 Operation = group.Key,
                 Compared = group.Count(item => item.Supported && !item.ObserveOnly),
-                OutsideOrdinary = ordinary is null ? (int?)null : group.Count(item =>
-                    item.Supported && !item.ObserveOnly && !ordinary[group.Key].Any(example => SameInput(example, item.Input))),
+                OutsideOrdinary = ordinary is null ? (int?)null : group
+                    .Where(item => item.Supported && !item.ObserveOnly && !ordinary[group.Key].Any(example => SameInput(example, item.Input)))
+                    .Select(item => string.Join(',', item.Input.Args)).Distinct(StringComparer.Ordinal).Count(),
                 ObservedOnly = group.Count(item => item.Supported && item.ObserveOnly),
                 Unsupported = group.Count(item => !item.Supported)
             }).ToArray();
         string[] missingCoverage = scope is null ? [] : scope.Operations
-            .Except(coverage.Where(operation => operation.OutsideOrdinary > 0).Select(operation => operation.Operation), StringComparer.Ordinal)
+            .Except(coverage.Where(operation => operation.OutsideOrdinary >= scope.MinimumOutsideOrdinary)
+                .Select(operation => operation.Operation), StringComparer.Ordinal)
             .Order(StringComparer.Ordinal).ToArray();
         var complete = outstanding.Length == 0 && missingCoverage.Length == 0 && coverage.Any(operation => operation.Compared > 0);
         var review = Path.Combine(directory, "review.json");
@@ -113,6 +116,7 @@ internal static class CheckReview
             Complete = complete,
             Runs = runs.Keys.ToArray(),
             Coverage = coverage,
+            MinimumOutsideOrdinary = scope?.MinimumOutsideOrdinary,
             MissingCoverage = missingCoverage,
             Acknowledged = acknowledged,
             Outstanding = outstanding
