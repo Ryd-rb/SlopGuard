@@ -13,7 +13,9 @@ internal static class CheckReview
 {
     private sealed record Evidence(CheckRun Report, ProbeInput[] Requests, JsonElement[] Observed);
     private sealed record Finding(string Run, ProbeDifference Difference);
-    private sealed record ReviewScope(string[] Operations, ProbeInput[] Ordinary, int MinimumOutsideOrdinary = 1);
+    private sealed record ReviewSource(string Operation, string Component, string Contract, string Implementation);
+    private sealed record ReviewScope(string[] Operations, ProbeInput[] Ordinary, int MinimumOutsideOrdinary = 1,
+        ReviewSource[]? Sources = null);
 
     internal static async Task<int> RunAsync(string[] args)
     {
@@ -25,6 +27,12 @@ internal static class CheckReview
              scope.Ordinary is null || scope.Ordinary.Any(input => input is null || string.IsNullOrWhiteSpace(input.Operation) || input.Args is null) ||
              scope.MinimumOutsideOrdinary <= 0))
             throw new ArgumentException("The scope needs Operations, an Ordinary array of public examples, and a positive minimum if specified.");
+        if (scope?.Sources is { } sources &&
+            (sources.Any(source => source is null || !scope.Operations.Contains(source.Operation, StringComparer.Ordinal) ||
+                string.IsNullOrWhiteSpace(source.Component) || string.IsNullOrWhiteSpace(source.Contract) ||
+                string.IsNullOrWhiteSpace(source.Implementation)) ||
+             sources.Select(source => source.Operation).Distinct(StringComparer.Ordinal).Count() != sources.Length))
+            throw new ArgumentException("Each source entry needs a unique listed operation and its component, contract and implementation.");
         var ordinary = scope?.Ordinary.ToLookup(input => input.Operation, StringComparer.Ordinal);
         var directory = ForegroundCheck.ChecksPath(args[1]);
         if (!Directory.Exists(directory))
@@ -108,6 +116,10 @@ internal static class CheckReview
             .Except(coverage.Where(operation => operation.OutsideOrdinary >= scope.MinimumOutsideOrdinary)
                 .Select(operation => operation.Operation), StringComparer.Ordinal)
             .Order(StringComparer.Ordinal).ToArray();
+        var missingOperations = missingCoverage.ToHashSet(StringComparer.Ordinal);
+        var worklist = scope?.Sources?.Where(source => missingOperations.Contains(source.Operation))
+            .GroupBy(source => source.Component, StringComparer.Ordinal)
+            .Select(group => new { Component = group.Key, Operations = group.ToArray() }).ToArray();
         var complete = outstanding.Length == 0 && missingCoverage.Length == 0 && coverage.Any(operation => operation.Compared > 0);
         var review = Path.Combine(directory, "review.json");
         await ForegroundCheck.PublishJsonAsync(review, new
@@ -118,12 +130,14 @@ internal static class CheckReview
             Coverage = coverage,
             MinimumOutsideOrdinary = scope?.MinimumOutsideOrdinary,
             MissingCoverage = missingCoverage,
+            Worklist = worklist,
             Acknowledged = acknowledged,
             Outstanding = outstanding
         });
         Console.WriteLine(JsonSerializer.Serialize(new
         {
-            Review = review, Complete = complete, Outstanding = outstanding.Length, MissingCoverage = missingCoverage.Length
+            Review = review, Complete = complete, Outstanding = outstanding.Length, MissingCoverage = missingCoverage.Length,
+            NextComponent = worklist?.FirstOrDefault()?.Component
         }));
         return complete ? 0 : 1;
     }
