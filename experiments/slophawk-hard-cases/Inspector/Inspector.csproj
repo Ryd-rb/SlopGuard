@@ -6,5 +6,6 @@
   <ItemGroup>
     <ProjectReference Include="../../../src/SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
     <Compile Include="../PilotArchive.cs" Link="PilotArchive.cs" />
+    <Compile Include="../EffortInspection.cs" Link="EffortInspection.cs" />
   </ItemGroup>
 </Project>

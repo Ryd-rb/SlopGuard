@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using SlopHawk.Daemon;
 
-const string usage = "Inspector ROOT review REQUEST.json | plan PROJECT.csproj | reuse [REQUEST.json] | run RECORD.json | coverage CAPTURE.json TARGET SOURCE LINE";
+const string usage = "Inspector ROOT review REQUEST.json | archive REQUEST.json | plan PROJECT.csproj | reuse [REQUEST.json] | run RECORD.json | coverage CAPTURE.json TARGET SOURCE LINE";
 if (args.Length < 2 || !Path.IsPathFullyQualified(args[0]))
 {
     Console.Error.WriteLine(usage);
@@ -14,6 +14,9 @@ try
 {
     switch (args[1..])
     {
+        case ["archive", var requestRecord]:
+            EffortInspection.Report(root, requestRecord, row => Print(row));
+            break;
         case ["review", var path]:
             var request = ReadRequest(path);
             await Plan(request.Project);

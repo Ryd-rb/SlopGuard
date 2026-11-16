@@ -10,6 +10,12 @@ if (args is ["fingerprint", var snapshot] && Path.IsPathFullyQualified(snapshot)
     return 0;
 }
 
+if (args is ["matrix", var suite] && Path.IsPathFullyQualified(suite))
+{
+    await EffortMatrix.Package(suite, Dotnet);
+    return 0;
+}
+
 var hard = args is ["pack-hard", _];
 var pack = args is ["pack", _] || hard;
 if (pack)
