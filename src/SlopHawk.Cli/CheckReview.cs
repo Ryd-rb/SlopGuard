@@ -19,8 +19,11 @@ internal static class CheckReview
 
     internal static async Task<int> RunAsync(string[] args)
     {
+        var progress = args[^1] == "--progress";
+        if (progress)
+            args = args[..^1];
         if (args.Length is < 2 or > 4)
-            throw new ArgumentException("Usage: slophawk check-review <workspace> [acknowledgments.json [scope.json]]");
+            throw new ArgumentException("Usage: slophawk check-review <workspace> [acknowledgments.json [scope.json]] [--progress]");
         var scope = args.Length == 4 ? await ReadAsync<ReviewScope>(args[3]) : null;
         if (scope is not null &&
             (scope.Operations is not { Length: > 0 } || scope.Operations.Any(string.IsNullOrWhiteSpace) ||
@@ -139,7 +142,7 @@ internal static class CheckReview
             Review = review, Complete = complete, Outstanding = outstanding.Length, MissingCoverage = missingCoverage.Length,
             NextComponent = worklist?.FirstOrDefault()?.Component
         }));
-        return complete ? 0 : 1;
+        return complete || progress ? 0 : 1;
     }
 
     private static bool SameInput(ProbeInput left, ProbeInput right) =>
