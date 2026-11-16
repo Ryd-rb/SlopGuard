@@ -1,0 +1,7 @@
+namespace Beacon;
+
+public interface IExportFormat
+{
+    string Name { get; }
+    string MediaType { get; }
+}

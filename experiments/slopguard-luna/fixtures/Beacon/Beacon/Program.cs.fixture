@@ -1,0 +1,17 @@
+using Beacon;
+
+switch (args)
+{
+    case ["formats"]:
+        foreach (var type in typeof(IExportFormat).Assembly.GetTypes()
+                     .Where(type => !type.IsAbstract && typeof(IExportFormat).IsAssignableFrom(type))
+                     .OrderBy(type => type.Name, StringComparer.Ordinal))
+            Console.WriteLine(((IExportFormat)Activator.CreateInstance(type)!).Name);
+        return 0;
+    case ["name", var value] when DateOnly.TryParseExact(value, "yyyy-MM-dd", out var date):
+        Console.WriteLine(ExportName.ForDate(date));
+        return 0;
+    default:
+        Console.Error.WriteLine("Usage: Beacon formats | name YYYY-MM-DD");
+        return 2;
+}

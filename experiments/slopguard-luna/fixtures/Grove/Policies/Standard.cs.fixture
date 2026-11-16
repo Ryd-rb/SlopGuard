@@ -1,0 +1,7 @@
+namespace Grove;
+
+public sealed class Standard : ISeedPolicy
+{
+    public string Name => "standard";
+    public int RowSpacing => 20;
+}

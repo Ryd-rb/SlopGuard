@@ -1,0 +1,20 @@
+using Parcel;
+
+switch (args)
+{
+    case ["zones"]:
+        var zones = typeof(IZone).Assembly.GetTypes()
+            .Where(type => !type.IsAbstract && typeof(IZone).IsAssignableFrom(type))
+            .Select(type => ((IZone)Activator.CreateInstance(type)!).Name)
+            .Order(StringComparer.Ordinal);
+        foreach (var zone in zones)
+            Console.WriteLine(zone);
+        return 0;
+    case ["quote", var units, "priority" or "standard"]
+        when int.TryParse(units, out var quantity) && quantity > 0:
+        Console.WriteLine(Quote.Calculate(quantity, args[2] == "priority"));
+        return 0;
+    default:
+        Console.Error.WriteLine("Usage: Parcel zones | quote UNITS priority|standard");
+        return 2;
+}

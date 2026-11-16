@@ -1,0 +1,6 @@
+namespace Grove.Reference;
+
+internal static class WateringSchedule
+{
+    public static TimeOnly StartFor(int hour) => new TimeOnly(Math.Clamp(hour, 6, 20, 0);
+}

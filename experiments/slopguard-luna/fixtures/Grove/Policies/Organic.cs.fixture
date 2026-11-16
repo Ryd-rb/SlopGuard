@@ -1,0 +1,7 @@
+namespace Grove;
+
+public sealed class Organic : ISeedPolicy
+{
+    public string Name => "organic";
+    public int RowSpacing => 25;
+}

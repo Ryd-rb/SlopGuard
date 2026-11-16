@@ -1,0 +1,6 @@
+namespace Grove.Reference;
+
+internal static class ExperimentalWeights
+{
+    public static int GramsPerTray(int cells) => cells / 4;
+}

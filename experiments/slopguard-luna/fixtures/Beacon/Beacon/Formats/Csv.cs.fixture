@@ -1,0 +1,7 @@
+namespace Beacon;
+
+public sealed class Csv : IExportFormat
+{
+    public string Name => "csv";
+    public string MediaType => "text/csv";
+}

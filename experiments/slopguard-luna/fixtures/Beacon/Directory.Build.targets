@@ -1,0 +1,8 @@
+<Project>
+  <ItemGroup>
+    <Compile Remove="Plans/**/*.cs" />
+    <Compile Remove="Formats/Csv.cs" Condition="'$(EnableCsvExport)' != 'true'" />
+    <Compile Remove="Formats/Json.cs" Condition="'$(EnableExportJson)' != 'true'" />
+    <Compile Remove="Formats/Text.cs" Condition="'$(EnableTextExport)' != 'true'" />
+  </ItemGroup>
+</Project>

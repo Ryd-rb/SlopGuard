@@ -1,0 +1,22 @@
+using Grove;
+
+switch (args)
+{
+    case ["policies"]:
+        var policies = typeof(ISeedPolicy).Assembly.GetTypes()
+            .Where(type => !type.IsAbstract && typeof(ISeedPolicy).IsAssignableFrom(type))
+            .Select(type => ((ISeedPolicy)Activator.CreateInstance(type)!).Name)
+            .Order(StringComparer.Ordinal);
+        foreach (var policy in policies)
+            Console.WriteLine(policy);
+        return 0;
+    case ["seeds", var beds, var seeds] when TryRead(beds, out var b) && TryRead(seeds, out var s):
+        Console.WriteLine(SeedCapacity.Classify(b, s));
+        return 0;
+    default:
+        Console.Error.WriteLine("Usage: Grove policies | seeds BEDS SEEDS_PER_BED");
+        return 2;
+}
+
+static bool TryRead(string text, out int value) =>
+    int.TryParse(text, out value) && value is >= 0 and <= 1000;

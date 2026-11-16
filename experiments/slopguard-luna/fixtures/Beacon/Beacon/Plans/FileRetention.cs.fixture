@@ -1,0 +1,7 @@
+namespace Beacon.Plans;
+
+internal static class FileRetention
+{
+    public static bool Expired(DateOnly exported, DateOnly today) =>
+        today.DayNumber - exported.DayNumber > 180;
+}

@@ -1,0 +1,7 @@
+namespace Grove;
+
+public sealed class Archive : ISeedPolicy
+{
+    public string Name => "archive";
+    public int RowSpacing => 30;
+}

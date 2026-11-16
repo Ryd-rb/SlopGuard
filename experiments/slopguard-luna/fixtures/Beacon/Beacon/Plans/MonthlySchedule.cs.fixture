@@ -1,0 +1,8 @@
+namespace Beacon.Plans;
+
+internal static class MonthlySchedule
+{
+    public static bool ShouldExport(DateOnly date) => date.Day == 1;
+    public static DateOnly NextExport(DateOnly date) =>
+        new DateOnly(date.Year, date.Month, 1).AddMonths(1)
+}

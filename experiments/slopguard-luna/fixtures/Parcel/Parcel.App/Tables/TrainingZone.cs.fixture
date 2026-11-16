@@ -1,0 +1,7 @@
+namespace Parcel;
+
+public sealed class TrainingZone : IZone
+{
+    public string Name => "training";
+    public int TransitDays => 2;
+}

@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <EnableCsvExport>true</EnableCsvExport>
+    <EnableJsonExport>true</EnableJsonExport>
+    <EnableTextExport>false</EnableTextExport>
+  </PropertyGroup>
+</Project>

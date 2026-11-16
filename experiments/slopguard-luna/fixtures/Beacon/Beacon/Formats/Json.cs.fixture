@@ -1,0 +1,7 @@
+namespace Beacon;
+
+public sealed class Json : IExportFormat
+{
+    public string Name => "json";
+    public string MediaType => "application/json";
+}

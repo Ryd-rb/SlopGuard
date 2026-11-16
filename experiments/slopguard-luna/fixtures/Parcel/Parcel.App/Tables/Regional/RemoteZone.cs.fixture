@@ -1,0 +1,7 @@
+namespace Parcel;
+
+public sealed class RemoteZone : IZone
+{
+    public string Name => "remote";
+    public int TransitDays => 4;
+}

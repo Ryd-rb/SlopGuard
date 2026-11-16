@@ -1,0 +1,7 @@
+namespace Beacon;
+
+public sealed class Text : IExportFormat
+{
+    public string Name => "text";
+    public string MediaType => "text/plain";
+}

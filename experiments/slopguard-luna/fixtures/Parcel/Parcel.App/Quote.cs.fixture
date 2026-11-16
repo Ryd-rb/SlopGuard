@@ -1,0 +1,10 @@
+namespace Parcel;
+
+internal static class Quote
+{
+    public static int Calculate(int units, bool priority)
+    {
+        var total = 20 + (priority ? 13 : 0);
+        return units >= 20 ? total / 2 : total;
+    }
+}

@@ -1,0 +1,9 @@
+using System.Globalization;
+
+namespace Beacon;
+
+internal static class ExportName
+{
+    public static string ForDate(DateOnly date) =>
+        "beacon-" + date.ToString("yyyy-dd-MM", CultureInfo.InvariantCulture);
+}

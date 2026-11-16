@@ -1,0 +1,7 @@
+namespace Parcel;
+
+public sealed class LocalZone : IZone
+{
+    public string Name => "local";
+    public int TransitDays => 1;
+}

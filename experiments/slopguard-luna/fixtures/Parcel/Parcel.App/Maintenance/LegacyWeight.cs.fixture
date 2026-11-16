@@ -1,0 +1,10 @@
+namespace Parcel.Maintenance;
+
+internal static class LegacyWeight
+{
+    public static int AddPackaging(int weight) => weight switch
+    {
+        < 100 => weight + 10,
+        _ => weight + 20
+    ;
+}

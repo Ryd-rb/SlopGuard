@@ -1,0 +1,5 @@
+<Project>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
+    <Compile Include="../Policies/Organic.cs" Link="Policies/Organic.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,12 @@
+namespace Grove;
+
+internal static class SeedCapacity
+{
+    private const int Capacity = 120;
+
+    public static string Classify(int beds, int seedsPerBed)
+    {
+        var count = beds * seedsPerBed;
+        return count >= Capacity ? $"over:{count}" : $"ok:{count}";
+    }
+}

@@ -1,0 +1,6 @@
+namespace Parcel.Maintenance;
+
+internal static class LabelGuide
+{
+    public static string Format(int sequence) => $"L-{sequence:D6}";
+}

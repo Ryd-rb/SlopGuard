@@ -1,0 +1,7 @@
+namespace Grove;
+
+public interface ISeedPolicy
+{
+    string Name { get; }
+    int RowSpacing { get; }
+}

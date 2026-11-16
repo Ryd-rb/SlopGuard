@@ -1,0 +1,7 @@
+namespace Parcel;
+
+public interface IZone
+{
+    string Name { get; }
+    int TransitDays { get; }
+}
