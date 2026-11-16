@@ -33,7 +33,8 @@ internal sealed partial class SourceInventory(Workspace workspace)
         while (sourceRows.Read())
         {
             var path = sourceRows.GetString(0);
-            files.Add(path, new SourceFingerprint(path, sourceRows.GetString(1), sourceRows.GetBoolean(2)));
+            if (!files.TryAdd(path, new SourceFingerprint(path, sourceRows.GetString(1), sourceRows.GetBoolean(2))))
+                throw new IOException("The source inventory contains duplicate logical paths. Pending work was preserved.");
         }
         sourceRows.Close();
 
@@ -318,35 +319,51 @@ internal sealed partial class SourceInventory(Workspace workspace)
             command.ExecuteNonQuery();
             command.CommandText = "PRAGMA user_version";
             var version = (long)command.ExecuteScalar()!;
+            if (version != 0 || !initialize)
+                RequirePageSize(command);
             if (version is >= 0 and < SchemaVersion && initialize)
             {
                 if (version == 0)
                 {
                     command.CommandText = "SELECT count(*) FROM sqlite_schema";
                     if ((long)command.ExecuteScalar()! != 0)
-                        throw new IOException("The SQLite inventory has an unrecognized schema.");
+                        throw new IOException("The SQLite inventory has an unrecognized schema. Pending work was preserved.");
                     command.CommandText = "PRAGMA page_size = 4096;";
                     command.ExecuteNonQuery();
                 }
-                using var transaction = connection.BeginTransaction();
-                if (version == 0)
-                    Execute(connection, transaction, Schema);
-                if (version <= 1)
-                    Execute(connection, transaction, SchedulerSchema);
-                if (version <= 2)
-                    Execute(connection, transaction, ProjectSchema);
-                Execute(connection, transaction, WorkerSchema);
-                transaction.Commit();
+                try
+                {
+                    // DDL and user_version updates share the same transaction. A failure
+                    // in a later schema step must not publish an intermediate version.
+                    using var transaction = connection.BeginTransaction();
+                    if (version > 0)
+                        ValidateLayout(connection, (int)version, transaction);
+                    if (version == 0)
+                        Execute(connection, transaction, Schema);
+                    if (version <= 1)
+                        Execute(connection, transaction, SchedulerSchema);
+                    if (version <= 2)
+                        Execute(connection, transaction, ProjectSchema);
+                    Execute(connection, transaction, WorkerSchema);
+                    command.Transaction = transaction;
+                    RequirePageSize(command);
+                    ValidateLayout(connection, SchemaVersion, transaction);
+                    transaction.Commit();
+                }
+                catch (SqliteException exception)
+                {
+                    throw new IOException($"The SQLite inventory migration from schema {version} to {SchemaVersion} " +
+                        "failed. Pending work was preserved; repair the database or restore a backup before retrying.",
+                        exception);
+                }
             }
             else if (version != SchemaVersion)
             {
-                throw new IOException("The SQLite inventory schema is incompatible. Pending work was preserved.");
+                throw new IOException($"The SQLite inventory schema version {version} is incompatible with " +
+                    $"schema {SchemaVersion}. Pending work was preserved; open it with a compatible SlopGuard version.");
             }
-
-            // One short-lived writer uses a rollback journal. Both files fit inside the workspace disk budget.
-            command.CommandText = "PRAGMA page_size";
-            if ((long)command.ExecuteScalar()! != 4096)
-                throw new IOException("The SQLite inventory has an unsupported page size. Pending work was preserved.");
+            else if (initialize)
+                ValidateLayout(connection, SchemaVersion);
             return connection;
         }
         catch
@@ -354,6 +371,62 @@ internal sealed partial class SourceInventory(Workspace workspace)
             connection.Dispose();
             throw;
         }
+    }
+
+    // Check only columns required by this version. Additive columns in an older
+    // schema are deliberately left for the transactional upgrader to accept or reject.
+    private static void RequirePageSize(SqliteCommand command)
+    {
+        // The rollback journal and database must fit inside the workspace disk budget.
+        command.CommandText = "PRAGMA page_size";
+        if ((long)command.ExecuteScalar()! != 4096)
+            throw new IOException("The SQLite inventory has an unsupported page size. Pending work was preserved.");
+    }
+
+    private static void ValidateLayout(SqliteConnection connection, int version, SqliteTransaction? transaction = null)
+    {
+        RequireColumns(connection, transaction, "workspace", "id", "revision", "root_identity", "policy", "branch",
+            "commit_id", "retired_revision", "retired_intents");
+        RequireColumns(connection, transaction, "source", "path_key", "path", "digest", "verified");
+        RequireColumns(connection, transaction, "scope", "kind", "path");
+        RequireColumns(connection, transaction, "test_intent", "revision", "path_key", "old_path", "old_digest",
+            "new_path", "new_digest", "predecessor");
+        RequireColumns(connection, transaction, "intent_fallback", "id", "first_revision", "last_revision");
+        if (version >= 2)
+        {
+            RequireColumns(connection, transaction, "test_attempt", "id", "number", "revision", "epoch", "target",
+                "fingerprint", "causes", "plan_key", "state", "outcome", "retry_at");
+            RequireColumns(connection, transaction, "test_evidence", "cause", "target", "fingerprint");
+        }
+        if (version >= 3)
+            RequireColumns(connection, transaction, "project_graph", "revision", "root_identity", "complete", "payload");
+        if (version >= 4)
+            RequireColumns(connection, transaction, "test_attempt", "lease_id", "profile_revision");
+    }
+
+    private static void RequireColumns(
+        SqliteConnection connection, SqliteTransaction? transaction, string table, params string[] required)
+    {
+        using var kind = connection.CreateCommand();
+        kind.Transaction = transaction;
+        kind.CommandText = "SELECT type FROM sqlite_schema WHERE name = $name";
+        kind.Parameters.AddWithValue("$name", table);
+        if (kind.ExecuteScalar() as string != "table")
+            throw new IOException($"The SQLite inventory has an invalid {table} table. " +
+                "Pending work was preserved; repair the layout or restore a compatible backup.");
+
+        using var query = connection.CreateCommand();
+        query.Transaction = transaction;
+        query.CommandText = "SELECT name FROM pragma_table_info($name)";
+        query.Parameters.AddWithValue("$name", table);
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using var rows = query.ExecuteReader();
+        while (rows.Read())
+            columns.Add(rows.GetString(0));
+        var missing = required.Where(column => !columns.Contains(column)).ToArray();
+        if (missing.Length != 0)
+            throw new IOException($"The SQLite inventory {table} table is missing column(s): " +
+                $"{string.Join(", ", missing)}. Pending work was preserved; repair the layout or restore a backup.");
     }
 
     private static void Execute(SqliteConnection connection, SqliteTransaction transaction, string sql,
