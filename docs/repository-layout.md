@@ -29,4 +29,4 @@ dotnet build SlopGuard.slnx
 dotnet test SlopGuard.slnx
 ```
 
-The SDK selected for this repository builds SlopGuard itself. The C# adapter will resolve SDKs and targeting packs separately for each checkout it analyzes. [SDK version selection](https://learn.microsoft.com/en-us/dotnet/core/tools/global-json), [Solution CLI](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-sln)
+The SDK selected for this repository builds SlopGuard itself. Restricted Linux VMs can use the [portable SDK and offline restore feed](portable-linux.md). The C# adapter will resolve SDKs and targeting packs separately for each checkout it analyzes. [SDK version selection](https://learn.microsoft.com/en-us/dotnet/core/tools/global-json), [Solution CLI](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-sln)

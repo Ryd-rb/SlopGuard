@@ -30,13 +30,15 @@ After an edit, the agent can ask these questions.
 - [MCP and agent skill](docs/mcp.md) defines the agent workflow, tool contracts and policy boundaries.
 - [SlopGuard skill](skills/slopguard/SKILL.md) is the single agent entry point for the current CLI and MCP tools.
 - [Repository layout](docs/repository-layout.md) covers the buildable .NET solution and the boundaries for adding languages.
-- [Delivery and acceptance](docs/delivery.md) defines the implementation order, fixtures and measurable acceptance criteria.
+- [One-year roadmap](docs/roadmap.md) defines the December 2026 to November 2027 milestones and initial implementation slices.
+- [Robustness contracts](docs/robustness.md) defines failure, recovery, execution and evidence boundaries.
+- [Delivery and acceptance](docs/delivery.md) defines release gates, fixtures and measurable acceptance criteria.
 - [Version 0.2 design](docs/version-0.2.md) specifies project-aware analysis, related tests and agent result control for the next release.
 - [Source reconciliation](docs/source-reconciliation.md) defines how a verified C# edit creates durable test work across saves, branch transitions and restart.
 
 ## Use the 0.2 development build
 
-Build with the .NET 10 SDK. Git workspaces require Git on `PATH`. Stop any 0.1 daemon for the checkout before starting the development build.
+Build with the .NET 10 SDK. The [portable Linux toolchain](docs/portable-linux.md) provides the SDK and locked NuGet dependencies for restricted VMs. Git workspaces require Git on `PATH`. Stop any 0.1 daemon for the checkout before starting the development build.
 
 ```sh
 dotnet build SlopGuard.slnx

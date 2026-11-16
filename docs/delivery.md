@@ -1,30 +1,19 @@
 # Delivery and acceptance
 
-The [0.2 release design](version-0.2.md) specifies the next implementation increment and the evidence required before switching SlopGuard itself to 0.2. The broader feature sequence stays below.
-
-## Implementation order
-
-| Increment | Deliverable | Acceptance evidence |
-| --- | --- | --- |
-| 1. Local feedback | Version 0.1 CLI, per-worktree daemon, native watcher and in-memory syntax index, MCP bridge and current report exporter. | File and directory saves, moves and deletes converge to the inventory. Report withdrawal works across Git transitions, with a verified-reader contract. |
-| 2. Test impact and coverage | Version 0.2 durable index and work intents, evaluated project and target graph, indexed symbol edges, VSTest, test impact, coverage import and agent status. Retire standalone syntax checking. | SDK-style fixtures produce per-target test evidence. C# changes trigger related unit tests with a selection explanation. Further runner and classic toolset claims require their own fixtures. |
-| 3. Duplication and supplemental inspection | Incremental clone index, spelling and whitelist, optional Sonar and InspectCode rules beyond the configured build, broader value-flow rules and baseline comparison. | Edited and renamed clones report reproducible scores. Deleting either side clears the pair. Fixtures show the additional coverage each inspection provides. |
-| 4. Agent integration | Packaged skill and tool, local checkpoint commands, complete evidence catalog, public-API and repository rule checks, resource profiling. | The skill can start and use a daemon in a clean checkout. A checkpoint reports the verified revision and all required coverage, including blockers. All catalog entries have detection fixtures. Windows and Linux pass the applicable test suites. |
-
-Keep the host, protocol contracts, workspace graph and worker providers separately testable. Start with built-in adapters. Add a third-party adapter contract once the test and inspection providers demonstrate a stable common surface.
+The [roadmap](roadmap.md) sequences the coming year. The [0.2 release design](version-0.2.md) defines the next release. Keep host, protocol, workspace graph and built-in providers separately testable. Introduce a third-party adapter contract once multiple adapters demonstrate a stable common surface.
 
 ## Version 0.2 implementation gates
 
-| Stage | Implementation boundary | Evidence to retain before moving on |
+| Stage | Implementation boundary | Acceptance criteria |
 | --- | --- | --- |
 | Durable source inventory | Implemented in the development build. Route the existing watcher through the reconciliation coordinator and SQLite store. Expose committed revision and pending-intent scope. | Check invalidation, transaction failure, restart, quota fallback and incomplete source observations. |
 | Durable scheduling | Implemented with an in-process fake adapter. Persist attempts, retry deadlines and per-target outcomes. Retire the standalone syntax pass. | Recover interrupted and exhausted attempts across restart. Preserve pending targets through supersession and outcome-write failure. Keep source reconciliation independent of compiler and analyzer execution. |
 | Evaluated C# membership | Implemented for plain .NET and .NET Standard targets evaluated by SDK 10. Persist project target graphs and select eligible test targets with the fake runner. | Verify conditional and linked compile items, nearest and explicit target mappings, metadata replanning, predecessor recovery and partial scope. |
 | Supervised execution | Implemented profile-bound worker admission and output leases. Windows Job Objects supervise process-backed work. The runner remains a fixture. | Verify grants and revocation, conflicting worktrees, cancellation of descendants and restart recovery with the old process scope still active. |
 | Real related tests | Add the VSTest adapter, one eligible synthetic project and a SlopGuard unit project. Admit tests only after the execution profile and process supervision are active. | Observe a real automatic run on a confirmed edit and reuse a matching test receipt without rerunning it. Verify zero tests, all skipped, failing tests, prerequisite build failure, interrupted runs and blocked permissions independently. |
-| Coverage and agent control | Import bound coverage, publish the revised report, expose marks and transition leases, and update the skill. | Verify aggregate versus per-test scope, stale or mismatched receipts, idempotent marks and concurrent disjoint targets. Exercise raw file sharing errors with validated CLI and MCP readers. Publish the self-hosting and rollback evidence. |
+| Coverage and agent control | Import bound coverage, publish the revised report, expose marks and transition leases, and update the skill. | Verify aggregate versus per-test scope, stale or mismatched receipts, idempotent marks and concurrent disjoint targets. Exercise raw file sharing errors with validated CLI and MCP readers. Exercise self-hosting and rollback before release. |
 
-Keep fixture receipts with the commit and environment identities, relevant checker and runner versions, input revision and expected and observed coverage. Record whether each compatibility row passed, was blocked or is still untested. The runtime support matrix follows those results. Run the integration suite separately from automatic unit-test runs. Measure idle resource use and time from edit to committed intent with and without an active heavy worker.
+Summarize fixture results with the commit, environment, checker and runner versions, input revision and expected and observed coverage in the change discussion. Keep generated receipts out of Git. Record whether each compatibility row passed, was blocked or is still untested. The runtime support matrix follows those results. Run the integration suite separately from automatic unit-test runs. Measure idle resource use and time from edit to committed intent with and without an active heavy worker.
 
 Upgrade by stopping 0.1, starting the verified 0.2 build and observing source reconciliation and pending intents before enabling repository execution. Exercise the tool and report version handshake with each unsupported client/daemon pairing. For rollback, stop 0.2 and start 0.1 once the worker process scopes and output leases are clear. Keep 0.2 state outside the checkout so rollback preserves outstanding verification. The next 0.2 startup revalidates its state and recovers pending work.
 
