@@ -154,6 +154,9 @@
           "SlopGuard.Core": "[1.0.0, )"
         }
       },
+      "slopguard.providers.csharp": {
+        "type": "Project"
+      },
       "slopguard.workerfixture": {
         "type": "Project",
         "dependencies": {
