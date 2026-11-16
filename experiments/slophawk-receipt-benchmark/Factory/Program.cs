@@ -3,6 +3,12 @@ using System.Text;
 using System.Xml.Linq;
 using SlopHawk.Daemon;
 
+if (args is ["fingerprint", var archive] && Path.IsPathFullyQualified(archive))
+{
+    Snapshot.Report(archive);
+    return 0;
+}
+
 if (args is not [var root, var dotnet, var sdk, var passing, var failing] || !Path.IsPathFullyQualified(root))
 {
     Console.Error.WriteLine("Usage: factory NEW_ABSOLUTE_ROOT DOTNET_PATH SDK_VERSION PASS_DLL FAIL_DLL");
