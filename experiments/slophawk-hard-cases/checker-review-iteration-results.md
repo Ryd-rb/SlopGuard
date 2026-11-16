@@ -20,6 +20,7 @@ After each pass, the coordinator replayed the submitted examples against the sea
 | 8 | Audited reference clauses and crossed input conditions | 125 | 1 | 1,981,736 | 33,657 | 15 |
 | 9 | Independently audited every submitted flag | 126 | 0 | 5,598,049 | 115,224 | 30 |
 | 10 | Tested cases that distinguish competing public-contract interpretations | 127 | 0 | 5,052,483 | 116,034 | 59 |
+| 11 | Tested contract relationships with observation-only pairs and exact retests | 128 | 0 | 2,430,100 | 118,473 | 19 |
 
 The first turn compared batches of public inputs against a placeholder expected value of zero. It submitted one supported defect and left the review open. The next turn used `check-observe` for exploration and a file of 158 ordinary inputs with their published expectations. The coordinator constructed that file from the two public fixtures and verified that each normalized input produced the exact published journal before binding its expected value. The checker then passed all 158 ordinary cases. Those cases let the worker rerun and acknowledge the erroneous ordinary comparisons without receiving a novel test or answer.
 
