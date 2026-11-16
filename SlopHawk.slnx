@@ -6,6 +6,7 @@
     <Project Path="src/SlopHawk.Providers.CSharp/SlopHawk.Providers.CSharp.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/SlopHawk.Core.Tests/SlopHawk.Core.Tests.csproj" />
     <Project Path="tests/SlopHawk.IntegrationTests/SlopHawk.IntegrationTests.csproj" />
     <Project Path="tests/SlopHawk.WorkerFixture/SlopHawk.WorkerFixture.csproj" />
   </Folder>

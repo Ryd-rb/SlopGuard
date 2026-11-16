@@ -252,6 +252,14 @@ internal sealed class WorkerLease(WorkerAdmission admission, Workspace workspace
     internal Guid Id => id;
     internal string ProfileRevision => grant.Revision;
 
+    internal void RequireTestOutputRoot(string path)
+    {
+        Revalidate();
+        if (job is null || !requirements.Operations.HasFlag(ExecutionOperation.Test) ||
+            !requirements.OutputRoots.Any(root => ExecutionProfile.Contains(root, path)))
+            throw new UnauthorizedAccessException("The process lease does not cover this test output root.");
+    }
+
     internal void Revalidate()
     {
         ObjectDisposedException.ThrowIf(disposed, this);

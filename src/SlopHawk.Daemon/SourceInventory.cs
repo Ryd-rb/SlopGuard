@@ -8,7 +8,7 @@ internal sealed partial class SourceInventory(Workspace workspace)
     private const string Policy = "csharp.syntax:inventory-v1";
     internal const int MaxDetailedIntents = 2_048;
     private const int MaxIntentPathCharacters = 2_048;
-    private const int SchemaVersion = 4;
+    private const int SchemaVersion = 5;
     private readonly object writer = new();
 
     internal InventoryState Load()
@@ -344,7 +344,10 @@ internal sealed partial class SourceInventory(Workspace workspace)
                         Execute(connection, transaction, SchedulerSchema);
                     if (version <= 2)
                         Execute(connection, transaction, ProjectSchema);
-                    Execute(connection, transaction, WorkerSchema);
+                    if (version <= 3)
+                        Execute(connection, transaction, WorkerSchema);
+                    if (version <= 4)
+                        Execute(connection, transaction, ReceiptSchema);
                     command.Transaction = transaction;
                     RequirePageSize(command);
                     ValidateLayout(connection, SchemaVersion, transaction);
@@ -402,6 +405,13 @@ internal sealed partial class SourceInventory(Workspace workspace)
             RequireColumns(connection, transaction, "project_graph", "revision", "root_identity", "complete", "payload");
         if (version >= 4)
             RequireColumns(connection, transaction, "test_attempt", "lease_id", "profile_revision");
+        if (version >= 5)
+            RequireColumns(connection, transaction, "test_run_receipt", "attempt_id", "format", "revision", "epoch",
+                "fence_sequence", "git_fingerprint", "root_identity", "target", "fingerprint",
+                "profile_revision", "lease_id", "build_domain",
+                "build_sha256", "runner_sha256", "artifact_sha256", "artifact_bytes", "run_id", "platform",
+                "runner", "artifact", "execution", "total", "executed", "passed", "failed", "skipped",
+                "other", "reason_code");
     }
 
     private static void RequireColumns(

@@ -14,6 +14,8 @@ Schema 3 retains up to eight evaluated graphs, with priority for the latest grap
 
 Schema 4 associates each attempt with a worker lease and execution profile revision. The per-user admission database independently retains the worker owner, process scope and output roots. Recovery proves the prior scope empty before retrying. The preview CLI exposes source inventory, scheduler status, the profile location and explicit project evaluation. The integration suite supplies the real evaluator and fake runner through the normal daemon entry point. Production shows `awaiting_adapter` until a real test runner is registered.
 
+Schema 5 can commit bounded runner details with the attempt outcome and current evidence. A superseded attempt can retain details in history and leaves current evidence untouched. Separate components prepare a non-restoring build, capture build identity, run a prebuilt VSTest assembly and verify a coverage receipt. The standalone Core unit project supplies a fixture for that runner. Automatic execution still awaits scheduler registration.
+
 ## Confirm a change
 
 | Identity | Purpose |

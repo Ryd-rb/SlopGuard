@@ -33,7 +33,8 @@ public sealed partial class WorkspaceTests
 
         // This is deliberately a new database handle, not the inventory's read transaction.
         using var verify = OpenMigrationFixture(fixture.Workspace, SqliteOpenMode.ReadWrite);
-        Assert.Equal(4L, Number(verify, "PRAGMA user_version"));
+        Assert.Equal(5L, Number(verify, "PRAGMA user_version"));
+        Assert.Equal(0L, Number(verify, "SELECT count(*) FROM test_run_receipt"));
         Assert.Equal("old-fingerprint", TextValue(verify, "SELECT old_digest FROM test_intent"));
         Assert.Equal("changed-fingerprint", TextValue(verify, "SELECT new_digest FROM test_intent"));
         Assert.Equal(version >= 3 ? "graph:5" : "graph_unavailable",
@@ -145,11 +146,11 @@ public sealed partial class WorkspaceTests
         await fixture.WriteBaselineAsync();
         SeedHistoricalInventory(fixture.Workspace, 4);
         using (var connection = OpenMigrationFixture(fixture.Workspace, SqliteOpenMode.ReadWrite))
-            ExecuteMigrationSql(connection, "PRAGMA user_version = 5;");
+            ExecuteMigrationSql(connection, "PRAGMA user_version = 6;");
 
         var before = Snapshot(fixture.Workspace, includeVersion: true);
         var error = Assert.Throws<IOException>(() => new SourceInventory(fixture.Workspace).Load());
-        Assert.Contains("5", error.Message);
+        Assert.Contains("6", error.Message);
         Assert.Contains("Pending work was preserved", error.Message);
         Assert.Equal(before, Snapshot(fixture.Workspace, includeVersion: true));
     }
@@ -321,7 +322,8 @@ public sealed partial class WorkspaceTests
             "SELECT * FROM intent_fallback ORDER BY id",
             "SELECT * FROM test_attempt ORDER BY id",
             "SELECT * FROM test_evidence ORDER BY cause, target",
-            "SELECT * FROM project_graph ORDER BY revision"
+            "SELECT * FROM project_graph ORDER BY revision",
+            "SELECT * FROM test_run_receipt ORDER BY attempt_id"
         };
         foreach (var sql in statements)
         {

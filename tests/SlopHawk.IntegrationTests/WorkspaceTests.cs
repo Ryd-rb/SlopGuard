@@ -540,7 +540,13 @@ public sealed partial class WorkspaceTests
         await fixture.WaitForNextReportAsync(baseline);
         var oldIntent = Assert.Single(fixture.ReadIntents());
         await fixture.StopAsync();
-        fixture.ExecuteSql("DROP TABLE project_graph; DROP TABLE test_evidence; DROP TABLE test_attempt; PRAGMA user_version = 1;");
+        fixture.ExecuteSql("""
+            DROP TABLE test_run_receipt;
+            DROP TABLE project_graph;
+            DROP TABLE test_evidence;
+            DROP TABLE test_attempt;
+            PRAGMA user_version = 1;
+            """);
 
         fixture.Start();
         var migrated = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
