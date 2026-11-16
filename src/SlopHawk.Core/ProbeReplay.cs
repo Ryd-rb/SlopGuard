@@ -1,16 +1,52 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SlopHawk.Core;
 
 public sealed record ProbeInput(string Operation, long[] Args);
+
+public sealed record ProbeExpectation([property: JsonRequired] string Operation, [property: JsonRequired] long[] Args,
+    [property: JsonRequired] JsonElement Expected);
 
 public sealed record ProbeDifference(int Index, ProbeInput Input, JsonElement Candidate, JsonElement Reference);
 
 public sealed record ProbeOperationResult(
     string Operation, int Compared, int Unsupported, int OneSided, int Different, ProbeDifference? FirstDifference);
 
+public sealed record ProbeCheckResult(int Cases, int Compared, int Unsupported, IReadOnlyList<ProbeDifference> Findings);
+
 public static class ProbeReplay
 {
+    public static ProbeInput[] InputsForCheck(IReadOnlyList<ProbeExpectation> cases)
+    {
+        if (cases.Count == 0)
+            throw new ArgumentException("Provide at least one check case.", nameof(cases));
+        return cases.Select(item => item is not null && !string.IsNullOrWhiteSpace(item.Operation) && item.Args is not null &&
+            item.Expected.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+                ? new ProbeInput(item.Operation, item.Args)
+                : throw new ArgumentException("Each check needs an operation, arguments and a non-null expected result.", nameof(cases))).ToArray();
+    }
+
+    public static ProbeCheckResult Check(IReadOnlyList<ProbeExpectation> cases, IReadOnlyList<JsonElement> actual)
+    {
+        if (cases.Count != actual.Count)
+            throw new ArgumentException("The adapter must return exactly one result per check, in input order.", nameof(actual));
+        var inputs = InputsForCheck(cases);
+        var findings = new List<ProbeDifference>();
+        var unsupported = 0;
+        for (var i = 0; i < inputs.Length; i++)
+        {
+            if (actual[i].ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                unsupported++;
+                continue;
+            }
+            if (!JsonElement.DeepEquals(actual[i], cases[i].Expected))
+                findings.Add(new(i, inputs[i], actual[i].Clone(), cases[i].Expected.Clone()));
+        }
+        return new(cases.Count, cases.Count - unsupported, unsupported, findings);
+    }
+
     public static IEnumerable<ProbeInput> Plan(IEnumerable<ProbeInput> seeds, int limit, int randomSeed = 0,
         IReadOnlyList<long>? scales = null)
     {

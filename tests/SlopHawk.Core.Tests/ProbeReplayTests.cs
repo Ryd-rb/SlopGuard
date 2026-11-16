@@ -7,6 +7,26 @@ namespace SlopHawk.Core.Tests;
 public sealed class ProbeReplayTests
 {
     [Fact]
+    public void ForegroundCheckKeepsEveryMismatchAndSeparatesUnsupportedCases()
+    {
+        var cases = JsonSerializer.Deserialize<ProbeExpectation[]>("""
+            [{"Operation":"quota","Args":[1],"Expected":3},{"Operation":"quota","Args":[2],"Expected":4},
+            {"Operation":"quota","Args":[3],"Expected":5},{"Operation":"status","Args":[],"Expected":{"ready":true}}]
+            """)!;
+        var actual = JsonSerializer.Deserialize<JsonElement[]>("""[2,1,null,{"ready":true}]""")!;
+
+        var result = ProbeReplay.Check(cases, actual);
+
+        Assert.Equal(4, result.Cases);
+        Assert.Equal(3, result.Compared);
+        Assert.Equal(1, result.Unsupported);
+        Assert.Equal(new[] { 0, 1 }, result.Findings.Select(item => item.Index));
+        Assert.Equal(4, result.Findings[1].Reference.GetInt64());
+        Assert.Throws<ArgumentException>(() => ProbeReplay.Check(cases, actual[..3]));
+        Assert.Throws<ArgumentException>(() => ProbeReplay.InputsForCheck([cases[0] with { Expected = default }]));
+    }
+
+    [Fact]
     public void PlanIncludesSeedsAndNearbyRelationsWithoutDuplicates()
     {
         ProbeInput[] seed = [new("fee", [11, 23]), new("fee", [11, 23]), new("revision", [long.MaxValue])];

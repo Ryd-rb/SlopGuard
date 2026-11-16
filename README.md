@@ -70,6 +70,10 @@ Use absolute physical directory paths for outputs. Each grant is explicit. The o
 
 ### Differential probes
 
+`slophawk check <assembly.dll> <cases.json> <scratch> [run-verb [prepare-verb]]` runs a foreground behavioral check, including in a restricted workspace. It reads the supplied case file and candidate assembly, runs the application's own batch endpoint, and compares its results to the expectations. It needs no daemon state or write access to the source directory. It inherits the caller's sandbox and uses an existing writable scratch directory for its requests and observations.
+
+The case file is a JSON array whose entries contain `Operation`, signed-integer `Args`, and a non-null `Expected` JSON value. The checker passes only `Operation` and `Args` to the adapter. It runs `dotnet exec <assembly.dll> [run-verb] <input>`, and expects one ordered JSON result per input. An optional prepare verb transforms the ordinary request file into the batch endpoint's input format. Supply an assembly you trust to run. A completed check emits a `slophawk-check-v1` JSON report. Exit zero means every case matched. Mismatches, unsupported results, and execution errors give a nonzero exit.
+
 `slophawk probes plan` accepts a JSON array of known examples such as `[{"Operation":"quote","Args":[5,7]}]`. It generates bounded signed-integer probes around those examples, including neighboring values, ties and correlated changes. The count is per operation. An optional random seed varies sampling. An optional JSON array of positive scales greater than one adds compensating changes across pairs of fields, which can expose behavior around scaled quantities and composite keys.
 
 ```sh

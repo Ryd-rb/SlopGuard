@@ -1,0 +1,122 @@
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+using SlopHawk.Core;
+
+namespace SlopHawk.Cli;
+
+internal static class ForegroundCheck
+{
+    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private const int MaximumCharacters = 8 * 1024 * 1024;
+
+    internal static async Task<int> RunAsync(string[] args)
+    {
+        if (args.Length is < 4 or > 6)
+            throw new ArgumentException("Usage: slophawk check <assembly.dll> <cases.json> <scratch> [run-verb [prepare-verb]]");
+
+        var assembly = Path.GetFullPath(args[1]);
+        var scratch = Path.GetFullPath(args[3]);
+        if (!Path.GetExtension(assembly).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Pass a managed .NET assembly (.dll).");
+        if (!File.Exists(assembly))
+            throw new FileNotFoundException("The candidate assembly is unavailable.", assembly);
+        if (!Directory.Exists(scratch))
+            throw new DirectoryNotFoundException("The scratch directory must already exist.");
+
+        await using var caseFile = File.OpenRead(args[2]);
+        if (caseFile.Length > MaximumCharacters)
+            throw new IOException("The check cases exceed the input budget.");
+        var cases = await JsonSerializer.DeserializeAsync<ProbeExpectation[]>(caseFile, Json)
+            ?? throw new JsonException("A JSON array of check cases was expected.");
+        var inputs = ProbeReplay.InputsForCheck(cases);
+
+        var artifacts = Path.Combine(scratch, $"slophawk-check-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(artifacts);
+        var requests = Path.Combine(artifacts, "requests.json");
+        await WriteJsonAsync(requests, inputs);
+        if (args.Length == 6)
+        {
+            var prepared = await RunAdapterAsync(assembly, args[5], requests, scratch);
+            using var document = JsonDocument.Parse(prepared);
+            requests = Path.Combine(artifacts, "prepared.json");
+            await WriteJsonAsync(requests, document.RootElement);
+        }
+
+        var output = await RunAdapterAsync(assembly, args.Length >= 5 ? args[4] : null, requests, scratch);
+        var observed = JsonSerializer.Deserialize<JsonElement[]>(output)
+            ?? throw new JsonException("The adapter must return a JSON array of results.");
+        await WriteJsonAsync(Path.Combine(artifacts, "observed.json"), observed);
+        var result = ProbeReplay.Check(cases, observed);
+        using var stdout = Console.OpenStandardOutput();
+        await JsonSerializer.SerializeAsync(stdout, new { Format = "slophawk-check-v1", Artifacts = artifacts, Result = result });
+        return result.Unsupported == 0 && result.Findings.Count == 0 ? 0 : 1;
+    }
+
+    private static async Task WriteJsonAsync<T>(string path, T value)
+    {
+        await using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await JsonSerializer.SerializeAsync(file, value);
+    }
+
+    private static async Task<string> RunAdapterAsync(string assembly, string? verb, string input, string scratch)
+    {
+        var start = new ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = scratch,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("exec");
+        start.ArgumentList.Add(assembly);
+        if (verb is not null)
+            start.ArgumentList.Add(verb);
+        start.ArgumentList.Add(input);
+        using var child = Process.Start(start) ?? throw new IOException("The .NET adapter did not start.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            var stdout = ReadBoundedAsync(child.StandardOutput, MaximumCharacters, timeout);
+            var stderr = ReadBoundedAsync(child.StandardError, 64 * 1024, timeout);
+            await Task.WhenAll(stdout, stderr, child.WaitForExitAsync(timeout.Token)).WaitAsync(timeout.Token);
+            if (child.ExitCode != 0)
+                throw new IOException($"The adapter exited with code {child.ExitCode}: {await stderr}");
+            return await stdout;
+        }
+        catch (OperationCanceledException ex)
+        {
+            throw new IOException("The adapter exceeded its time or output budget.", ex);
+        }
+        finally
+        {
+            try
+            {
+                if (!child.HasExited)
+                    child.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException) when (child.HasExited)
+            {
+                // The child finished between the status check and shutdown request.
+            }
+        }
+    }
+
+    private static async Task<string> ReadBoundedAsync(StreamReader reader, int limit, CancellationTokenSource timeout)
+    {
+        var buffer = new char[4096];
+        var content = new StringBuilder();
+        int count;
+        while ((count = await reader.ReadAsync(buffer, timeout.Token)) != 0)
+        {
+            if (count > limit - content.Length)
+            {
+                await timeout.CancelAsync();
+                throw new IOException("The adapter exceeded its output budget.");
+            }
+            content.Append(buffer, 0, count);
+        }
+        return content.ToString();
+    }
+}
