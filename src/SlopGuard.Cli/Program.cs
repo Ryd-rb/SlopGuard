@@ -35,8 +35,9 @@ try
         case "start":
             return Print(await StartAsync(workspace, connection));
         case "mcp":
-            if (await StartAsync(workspace, connection) is not { Ok: true })
-                throw new IOException("The workspace daemon did not start.");
+            var ready = await StartAsync(workspace, connection);
+            if (ready is not { Ok: true })
+                throw new IOException(ready?.Error ?? "The workspace daemon did not start.");
             await SlopGuard.Cli.McpBridge.RunAsync(connection);
             return 0;
         case "status":
@@ -79,8 +80,11 @@ static int Print(DaemonReply? reply)
 
 static async Task<DaemonReply?> StartAsync(Workspace workspace, DaemonConnection connection)
 {
-    if (await connection.SendAsync(DaemonCommand.Status) is { Ok: true } existing)
-        return RequireCompatibleDaemon(existing);
+    var initial = await connection.SendAsync(DaemonCommand.Status);
+    if (initial is { Ok: true })
+        return RequireCompatibleDaemon(initial);
+    if (initial is { Code: not null })
+        return initial; // Never replace or spawn over a daemon that reported a mismatch.
 
     var executable = Environment.ProcessPath ?? throw new IOException("Could not locate the SlopGuard executable.");
     var launcher = new ProcessStartInfo(executable)
@@ -104,8 +108,11 @@ static async Task<DaemonReply?> StartAsync(Workspace workspace, DaemonConnection
     {
         while (true)
         {
-            if (await connection.SendAsync(DaemonCommand.Status, deadline.Token) is { Ok: true } started)
-                return RequireCompatibleDaemon(started);
+            var status = await connection.SendAsync(DaemonCommand.Status, deadline.Token);
+            if (status is { Ok: true })
+                return RequireCompatibleDaemon(status);
+            if (status is { Code: not null })
+                return status;
             if (child.HasExited && child.ExitCode != 0)
                 throw new IOException((await child.StandardError.ReadToEndAsync(deadline.Token)).Trim());
             await Task.Delay(70, deadline.Token);
