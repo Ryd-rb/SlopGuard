@@ -6,6 +6,8 @@ using SlopHawk.Core;
 
 namespace SlopHawk.Cli;
 
+internal sealed record CheckReceipt(string Format, string Run, string Report, string Artifacts, bool ObserveOnly, ProbeCheckResult Result);
+
 internal static class ForegroundCheck
 {
     internal static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
@@ -17,15 +19,6 @@ internal static class ForegroundCheck
         var observe = args[0] == "check-observe";
         if (args.Length is < 4 or > 6)
             throw new ArgumentException($"Usage: slophawk {args[0]} <assembly.dll> <input.json> <workspace> [run-verb [prepare-verb]]");
-
-        var assembly = Path.GetFullPath(args[1]);
-        var workspace = Path.GetFullPath(args[3]);
-        if (!Path.GetExtension(assembly).Equals(".dll", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("Pass a managed .NET assembly (.dll).");
-        if (!File.Exists(assembly))
-            throw new FileNotFoundException("The candidate assembly is unavailable.", assembly);
-        if (!Directory.Exists(workspace))
-            throw new DirectoryNotFoundException("The workspace directory must already exist.");
 
         await using var caseFile = File.OpenRead(args[2]);
         if (caseFile.Length > MaximumCharacters)
@@ -46,22 +39,39 @@ internal static class ForegroundCheck
             inputs = ProbeReplay.InputsForCheck(cases);
         }
 
+        var runVerb = args.Length >= 5 ? args[4] : null;
+        var prepareVerb = args.Length == 6 ? args[5] : null;
+        var (receipt, _) = await ExecuteAsync(args[1], args[3], runVerb, prepareVerb, inputs, cases);
+        using var stdout = Console.OpenStandardOutput();
+        await JsonSerializer.SerializeAsync(stdout, receipt);
+        return receipt.Result.Unsupported == 0 && receipt.Result.Findings.Count == 0 ? 0 : 1;
+    }
+
+    internal static async Task<(CheckReceipt Receipt, JsonElement[] Observed)> ExecuteAsync(
+        string assembly, string workspace, string? runVerb, string? prepareVerb,
+        ProbeInput[] inputs, ProbeExpectation[]? cases, string? requiredCandidate = null)
+    {
+        assembly = Path.GetFullPath(assembly);
+        if (!Path.GetExtension(assembly).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Pass a managed .NET assembly (.dll).");
+        if (!Directory.Exists(workspace))
+            throw new DirectoryNotFoundException("The workspace directory must already exist.");
         var candidate = await CandidateHashAsync(assembly);
+        if (requiredCandidate is not null && requiredCandidate != candidate)
+            throw new IOException("The retest requires the original candidate assembly.");
         var run = Guid.NewGuid().ToString("N");
         var artifacts = Path.Combine(ChecksPath(workspace), run);
         Directory.CreateDirectory(artifacts);
         var requests = Path.Combine(artifacts, "requests.json");
         await WriteJsonAsync(requests, inputs);
-        if (args.Length == 6)
+        if (prepareVerb is not null)
         {
-            var prepared = await RunAdapterAsync(assembly, args[5], requests, artifacts);
+            var prepared = await RunAdapterAsync(assembly, prepareVerb, requests, artifacts);
             using var document = JsonDocument.Parse(prepared);
             requests = Path.Combine(artifacts, "prepared.json");
             await WriteJsonAsync(requests, document.RootElement);
         }
 
-        var runVerb = args.Length >= 5 ? args[4] : null;
-        var prepareVerb = args.Length == 6 ? args[5] : null;
         var output = await RunAdapterAsync(assembly, runVerb, requests, artifacts);
         var observed = JsonSerializer.Deserialize<JsonElement[]>(output)
             ?? throw new JsonException("The adapter must return a JSON array of results.");
@@ -76,9 +86,7 @@ internal static class ForegroundCheck
         var report = Path.Combine(artifacts, "report.json");
         await PublishJsonAsync(report, new CheckRun(Format, run, candidate, runVerb, prepareVerb, result,
             cases?.Select(item => item.Expected).ToArray()));
-        using var stdout = Console.OpenStandardOutput();
-        await JsonSerializer.SerializeAsync(stdout, new { Format, Run = run, Report = report, Artifacts = artifacts, ObserveOnly = observe, Result = result });
-        return result.Unsupported == 0 && result.Findings.Count == 0 ? 0 : 1;
+        return (new(Format, run, report, artifacts, cases is null, result), observed);
     }
 
     internal static string ChecksPath(string workspace) => Path.GetFullPath(Path.Combine(workspace, ".slophawk", "checks"));

@@ -6,12 +6,12 @@ namespace SlopHawk.Cli;
 
 internal sealed record CheckRun(string Format, string Run, string Candidate, string? RunVerb, string? PrepareVerb,
     ProbeCheckResult Result, JsonElement[]? Expected);
+internal sealed record CheckAcknowledgment(string Run, [property: JsonRequired] int Index, string RetestRun,
+    [property: JsonRequired] int RetestIndex, string Disposition, string Reason);
 
 internal static class CheckReview
 {
     private sealed record Evidence(CheckRun Report, ProbeInput[] Requests, JsonElement[] Observed);
-    private sealed record Acknowledgment(string Run, [property: JsonRequired] int Index, string RetestRun,
-        [property: JsonRequired] int RetestIndex, string Disposition, string Reason);
     private sealed record Finding(string Run, ProbeDifference Difference);
     private sealed record ReviewScope(string[] Operations, ProbeInput[] Ordinary, int MinimumOutsideOrdinary = 1);
 
@@ -51,7 +51,7 @@ internal static class CheckReview
 
         var findings = runs.Values.SelectMany(run => run.Report.Result.Findings
             .Select(difference => new Finding(run.Report.Run, difference))).ToArray();
-        Acknowledgment[] acknowledged = args.Length >= 3 ? await ReadAsync<Acknowledgment[]>(args[2]) : [];
+        CheckAcknowledgment[] acknowledged = args.Length >= 3 ? await ReadAsync<CheckAcknowledgment[]>(args[2]) : [];
         var resolved = new Dictionary<(string Run, int Index), string>();
         foreach (var item in acknowledged)
         {
@@ -135,7 +135,7 @@ internal static class CheckReview
         left.Report.Candidate == right.Report.Candidate && left.Report.RunVerb == right.Report.RunVerb &&
         left.Report.PrepareVerb == right.Report.PrepareVerb;
 
-    private static async Task<T> ReadAsync<T>(string path)
+    internal static async Task<T> ReadAsync<T>(string path)
     {
         await using var file = File.OpenRead(path);
         return await JsonSerializer.DeserializeAsync<T>(file, ForegroundCheck.Json)
