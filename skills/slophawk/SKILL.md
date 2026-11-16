@@ -16,6 +16,8 @@ For a bounded read-only workspace with a batch adapter, follow this loop.
 
 For subtle rules that depend on several inputs at once, write a small independent calculation from the public contract in scratch. Use it to compute expectations for a batch of valid inputs on both sides of each relevant condition. You can start from public examples with `slophawk probes plan`. Filter generated inputs against the documented constraints before using them as cases. Treat a nearby passing case as evidence about which condition caused a failing case.
 
+When a contract defines how related inputs should behave, use `check-observe` on paired requests to test that relationship. For example, a field documented as irrelevant in a given state should have no effect when it changes by itself. Derive the exact contract outcome for a violating pair, then use `check` and a separate retest before reporting a defect.
+
 For an editable checkout with daemon state available:
 
 1. Run `slophawk start --root <checkout>`. The MCP entry point is `slophawk mcp --root <checkout>` and starts the same daemon if needed. If developing SlopHawk itself, use the local build from its README when the command is unavailable.
