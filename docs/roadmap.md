@@ -21,6 +21,8 @@
 
 If Linux supervision, VSTest, or freshness slips, preserve their acceptance criteria and move the self-hosting release. Semantic extraction, parsers and catalog rules can progress in isolation. Additional languages and a third-party plugin API require a separate release decision after the C# contracts stabilize.
 
+The [coding-agent checks](verification.md#checks-for-coding-agents) extend the verification increments. Start with lost test routes after selection explanations, then add parity and paired evidence checks as the reader and runner contracts stabilize. Pilot the report-publication check after value flow. Their fixture and cost gates determine when they appear by default.
+
 ## Initial implementation slices
 
 These slices are intended for independent patches against a shared base. A producer can land before its consumer; production stays on the existing path until both are reviewed. Add focused tests in named, separate files to minimize parallel edits.
