@@ -96,13 +96,17 @@ internal sealed partial class SourceInventory
             Execute(connection, transaction, """
                 DELETE FROM test_attempt WHERE id <= (SELECT max(id) - 64 FROM test_attempt) AND state <> 'running'
                 """);
+            Execute(connection, transaction, """
+                DELETE FROM test_run_receipt WHERE attempt_id NOT IN (SELECT id FROM test_attempt)
+                """);
             transaction.Commit();
             return new TestAdmission(new TestAttempt(id, number, fence, target, worker.ProfileRevision), null);
         }
     }
 
     internal (PendingIntents Pending, TestAttemptReceipt Receipt) Finish(TestAttempt attempt, TestOutcome outcome,
-        TestWork work, ValidatedSelection selection, DateTimeOffset now, Func<bool> isCurrent)
+        TestWork work, ValidatedSelection selection, DateTimeOffset now, Func<bool> isCurrent,
+        TestRunReceiptDetails? details = null)
     {
         lock (writer)
         {
@@ -120,6 +124,8 @@ internal sealed partial class SourceInventory
             var state = current ? result : "superseded";
             DateTimeOffset? retryAt = current && outcome == TestOutcome.RetryableFailure &&
                 attempt.Number < MaxAttemptsPerPlan ? now.AddMilliseconds(250 << (attempt.Number - 1)) : null;
+            if (details is not null)
+                PersistReceipt(connection, transaction, attempt, outcome, details);
             using (var update = Command(connection, transaction, """
                 UPDATE test_attempt SET state = $state, outcome = $outcome, retry_at = $retry
                 WHERE id = $id AND state = 'running'

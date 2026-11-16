@@ -15,10 +15,21 @@ public sealed class ProjectEvaluator(Workspace workspace)
     private const int MaxSourceItems = 20_000;
     private const int MaxGraphCharacters = 2_000_000;
     private const int MaxMetadataBytes = 2 * 1024 * 1024;
+    private BuildEvaluationSnapshot? buildSnapshot;
     private const string Properties = "TargetFramework,TargetFrameworks,Configuration,Platform,RuntimeIdentifier," +
         "UsingMicrosoftNETSdk,NETCoreSdkVersion,IsTestProject,TargetFrameworkMoniker,TargetPlatformIdentifier," +
         "MSBuildAllProjects,DirectoryBuildPropsPath,DirectoryBuildTargetsPath,DirectoryPackagesPropsPath," +
-        "ProjectAssetsFile,DefineConstants,LangVersion,Nullable,PlatformTarget,AssetTargetFallback";
+        "ProjectAssetsFile,DefineConstants,LangVersion,Nullable,PlatformTarget,AssetTargetFallback," +
+        "OutputPath,OutDir,TargetPath,TargetDir,IntermediateOutputPath,BaseIntermediateOutputPath," +
+        "IsTestingPlatformApplication,UseMicrosoftTestingPlatformRunner,GeneratePackageOnBuild," +
+        "UseArtifactsOutput,DocumentationFile,ErrorLog,PreBuildEvent,PostBuildEvent," +
+        "CustomBeforeMicrosoftCommonTargets,CustomAfterMicrosoftCommonTargets";
+
+    // Consumes the exact graph instance returned by this evaluator's last authorized
+    // evaluation; planning is read-only and must not launch an MSBuild process.
+    internal TestBuildPreparation PrepareBuild(ProjectGraph graph, string selectedTargetId,
+        string attemptResultsRoot, ExecutionGrant grant) =>
+        new TestBuildPlanner(workspace).Prepare(graph, selectedTargetId, attemptResultsRoot, grant, buildSnapshot);
 
     // Calling this API explicitly grants project evaluation for the supplied workspace.
     public async Task<ProjectGraph> EvaluateAsync(CancellationToken cancellationToken = default)
@@ -44,6 +55,7 @@ public sealed class ProjectEvaluator(Workspace workspace)
 
     internal async Task<ProjectGraph> EvaluateAsync(WorkerLease? worker, CancellationToken cancellationToken)
     {
+        buildSnapshot = null;
         var rootIdentity = RootIdentity.Read(workspace.Root);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(45));
@@ -139,7 +151,12 @@ public sealed class ProjectEvaluator(Workspace workspace)
         {
             if (RootIdentity.Read(workspace.Root) != rootIdentity)
                 throw new IOException("The workspace was replaced during project evaluation.");
-            return BuildGraph(evaluated, inputs, issues);
+            var graph = BuildGraph(evaluated, inputs, issues);
+            var descriptions = new Dictionary<string, EvaluatedBuildTarget>(StringComparer.Ordinal);
+            foreach (var target in evaluated)
+                descriptions.TryAdd(target.Target.Id, target.Build);
+            buildSnapshot = new BuildEvaluationSnapshot(graph, rootIdentity, dotnet, descriptions);
+            return graph;
         }
 
         async Task AddInputAsync(string path, bool required)
@@ -290,10 +307,29 @@ public sealed class ProjectEvaluator(Workspace workspace)
             var explicitFramework = setFramework.Length == 0 ? null : setFramework["TargetFramework=".Length..];
             references.Add(new RawReference(workspace.Relative(reference), explicitFramework));
         }
+        var build = new EvaluatedBuildTarget(id, framework, configuration, platform, rid, sdk,
+            Value(properties, "TargetDir"), Value(properties, "IntermediateOutputPath"),
+            Value(properties, "BaseIntermediateOutputPath"), Value(properties, "TargetPath"),
+            Value(properties, "ProjectAssetsFile"),
+            Value(properties, "MSBuildAllProjects").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            UsesMicrosoftTestingPlatform = IsTrue(properties, "IsTestingPlatformApplication") ||
+                IsTrue(properties, "UseMicrosoftTestingPlatformRunner"),
+            HasUnsupportedImports = new[] { "DirectoryBuildPropsPath", "DirectoryBuildTargetsPath",
+                "DirectoryPackagesPropsPath" }.Any(name => Value(properties, name).Length != 0),
+            HasUnknownWrites = IsTrue(properties, "GeneratePackageOnBuild") ||
+                IsTrue(properties, "UseArtifactsOutput") ||
+                new[] { "DocumentationFile", "ErrorLog", "PreBuildEvent", "PostBuildEvent" }
+                    .Any(name => Value(properties, name).Length != 0),
+            OutDir = Value(properties, "OutDir"),
+            OutputPath = Value(properties, "OutputPath"),
+            CustomBeforeMicrosoftCommonTargets = Value(properties, "CustomBeforeMicrosoftCommonTargets"),
+            CustomAfterMicrosoftCommonTargets = Value(properties, "CustomAfterMicrosoftCommonTargets")
+        };
         return new RawTarget(new ProjectTarget(id, project, framework, configuration, platform, rid, sdk,
             IsTrue(properties, "IsTestProject"),
             compile.Distinct().OrderBy(member => member.Path, Workspace.PathComparer).ThenBy(member => member.Link, StringComparer.Ordinal).ToArray(),
-            [], TestCause.Hash(properties.GetRawText())), shortFramework, references.ToArray(), issues.Distinct().ToArray());
+            [], TestCause.Hash(properties.GetRawText())), shortFramework, references.ToArray(), issues.Distinct().ToArray(), build);
     }
 
     private static ProjectGraph BuildGraph(List<RawTarget> evaluated, SortedDictionary<string, string> inputs,
@@ -454,5 +490,5 @@ public sealed class ProjectEvaluator(Workspace workspace)
     private sealed record Evaluation(JsonElement Properties, JsonElement Items);
     private sealed record RawReference(string Path, string? Framework);
     private sealed record RawTarget(ProjectTarget Target, NuGetFramework Framework, RawReference[] References,
-        ProjectEvaluationIssue[] Issues);
+        ProjectEvaluationIssue[] Issues, EvaluatedBuildTarget Build);
 }
