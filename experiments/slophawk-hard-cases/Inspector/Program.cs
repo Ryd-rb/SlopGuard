@@ -108,9 +108,7 @@ static string[] ObservedRuntime(string checkout, string route)
     using var index = JsonDocument.Parse(File.ReadAllText(PilotArchive.Child(checkout, catalog)));
     if (!index.RootElement.TryGetProperty(route, out var entry) || entry.GetString() is not { } selected)
         throw new InvalidDataException($"No catalog selection for route '{route}'.");
-    using var profile = JsonDocument.Parse(File.ReadAllText(PilotArchive.Child(checkout, selected)));
-    return profile.RootElement.TryGetProperty("redirect", out var value) && value.GetString() is { } redirect
-        ? [catalog, selected, redirect] : [catalog, selected];
+    return [catalog, selected];
 }
 
 void Run(string name)
