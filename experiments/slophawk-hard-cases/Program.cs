@@ -22,16 +22,16 @@ if (args is ["incidents", var incidentSuite] && Path.IsPathFullyQualified(incide
     return 0;
 }
 
-if (args is ["wide", var corpus] && Path.IsPathFullyQualified(corpus))
+if (args is [var wideMode, var corpus] && wideMode is "wide" or "wide-integrated" && Path.IsPathFullyQualified(corpus))
 {
-    await WideReview.Package(corpus, Dotnet);
+    await WideReview.Package(corpus, Dotnet, integrated: wideMode == "wide-integrated");
     return 0;
 }
 
-if (args is ["adjudicate", var corpusPath, var reports, var score] &&
+if (args is [var scoreMode, var corpusPath, var reports, var score] && scoreMode is "adjudicate" or "adjudicate-integrated" &&
     Path.IsPathFullyQualified(corpusPath) && Path.IsPathFullyQualified(reports) && Path.IsPathFullyQualified(score))
 {
-    await WideReview.Adjudicate(corpusPath, reports, score, Dotnet);
+    await WideReview.Adjudicate(corpusPath, reports, score, Dotnet, integrated: scoreMode == "adjudicate-integrated");
     return 0;
 }
 
