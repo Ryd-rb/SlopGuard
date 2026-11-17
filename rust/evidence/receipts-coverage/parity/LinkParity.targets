@@ -1,0 +1,7 @@
+<Project>
+  <!-- Import only into tests/SlopHawk.IntegrationTests/SlopHawk.IntegrationTests.csproj,
+       never into the full solution. This file is not imported by default. -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'SlopHawk.IntegrationTests'">
+    <Compile Include="$(MSBuildThisFileDirectory)SGMig13ParityTests.cs" />
+  </ItemGroup>
+</Project>

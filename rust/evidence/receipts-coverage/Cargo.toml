@@ -1,0 +1,25 @@
+[package]
+name = "slophawk-receipts-coverage"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+description = "Bounded build/test receipt and coverage evidence for the standalone SlopHawk verifier"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "receipts-coverage"
+path = "src/main.rs"
+
+[dependencies]
+sha2 = "=0.10.9"
+libc = "=0.2.177"
+quick-xml = "=0.38.3"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+slophawk-verification = { path = "../../checkers/verification" }
+
+[dev-dependencies]
