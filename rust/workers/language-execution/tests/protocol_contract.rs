@@ -84,9 +84,13 @@ fn cargo_argv_and_controlled_environment_bind_exact_target_and_tool() {
     use slophawk_rust_project_context::{Binding, Features, metadata_argv, test_argv};
     let cargo = Executable { path: "/opt/approved/bin/cargo".into(), sha256: "a".repeat(64) };
     let rustc = Executable { path: "/opt/approved/bin/rustc".into(), sha256: "b".repeat(64) };
-    let environment = cargo_environment_digest(&cargo, &rustc);
+    let rustdoc = Executable { path: "/opt/approved/bin/rustdoc".into(), sha256: "d".repeat(64) };
+    let environment = cargo_environment_digest(&cargo, &rustc, &rustdoc);
     assert_ne!(environment, cargo_environment_digest(&cargo, &Executable {
         sha256: "c".repeat(64), ..rustc.clone()
+    }, &rustdoc));
+    assert_ne!(environment, cargo_environment_digest(&cargo, &rustc, &Executable {
+        sha256: "e".repeat(64), ..rustdoc.clone()
     }));
     let binding = Binding {
         workspace_root: "/tmp/pinned-cargo".into(), workspace_revision: 5,

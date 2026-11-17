@@ -15,6 +15,21 @@ fn main() {
 }
 fn execute() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.as_slice(), [verb] if verb == "--inventory-peer-v1") {
+        return slophawk_native_coordinator::inventory_worker(
+            &std::env::current_dir()?, io::stdin().lock(), io::stdout().lock(),
+        );
+    }
+    if let [verb, root_flag, root, profile_flag, profile, context_flag, context] = args.as_slice() {
+        if verb == "run-peer" && root_flag == "--root" && profile_flag == "--profile" && context_flag == "--context" {
+            let mut coordinator = Coordinator::open(root)?;
+            let count = coordinator.run_inventory_peer(
+                std::path::Path::new(profile), context, &AtomicBool::new(false),
+            )?;
+            println!("{{\"verifiedSources\":{count}}}");
+            return Ok(());
+        }
+    }
     if args.first().is_some_and(|v| v == "fake-worker") {
         let mode = args.get(1).map_or("", String::as_str);
         let input = args.get(2).map_or("", String::as_str);

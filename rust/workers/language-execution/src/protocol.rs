@@ -89,6 +89,8 @@ impl Executable {
 pub struct CargoVariant {
     /// Exact approved rustc binary; do not depend on inherited PATH/rustup.
     pub rustc: Executable,
+    /// Cargo invokes rustdoc for doctests, independently of RUSTC.
+    pub rustdoc: Executable,
     pub revision: u64,
     pub epoch: String,
     pub git_commit: String,

@@ -135,8 +135,10 @@ fn verify_profile(path: &Path, job: &Job) -> Result<(Profile, String), Refusal> 
         verify_executable(&profile.tool)?;
         match &job.operation {
             crate::protocol::Operation::CargoMetadata { variant, .. }
-            | crate::protocol::Operation::CargoTest { variant, .. } =>
-                verify_executable(&variant.rustc)?,
+            | crate::protocol::Operation::CargoTest { variant, .. } => {
+                verify_executable(&variant.rustc)?;
+                verify_executable(&variant.rustdoc)?;
+            },
             _ => {}
         }
         Ok((profile, protocol::sha256(&bytes)))

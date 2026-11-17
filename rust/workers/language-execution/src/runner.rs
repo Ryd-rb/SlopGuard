@@ -46,13 +46,14 @@ fn controlled_env(command: &mut Command) {
 
 /// Exact controlled Cargo environment recipe. Per-attempt scratch paths are
 /// represented by fixed tokens; no inherited variables or network are used.
-pub fn cargo_environment_digest(cargo: &Executable, rustc: &Executable) -> String {
+pub fn cargo_environment_digest(cargo: &Executable, rustc: &Executable, rustdoc: &Executable) -> String {
     let representation = serde_json::json!({
-        "schema": "slophawk/cargo-controlled-environment/1",
+        "schema": "slophawk/cargo-controlled-environment/2",
         "cargo": cargo,
         "rustc": rustc,
+        "rustdoc": rustdoc,
         "LC_ALL": "C", "LANG": "C", "PATH": "/usr/bin:/bin",
-        "RUSTC": &rustc.path, "CARGO_HOME": "$ATTEMPT/cargo-home",
+        "RUSTC": &rustc.path, "RUSTDOC": &rustdoc.path, "CARGO_HOME": "$ATTEMPT/cargo-home",
         "CARGO_TARGET_DIR": "$ATTEMPT/target", "CARGO_NET_OFFLINE": "true",
         "CARGO_INCREMENTAL": "0", "stdin": "null",
     });
@@ -84,7 +85,8 @@ fn run_cargo(job: &Job, directory: &Path, cargo: &Executable, variant: &CargoVar
     if job.identity.source_sha256 != ledger_digest || job.identity.input_sha256 != ledger_digest {
         return Err("Cargo input ledger differs from source and input binding".into());
     }
-    if !variant.rustc.valid() || variant.environment_sha256 != cargo_environment_digest(cargo, &variant.rustc) {
+    if !variant.rustc.valid() || !variant.rustdoc.valid() ||
+        variant.environment_sha256 != cargo_environment_digest(cargo, &variant.rustc, &variant.rustdoc) {
         return Err("Cargo controlled environment differs from admitted identity".into());
     }
     let mut probe = Command::new(&variant.rustc.path);
@@ -119,6 +121,7 @@ fn run_cargo(job: &Job, directory: &Path, cargo: &Executable, variant: &CargoVar
     controlled_env(&mut command);
     command.args(&argv).current_dir(&job.identity.root)
         .env("RUSTC", &variant.rustc.path)
+        .env("RUSTDOC", &variant.rustdoc.path)
         .env("PATH", "/usr/bin:/bin")
         .env("CARGO_NET_OFFLINE", "true")
         .env("CARGO_HOME", directory.join("cargo-home"))

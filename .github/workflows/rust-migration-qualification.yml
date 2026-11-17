@@ -41,9 +41,11 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal
           cargo +1.99.1 build --locked --manifest-path rust/project-context/fluxr/Cargo.toml
           cargo +1.99.1 test --locked --manifest-path rust/workers/language-execution/Cargo.toml --no-run
+          cargo +1.99.1 test --locked --manifest-path rust/native-coordinator/Cargo.toml --no-run
           echo "VODA_FLUXR_WORKER_BIN=$CARGO_TARGET_DIR/debug/slophawk-fluxr-checked-worker" >> "$GITHUB_ENV"
           echo "VODA_CARGO_BIN=$(rustup which --toolchain 1.99.1 cargo)" >> "$GITHUB_ENV"
           echo "VODA_RUSTC_BIN=$(rustup which --toolchain 1.99.1 rustc)" >> "$GITHUB_ENV"
+          echo "VODA_RUSTDOC_BIN=$(rustup which --toolchain 1.99.1 rustdoc)" >> "$GITHUB_ENV"
       - name: Prepare pinned pytest and report plugin
         shell: bash
         run: |
@@ -66,3 +68,9 @@ jobs:
           cargo +1.99.1 test --locked --offline --manifest-path rust/runtime/worker-scope/Cargo.toml
           cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml
           cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml --test real_workers -- --ignored --nocapture --test-threads=1
+      - name: Exercise the coordinator and recover an interrupted live worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SLOPHAWK_LIVE_NATIVE_SCOPE=1
+          cargo +1.99.1 test --locked --offline --manifest-path rust/native-coordinator/Cargo.toml -- --test-threads=1

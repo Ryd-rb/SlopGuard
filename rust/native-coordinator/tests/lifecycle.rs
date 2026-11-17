@@ -1,7 +1,10 @@
 use slophawk_native_coordinator::{Admission, Coordinator, Event, FixtureResult};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 struct Scratch(PathBuf);
@@ -21,6 +24,98 @@ impl Scratch {
 }
 impl Drop for Scratch {
     fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+}
+
+fn inventory_grant(root: &Coordinator, path: &Path, binary: &Path) -> io::Result<()> {
+    let digest = format!("{:x}", Sha256::digest(fs::read(binary)?));
+    let payload = serde_json::json!({
+        "version": 1, "rootIdentity": root.fence().root_identity,
+        "peers": [{"operation": "inventory", "executable": binary, "sha256": digest,
+            "toolVersion": "1", "context": "csharp:unresolved:.",
+            "policyDigest": root.fence().policy_digest, "budgetRef": "inventory-20s",
+            "grantRef": "test-inventory"}]
+    });
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    serde_json::to_writer(options.open(path)?, &payload)?;
+    Ok(())
+}
+
+#[test]
+fn installed_inventory_peer_publishes_without_consuming_pending_causes() -> io::Result<()> {
+    if cfg!(target_os = "linux") && std::env::var_os("SLOPHAWK_LIVE_NATIVE_SCOPE").is_none() {
+        return Ok(());
+    }
+    let root = Scratch::new();
+    let owner = Scratch::new();
+    root.write("Source.cs", "class Before {}\n");
+    let mut coordinator = Coordinator::open(root.root())?;
+    root.write("Source.cs", "class After {}\n");
+    assert!(coordinator.poll()?);
+    let pending = coordinator.pending().to_vec();
+    assert_eq!(pending.len(), 1);
+    let executable = Path::new(env!("CARGO_BIN_EXE_slophawk-native-coordinator"));
+    let profile = owner.root().join("inventory.json");
+    inventory_grant(&coordinator, &profile, executable)?;
+    let cancel = AtomicBool::new(false);
+    assert_eq!(coordinator.run_inventory_peer(&profile, "csharp:unresolved:.", &cancel)?, 1);
+    assert_eq!(coordinator.pending(), pending);
+    assert!(coordinator.read_current()?.unwrap().contains("inventory_complete"));
+    fs::remove_file(&profile)?;
+    assert!(coordinator.run_inventory_peer(&profile, "csharp:unresolved:.", &cancel).is_err());
+    assert_eq!(coordinator.attempts().len(), 1);
+    drop(coordinator);
+    let reopened = Coordinator::open(root.root())?;
+    assert_eq!(reopened.pending(), pending);
+    assert_eq!(reopened.attempts()[0].status, "completed");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn coordinator_restart_recovers_the_persisted_live_os_scope() -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+    if std::env::var_os("SLOPHAWK_LIVE_NATIVE_SCOPE").is_none() {
+        return Ok(());
+    }
+    let root = Scratch::new();
+    let owner = Scratch::new();
+    root.write("Source.cs", "class Before {}\n");
+    let mut coordinator = Coordinator::open(root.root())?;
+    root.write("Source.cs", "class After {}\n");
+    assert!(coordinator.poll()?);
+    let pending = coordinator.pending().to_vec();
+    assert_eq!(pending.len(), 1);
+    let signal = owner.root().join("started");
+    let worker = owner.root().join("owner-test-worker");
+    owner.write("owner-test-worker", &format!("#!/bin/sh\n/usr/bin/sleep 30 &\nprintf '%s\\n' \"$!\" > '{}'\nwait\n", signal.display()));
+    fs::set_permissions(&worker, fs::Permissions::from_mode(0o700))?;
+    let grant = owner.root().join("inventory.json");
+    inventory_grant(&coordinator, &grant, &worker)?;
+    drop(coordinator);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_slophawk-native-coordinator"))
+        .arg("run-peer").arg("--root").arg(root.root()).arg("--profile").arg(grant)
+        .args(["--context", "csharp:unresolved:."]).stdout(Stdio::null()).spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !signal.is_file() && Instant::now() < deadline && child.try_wait()?.is_none() {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    child.kill()?;
+    child.wait()?;
+    let recovered = Coordinator::open(root.root())?;
+    assert_eq!(recovered.pending(), pending);
+    let attempt = recovered.attempts().last().unwrap();
+    assert_eq!(attempt.status, "interrupted");
+    assert_eq!(attempt.reason, "scope_drained_after_restart");
+    assert!(!recovered.read_current()?.unwrap().contains("inventory_complete"));
+    assert!(signal.is_file(), "the scoped worker must have started before the coordinator exited");
+    Ok(())
 }
 
 #[test]

@@ -22,9 +22,9 @@ use scan::{inventory_digest, root_identity};
 use std::fs;
 use std::io::{self, ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use store::{atomic_replace_checked, invalid, state_directory, withdraw, State};
 use supervisor::{heavy_slot, private_dir, Lock};
 
@@ -32,6 +32,7 @@ const PRODUCER: &str = "SlopHawk-Native-Coordinator";
 const REPORT_PREFIX: &[u8] = b"{\"producer\":\"SlopHawk-Native-Coordinator\"";
 const MAX_INTENTS: usize = 2_048;
 const MAX_HISTORY: usize = 64;
+const SCOPED_PEER: &str = "scoped_inventory_worker_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fence {
@@ -78,7 +79,12 @@ impl Coordinator {
         let dir_id = root_identity(&dir)?;
         let writer = Lock::try_acquire(&dir.join("writer.lock"))?;
         let mut state = State::load(&dir)?.unwrap_or_else(|| State::empty(identity.clone()));
+        let scope_drained = !state.attempts.iter().any(scoped_attempt)
+            || slophawk_worker_scope::recover(Duration::from_secs(3)).is_ok();
         if state.root_id != identity {
+            if !scope_drained {
+                return Err(io::Error::new(ErrorKind::WouldBlock, "previous checkout worker scope is unverified"));
+            }
             // Physical checkout replacement retires, rather than inheriting,
             // outstanding causes and findings from an unrelated root.
             let mut fresh = State::empty(identity.clone());
@@ -102,6 +108,16 @@ impl Coordinator {
         state.sequence = plus(state.sequence)?;
         let mut unknown_scope = false;
         for attempt in &mut state.attempts {
+            if scoped_attempt(attempt) {
+                if scope_drained {
+                    attempt.status = "interrupted".into();
+                    attempt.reason = "scope_drained_after_restart".into();
+                } else {
+                    attempt.status = "scope_uncertain".into();
+                    unknown_scope = true;
+                }
+                continue;
+            }
             if attempt.status == "running" || attempt.status == "admitted" {
                 // A PID and start tick in repository-writable state is not
                 // authenticated process-scope ownership. Never kill or reap
@@ -390,6 +406,95 @@ impl Coordinator {
         }
     }
 
+    /// Execute the installed inventory peer for one explicitly authorized
+    /// context. Inventory evidence never consumes pending test causes.
+    pub fn run_inventory_peer(
+        &mut self, profile_path: &Path, context: &str, cancel: &AtomicBool,
+    ) -> io::Result<usize> {
+        if self.state.attempts.iter().any(|attempt| attempt.status == "scope_uncertain") {
+            return Err(io::Error::new(ErrorKind::WouldBlock, "worker scope is uncertain"));
+        }
+        self.check_live()?;
+        let fence = self.fence();
+        let path = execution::external_profile(profile_path, &self.root)?;
+        let profile = execution::read_profile(&path, &fence.root_identity)?;
+        let inputs = self.state.inventory.iter().filter_map(|(path, fact)| {
+            let language = scan::language(path)?;
+            (scan::context(path, &self.state.inventory).as_deref() == Some(context)).then(|| protocol::Input {
+                relative_path: path.clone(), digest: fact.digest.clone(), language: language.into(),
+            })
+        }).take(protocol::MAX_RECORDS + 1).collect::<Vec<_>>();
+        if inputs.is_empty() || inputs.len() > protocol::MAX_RECORDS {
+            return Err(invalid("inventory peer context is empty or exceeds its record limit"));
+        }
+
+        let mut next = self.state.clone();
+        let id = next.id()?;
+        let (binary, identity) = execution::prepared_job(
+            &profile, &self.root, &fence.root_identity, "inventory", context,
+            &fence.epoch.to_string(), fence.revision, &fence.input_digest, &id.to_string(),
+        )?;
+        let mut input = Vec::new();
+        write_frame(&mut input, &JobRequest { identity: identity.clone(), inputs: inputs.clone() })?;
+        next.attempts.push(Attempt {
+            id, generation: fence.generation, epoch: fence.epoch, revision: fence.revision,
+            pid: 0, start_ticks: 0, status: "running".into(), reason: SCOPED_PEER.into(),
+            causes: Vec::new(),
+        });
+        if next.attempts.len() > MAX_HISTORY { next.attempts.remove(0); }
+        next.save(&self.state_dir)?;
+        self.state = next;
+        self.withdraw()?;
+
+        let mut command = std::process::Command::new(&binary);
+        command.arg("--inventory-peer-v1").current_dir(&self.root);
+        let current = || {
+            self.observed_sequence.load(Ordering::Acquire) == fence.sequence &&
+                execution::read_profile(&path, &fence.root_identity).as_ref().is_ok_and(|read| read == &profile)
+        };
+        let output = slophawk_worker_scope::run_guarded(
+            &command, &input, slophawk_worker_scope::Limits {
+                deadline: Duration::from_secs(20), stdout: protocol::MAX_OUTPUT, stderr: 4096,
+            }, cancel, &current,
+        );
+        let drained = output.is_ok() || slophawk_worker_scope::recover(Duration::from_secs(3)).is_ok();
+        let checked = output.map_err(io::Error::other).and_then(|output| {
+            if output.code != 0 { return Err(invalid("inventory peer exited unsuccessfully")); }
+            let terminal = checked_output(&mut output.stdout.as_slice(), &identity)?;
+            if terminal.outcome != Outcome::Complete || !terminal.omissions.is_empty() ||
+                terminal.accepted_records != inventory_records(&inputs)? {
+                return Err(invalid("inventory peer did not attest the requested records"));
+            }
+            Ok(terminal.accepted_records.len())
+        });
+        let live = drained && !cancel.load(Ordering::Acquire) && current() &&
+            execution::verified_peer(&binary, &self.root).is_ok_and(|(_, digest)| digest == identity.tool_digest) &&
+            self.is_fence_live(&fence)?;
+        let mut next = self.state.clone();
+        let attempt = next.attempts.last_mut().ok_or_else(|| invalid("inventory attempt went missing"))?;
+        if !drained {
+            attempt.status = "scope_uncertain".into();
+        } else if !live {
+            attempt.status = "superseded".into();
+            attempt.reason = "inventory_peer_fence_changed".into();
+        } else {
+            attempt.status = if checked.is_ok() { "completed" } else { "failed_to_run" }.into();
+            attempt.reason = "inventory_peer_terminal".into();
+        }
+        // Preserve the exact inventory receipt independently of test causes.
+        if live && checked.is_ok() {
+            next.receipt = Some(Receipt {
+                attempt: id, revision: fence.revision, outcome: "inventory_complete".into(),
+                coverage: "inventory".into(), reason: "scoped_peer".into(), input_digest: fence.input_digest,
+            });
+        }
+        next.save(&self.state_dir)?;
+        self.state = next;
+        if live { self.publish()?; }
+        if !live { return Err(io::Error::new(ErrorKind::WouldBlock, "inventory peer fence or drainage unverified")); }
+        checked
+    }
+
     pub fn fence(&self) -> Fence {
         Fence {
             generation: self.state.generation, epoch: self.state.epoch,
@@ -571,6 +676,41 @@ impl Coordinator {
             None => failure("no_current_report", "No validated current report."),
         }
     }
+}
+
+fn scoped_attempt(attempt: &Attempt) -> bool {
+    attempt.reason == SCOPED_PEER && matches!(attempt.status.as_str(), "running" | "scope_uncertain")
+}
+
+fn inventory_records(inputs: &[protocol::Input]) -> io::Result<Vec<serde_json::Value>> {
+    inputs.iter().map(|input| serde_json::to_value(input).map_err(io::Error::other)).collect()
+}
+
+/// Worker entry point for the production coordinator executable.
+pub fn inventory_worker(
+    root: &Path, mut input: impl Read, mut output: impl std::io::Write,
+) -> io::Result<()> {
+    let root = root.canonicalize()?;
+    let request = checked_request(&mut input)?;
+    if input.read(&mut [0])? != 0 || request.identity.operation != "inventory" ||
+        request.identity.root_identity != root_identity(&root)? {
+        return Err(invalid("inventory worker received an invalid or mismatched request"));
+    }
+    let snapshot = scan::scan(&root)?;
+    if snapshot.partial || inventory_digest(&snapshot.files) != request.identity.input_digest ||
+        request.inputs.iter().any(|item| {
+            snapshot.files.get(&item.relative_path).is_none_or(|source| source.digest != item.digest) ||
+                scan::context(&item.relative_path, &snapshot.files).as_deref() != Some(&request.identity.context)
+        }) {
+        return Err(invalid("inventory inputs changed after admission"));
+    }
+    write_frame(&mut output, &WorkerFrame::Facts {
+        identity: request.identity.clone(), provider: "native-source-inventory".into(),
+        records: inventory_records(&request.inputs)?,
+    })?;
+    write_frame(&mut output, &WorkerFrame::Terminal {
+        identity: request.identity, outcome: Outcome::Complete, reason: None, omissions: Vec::new(),
+    })
 }
 
 impl Drop for Coordinator {

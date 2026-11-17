@@ -193,6 +193,7 @@ fn real_locked_cargo_two_package_graph_and_test_receipt() {
     let ledger = scratch.ledger(&files);
     let tool = executable(&env_needed("VODA_CARGO_BIN"));
     let rustc = env_needed("VODA_RUSTC_BIN");
+    let rustdoc = executable(&env_needed("VODA_RUSTDOC_BIN"));
     let output = Command::new(&rustc).arg("-Vv").output().unwrap();
     assert!(output.status.success());
     let version = String::from_utf8(output.stdout.clone()).unwrap();
@@ -200,11 +201,12 @@ fn real_locked_cargo_two_package_graph_and_test_receipt() {
     let target = version.lines().find_map(|l| l.strip_prefix("host: ")).unwrap();
     let variant = CargoVariant {
         rustc: executable(&rustc),
+        rustdoc: rustdoc.clone(),
         revision: 5, epoch: "fixture-epoch".into(),
         git_commit: "0123456789012345678901234567890123456789".into(),
         target_triple: target.into(), rustc_version: "rustc 1.99.1".into(),
         rustc_vv_sha256: protocol::sha256(&output.stdout),
-        environment_sha256: cargo_environment_digest(&tool, &executable(&rustc)),
+        environment_sha256: cargo_environment_digest(&tool, &executable(&rustc), &rustdoc),
         all_features: false, no_default_features: false,
         features: vec!["alpha/with-beta".into()],
     };

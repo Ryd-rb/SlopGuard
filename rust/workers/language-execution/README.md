@@ -43,11 +43,11 @@ command can execute them; metadata is a separate, non-build operation. Do not
 infer these grants from a workspace manifest. The process environment is
 cleared and network access is not requested (`--locked --offline`,
 `CARGO_NET_OFFLINE=true`). The coordinator must compute the variant environment with
-`cargo_environment_digest(&cargo, &rustc)` over the exact controlled
+`cargo_environment_digest(&cargo, &rustc, &rustdoc)` over the exact controlled
 key/value recipe; the per-attempt Cargo scratch path is a normalized token.
 The installer must provide an approved, directly
-invocable Cargo/rustc pair; the pinned `CargoVariant.rustc` binary and
-`rustc -Vv` bytes are separately verified. All implicit ancestor Cargo config
+invocable Cargo toolchain. Both `CargoVariant.rustc` and `CargoVariant.rustdoc`
+are digest-pinned. `rustc -Vv` bytes are separately verified. All implicit ancestor Cargo config
 must be absent; root-local `.cargo/config[.toml]` must be included in the
 source ledger if present. Unlisted inputs, toolchain config or dependency
 registries yield an unresolved scope rather than complete evidence.

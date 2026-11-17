@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 const MAX_PROFILE: u64 = 32 * 1024;
 const MAX_PEERS: usize = 16;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PeerGrant {
     pub operation: String,
@@ -25,7 +25,7 @@ pub struct PeerGrant {
     pub budget_ref: String,
     pub grant_ref: String,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionProfile {
     pub version: u32,
@@ -36,6 +36,13 @@ fn private_profile_file(path: &Path) -> io::Result<Vec<u8>> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() || meta.len() > MAX_PROFILE {
         return Err(invalid("execution grant is not a bounded ordinary file"));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 {
+            return Err(invalid("execution grant cannot be a reparse point"));
+        }
     }
     #[cfg(unix)] {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -67,17 +74,18 @@ pub fn read_profile(path: &Path, root_identity: &str) -> io::Result<ExecutionPro
     }
     Ok(profile)
 }
-fn verified_peer(path: &Path, workspace: &Path) -> io::Result<(PathBuf, String)> {
+pub(crate) fn verified_peer(path: &Path, workspace: &Path) -> io::Result<(PathBuf, String)> {
     if !path.is_absolute() { return Err(invalid("peer executable path is not absolute")); }
     let canonical = fs::canonicalize(path)?;
     if canonical.starts_with(workspace) { return Err(invalid("peer executable is inside workspace")); }
     let meta = fs::symlink_metadata(&canonical)?;
-    if !meta.file_type().is_file() { return Err(invalid("executable is not a regular file")); }
-    let mut file = File::open(&canonical)?;
+    if !meta.file_type().is_file() || meta.len() > 128 * 1024 * 1024 { return Err(invalid("executable is not a bounded regular file")); }
+    let file = File::open(&canonical)?;
+    let mut bounded = (&file).take(meta.len() + 1);
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let size = file.read(&mut buf)?;
+        let size = bounded.read(&mut buf)?;
         if size == 0 { break; }
         hasher.update(&buf[..size]);
     }
@@ -114,25 +122,21 @@ pub fn prepared_job(profile: &ExecutionProfile, workspace: &Path,
     identity.validate()?;
     Ok((binary, identity))
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Containment { WindowsJob, LinuxSystemdCgroupV2 }
-/// No OS adapter is registered in this source-only recipient. These checks
-/// are not replaceable with a process group, inferred PID, or `systemd-run`
-/// command started after execution: the process must be enrolled *before*
-/// any repository code can execute and remain killable after owner failure.
-pub fn require_authenticated_containment(_authority: Containment) -> io::Result<()> {
-    Err(io::Error::new(ErrorKind::Unsupported,
-        "missing authenticated OS Job/systemd-cgroup enrollment and restart drain authority"))
+pub(crate) fn external_profile(path: &Path, root: &Path) -> io::Result<PathBuf> {
+    if !path.is_absolute() || fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(invalid("an explicit absolute physical execution profile is required"));
+    }
+    let canonical = fs::canonicalize(path)?;
+    if canonical.starts_with(root) {
+        return Err(invalid("workspace files cannot grant worker execution"));
+    }
+    require_plain_dir(canonical.parent().ok_or_else(|| invalid("missing profile directory"))?)?;
+    Ok(canonical)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn no_implicit_execution_authority() {
-        assert!(require_authenticated_containment(Containment::WindowsJob).is_err());
-        assert!(require_authenticated_containment(Containment::LinuxSystemdCgroupV2).is_err());
-    }
     #[test]
     fn repository_paths_do_not_grant_executable_peers() {
         let profile = ExecutionProfile {
