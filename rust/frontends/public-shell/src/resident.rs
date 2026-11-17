@@ -184,6 +184,7 @@ fn request(
     key: [u8; 32],
     store: &Mutex<Workspace>,
     stopping: &AtomicBool,
+    recheck: &AtomicBool,
 ) -> io::Result<()> {
     // Windows accepted sockets inherit the listener's nonblocking mode.
     // Each connection has its own thread and bounded blocking I/O deadlines.
@@ -232,7 +233,11 @@ fn request(
                 }),
                 false,
             ),
-            [6, 1, 3] => (success(json!({"revision":state.invalidate()?})), false),
+            [6, 1, 3] => {
+                let revision = state.invalidate()?;
+                recheck.store(true, Ordering::Release);
+                (success(json!({"revision":revision})), false)
+            }
             [6, 1, 4] => (success(json!({"stopping":true})), true),
             [6, _, _] => (
                 refused(
@@ -284,6 +289,7 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
     fs::rename(&stage, &session.0)?;
     let workspace = Arc::new(Mutex::new(workspace));
     let stopping = Arc::new(AtomicBool::new(false));
+    let recheck = Arc::new(AtomicBool::new(false));
     let result = std::thread::scope(|threads| -> io::Result<()> {
         let mut active = Vec::<std::thread::ScopedJoinHandle<'_, ()>>::new();
         let mut next_scan = Instant::now() + POLL;
@@ -296,7 +302,7 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
                 if state.authorized().is_err() {
                     break;
                 }
-                if Instant::now() >= next_scan {
+                if recheck.swap(false, Ordering::AcqRel) || Instant::now() >= next_scan {
                     state.refresh();
                     next_scan = Instant::now() + POLL;
                 }
@@ -307,8 +313,11 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
                         let key = record.key;
                         let workspace = Arc::clone(&workspace);
                         let stopping = Arc::clone(&stopping);
+                        let recheck = Arc::clone(&recheck);
                         active.push(threads.spawn(move || {
-                            if let Err(error) = request(stream, key, &workspace, &stopping) {
+                            if let Err(error) =
+                                request(stream, key, &workspace, &stopping, &recheck)
+                            {
                                 if std::env::var_os("SLOPHAWK_NATIVE_DIAGNOSTICS").is_some() {
                                     eprintln!("Native daemon connection failed: {error}");
                                 }
