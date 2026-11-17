@@ -3,5 +3,6 @@
 **/TestResults/
 /.artifacts/
 /.slophawk/
+/.slophawk-native-coordinator/
 /.slophawk.pending.json
 /.vs/

@@ -1,0 +1,20 @@
+[package]
+name = "slophawk-native-coordinator"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+publish = false
+license = "MIT"
+description = "Isolated revision-fenced native workspace coordination and discovery"
+
+[lib]
+name = "slophawk_native_coordinator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "slophawk-native-coordinator"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
