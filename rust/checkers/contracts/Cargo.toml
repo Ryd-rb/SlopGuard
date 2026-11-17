@@ -1,0 +1,15 @@
+[package]
+name = "slophawk-contracts"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "Pure qualified integer contracts and ordered seeded probe plans"
+license = "MIT"
+publish = false
+
+[lib]
+name = "slophawk_contracts"
+path = "src/lib.rs"
+
+[dependencies]
+slophawk-probe-replay = { path = "../probe-replay" }
