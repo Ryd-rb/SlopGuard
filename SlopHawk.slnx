@@ -4,6 +4,7 @@
     <Project Path="src/SlopHawk.Core/SlopHawk.Core.csproj" />
     <Project Path="src/SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
     <Project Path="src/SlopHawk.Providers.CSharp/SlopHawk.Providers.CSharp.csproj" />
+    <Project Path="src/SlopHawk.Providers.CSharp.Worker/SlopHawk.Providers.CSharp.Worker.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SlopHawk.Core.Tests/SlopHawk.Core.Tests.csproj" />

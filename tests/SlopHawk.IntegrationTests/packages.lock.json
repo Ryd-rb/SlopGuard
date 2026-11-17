@@ -192,6 +192,12 @@
       "slophawk.providers.csharp": {
         "type": "Project"
       },
+      "slophawk.providers.csharp.worker": {
+        "type": "Project",
+        "dependencies": {
+          "SlopHawk.Providers.CSharp": "[1.0.0, )"
+        }
+      },
       "slophawk.workerfixture": {
         "type": "Project",
         "dependencies": {

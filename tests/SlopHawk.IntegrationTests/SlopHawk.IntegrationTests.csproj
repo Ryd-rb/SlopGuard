@@ -8,6 +8,7 @@
     <ProjectReference Include="../../src/SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
     <ProjectReference Include="../SlopHawk.WorkerFixture/SlopHawk.WorkerFixture.csproj" />
     <ProjectReference Include="../../src/SlopHawk.Providers.CSharp/SlopHawk.Providers.CSharp.csproj" />
+    <ProjectReference Include="../../src/SlopHawk.Providers.CSharp.Worker/SlopHawk.Providers.CSharp.Worker.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all" />
