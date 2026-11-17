@@ -1,0 +1,15 @@
+[package]
+name = "slophawk-fluxr-provider"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "Read-only checked FluxR source facts for a future SlopHawk provider"
+
+[lib]
+name = "slophawk_fluxr_provider"
+path = "src/lib.rs"
+
+[dependencies]
+fluxr = { git = "https://github.com/Ryd-rb/FluxR-lang", rev = "e089fa301668c0d28821f72b08f6e4086a06ef27", default-features = false }
+sha2 = "0.10"
