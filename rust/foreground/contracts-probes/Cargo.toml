@@ -1,0 +1,26 @@
+[package]
+name = "slophawk-contracts-probes"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+description = "Foreground Rust contract qualification, probe CLI and staged search evidence"
+
+# Independent foreground crate; it consumes the two *published* pure checker crates.
+[workspace]
+
+[lib]
+name = "slophawk_contracts_probes"
+path = "src/lib.rs"
+
+[[bin]]
+name = "slophawk-contracts-probes"
+path = "src/main.rs"
+
+[dependencies]
+slophawk-contracts = { path = "../../checkers/contracts" }
+slophawk-probe-replay = { path = "../../checkers/probe-replay" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["preserve_order", "raw_value"] }
+sha2 = "=0.10.9"

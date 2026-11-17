@@ -1,0 +1,118 @@
+# Foreground contracts and probes (Rust, opt-in pilot)
+
+This crate provides a separate `slophawk-contracts-probes` binary. It does **not** replace
+`slophawk`, the .NET CLI, daemon, MCP or private IPC. Its pure decisions use the exact
+published `rust/checkers/contracts` and `rust/checkers/probe-replay` public APIs at
+SlopHawk commit `a367ef58076f7e29d2ae475a3b593daad04c4998`.
+
+## CLI shape
+
+```text
+slophawk-contracts-probes contracts qualify rules.json published.json
+slophawk-contracts-probes probes plan seeds.json count [seed [scales.json]]
+slophawk-contracts-probes probes compare inputs.json candidate.json reference.json
+slophawk-contracts-probes probes methods candidate.dll reference.dll
+slophawk-contracts-probes check-contracts candidate.dll rules.json published.json workspace [per-operation [run-verb [prepare-verb]]]
+```
+
+Exit 0 is qualified/clean, exit 1 is qualification/search findings, replay changes or
+unsupported input, and exit 2 is invalid usage, missing/bad peer evidence or other
+infrastructure failure. All command payloads use the existing C# PascalCase JSON
+field names, including `slophawk-contract-search-v1` qualification and summary,
+`slophawk-check-v1` replay reports and exact SHA-256 of source bytes (uppercase).
+`probes methods` forwards to the **published C# command**; it does not invent a
+Rust IL parser.
+
+## Explicit C# peer, execution and authority
+
+For `check-contracts`, set `SLOPHAWK_CSHARP_CLI` to the path of the **published C#**
+`slophawk` executable (default command lookup `slophawk`). The Rust program calls
+its **public** `check <assembly.dll> <cases.json> <workspace> [run-verb [prepare-verb]]`
+command directly, without a shell, and admits only status 0 or 1 accompanied by a
+complete receipt. The passed workspace is a private *staging subdirectory* of the
+caller-supplied workspace's `.slophawk/contract-searches/<search>/`. C# owns the
+actual `dotnet exec` adapter, prepare verb, timeout and output limits.
+
+The Rust caller verifies the terminal run ID, expected staged paths, candidate
+assembly SHA-256, run/prepare verbs, ordered requests, exact raw observations,
+result counts and findings, `Expected` values, and report/receipt consistency.
+If the peer fails or evidence disagrees, the attempt staging tree is discarded.
+Across batches the candidate must remain byte-identical. Successful initial
+search receipts stay under contract-search evidence; a separate successful replay
+is promoted to `.slophawk/checks/<run>` or a stable subset report is published
+there. A `ReplayChanges` element retains `Before` and `After` as unnormalized JSON,
+including `null`, newly appeared and vanished mismatches. Missing or unstable
+replay never authorizes publication of that witness.
+
+The C# command is **not** spawned during Rust qualification or probe planning.
+Calling `check-contracts` is explicit operator authorization to execute the
+published C# check; no JSON rule, candidate output, IL hint, or repository text
+can grant more authority. There is no new private execution transport: the
+existing public argv/file/receipt interface is used, so `slophawk.migration-job/1`
+is not silently substituted for shipped IPC or Roslyn frame-v1. Any future
+internal peer transport must use that versioned, capped frame protocol with
+full job/root/revision/authority identity and a verified terminal.
+
+## IL-literal hints (documented *data* boundary)
+
+C#'s `ManagedBodyComparison.IntegerLiterals` is **internal**, and `probes methods`
+outputs comparisons, not the per-operation literal dictionary. To avoid claiming
+this internal method is a public command, the Rust binary accepts optional data
+from a separately admitted C# IL-literal provider:
+
+```text
+SLOPHAWK_IL_HINTS_JSON=/trusted-scratch/literals.json
+SLOPHAWK_IL_HINTS_SHA256=<uppercase SHA-256 of exact literals.json bytes>
+```
+
+The UTF-8 JSON must be a versioned envelope bound to the exact candidate
+assembly hash and each qualified operation's arity. For example:
+
+```json
+{"Format":"slophawk-il-literals-v1",
+ "AssemblySha256":"<UPPERCASE ASSEMBLY SHA-256>",
+ "Operations":[{"Operation":"Route","Arity":4,"Literals":[31,67]}]}
+```
+
+The peer/provider must determine the **same assembly hash and operation arities**
+before emitting the file, publish it in a trusted scratch path, and supply the
+exact file SHA-256 out of band. The Rust consumer bounds file size, count and
+types and rejects mismatched assembly hashes, unqualified operation/arity pairs,
+and duplicate entries. It honors the exact file digest. It does not use these values as rules, expected outcomes
+or execution grants. With no hint file, the second pass still performs rule-based
+guided boundaries, equalities and combined-condition search, but lacks
+implementation-literal collision guidance. Providing this provider is an owner
+integration action because the pinned C# command does not export these hints.
+
+## Qualification and search decision provenance
+
+Qualification is against **published** `ProbeExpectation` examples; the domain,
+ordered `Let` locals, `Basis`, expression compiler and signed arbitrary-precision
+arithmetic are the pinned Rust `ContractCases` implementation. Generation uses
+`.NET 10` seeded `System.Random(int)` order, one RNG per operation, mixed arities,
+per-operation budgets and dedup; an initial (up to 64) seed-0 pass precedes a
+seed-1 guided pass if budget/remaining operations permit it. Batches hold no
+more than 2048 cases. The first mismatch per operation is selected, first match
+is retained as a control witness, and all witnesses are checked in a **new**
+peer execution. Candidate outputs never create expected values.
+
+The Rust planner has explicit scope ceilings (64 contracts, 8192 cases per
+operation, 65536 per generated call). The orchestrator requests one operation
+at a time to avoid the single-call ceiling while preserving per-operation RNG
+state and concatenated ordered batches. Inputs beyond those ceilings fail
+closed with an explicit error; none are silently sampled. The Rust foreground
+engine remains opt-in until the owner executes differential qualifications.
+
+## Integration prerequisites and static provenance
+
+Target toolchains: Rust 1.99.1, .NET 10. `serde=1.0.229`,
+`serde_json=1.0.154`, and `sha2=0.10.9` are versions appearing in pinned
+Rust-project lockfiles; `serde_json`'s `preserve_order` and `raw_value` features
+are required. No `Cargo.lock` is shipped from this source-only change. The
+owner must regenerate and commit the lockfile in an authorized build context.
+
+Design: `src/SlopHawk.Cli/{ProbeCommands,ContractCheck,ForegroundCheck,CheckReview}.cs`,
+`src/SlopHawk.Core/{ContractCases,ContractConditionCases,ProbeReplay}.cs`,
+`docs/rust-checker-migration.md`, `docs/robustness.md`, and the pinned published
+Rust checker crates. Execute source and differential tests only at integration;
+this recipient pass intentionally neither builds nor runs fixtures.
