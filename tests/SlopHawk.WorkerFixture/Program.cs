@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using SlopHawk.Core;
 using SlopHawk.Daemon;
 
 namespace SlopHawk.WorkerFixture;
@@ -11,6 +12,17 @@ internal static class Program
     {
         switch (args)
         {
+            case ["probe-batch" or "alternate-probe-batch", var input]:
+                var requests = JsonSerializer.Deserialize<ProbeInput[]>(await File.ReadAllTextAsync(input))!;
+                Console.WriteLine(JsonSerializer.Serialize(requests.Select(request => request.Operation switch
+                {
+                    "steady" => 2,
+                    "changes" => requests.Length > 4 ? 2 : 3,
+                    "disappears" => requests.Length > 4 ? 2 : 1,
+                    "new-difference" => requests.Length > 4 ? 1 : 2,
+                    _ => request.Args[0]
+                })));
+                return 0;
             case ["owner", var workspace, var state, var output]:
                 DaemonHost.Run(new Workspace(workspace, state), new ProcessFixtureAdapter(output), CancellationToken.None);
                 return 0;

@@ -16,7 +16,7 @@ if (args is [] or ["--help"] or ["-h"])
         Qualify       slophawk contracts qualify <rules.json> <published.json>
         Observe       slophawk check-observe <assembly.dll> <requests.json> <workspace> [run-verb [prepare-verb]]
         Retest        slophawk check-retest <assembly.dll> <workspace> <run> <decisions.json> <acknowledgments.json>
-        Review checks slophawk check-review <workspace> [acknowledgments.json [scope.json]] [--progress]
+        Review checks slophawk check-review <workspace> [acknowledgments.json [scope.json]] [--run <run>] [--progress]
         Plan probes   slophawk probes plan <seeds.json> <per-operation> [seed [scales.json]]
         Compare       slophawk probes compare <probes.json> <candidate.json> <reference.json>
         Compare IL    slophawk probes methods <candidate.dll> <reference.dll>

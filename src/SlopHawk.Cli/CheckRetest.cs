@@ -14,9 +14,9 @@ internal static class CheckRetest
             throw new ArgumentException("Usage: slophawk check-retest <assembly.dll> <workspace> <run> <decisions.json> <acknowledgments.json>");
 
         var run = args[3];
-        var original = await CheckReview.ReadAsync<CheckRun>(
-            Path.Combine(ForegroundCheck.ChecksPath(args[2]), run, "report.json"));
-        if (original.Format != ForegroundCheck.Format || original.Run != run || original.Expected is null)
+        var evidence = await CheckReview.ReadRunAsync(Path.Combine(ForegroundCheck.ChecksPath(args[2]), run), run);
+        var original = evidence.Report;
+        if (original.Expected is null)
             throw new IOException("Provide a completed comparison report for retesting.");
         var decisions = await CheckReview.ReadAsync<Decision[]>(args[4]);
         if (decisions.Length == 0 || decisions.Any(item => item is null || string.IsNullOrWhiteSpace(item.Reason)) ||
@@ -38,13 +38,15 @@ internal static class CheckRetest
             cases[index] = new(finding.Input.Operation, finding.Input.Args, corrected ? decision.Expected : finding.Reference);
         }
 
-        var (receipt, observed) = await ForegroundCheck.ExecuteAsync(args[1], args[2], original.RunVerb, original.PrepareVerb,
-            ProbeReplay.InputsForCheck(cases), cases, original.Candidate);
+        var attempts = Path.Combine(Path.GetFullPath(args[2]), ".slophawk", "retest-attempts");
+        var (attempt, observed) = await ForegroundCheck.ExecuteAsync(args[1], args[2], original.RunVerb, original.PrepareVerb,
+            ProbeReplay.InputsForCheck(cases), cases, original.Candidate, attempts);
         for (var index = 0; index < decisions.Length; index++)
         {
             if (!JsonElement.DeepEquals(observed[index], findings[decisions[index].Index].Candidate))
-                throw new IOException($"The retest did not reproduce the previously observed value. See {receipt.Report}.");
+                throw new IOException($"The retest did not reproduce the previously observed value. See {attempt.Report}.");
         }
+        var receipt = ForegroundCheck.PromoteReplay(args[2], attempt);
 
         var destination = Path.GetFullPath(args[5]);
         await using var writeLock = new FileStream(destination + ".lock", FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);

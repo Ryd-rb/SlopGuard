@@ -8,10 +8,14 @@ internal sealed record CheckRun(string Format, string Run, string Candidate, str
     ProbeCheckResult Result, JsonElement[]? Expected);
 internal sealed record CheckAcknowledgment(string Run, [property: JsonRequired] int Index, string RetestRun,
     [property: JsonRequired] int RetestIndex, string Disposition, string Reason);
+internal sealed record CheckAdapter(string Candidate, string? RunVerb, string? PrepareVerb);
+internal sealed record CheckEvidence(CheckRun Report, ProbeInput[] Requests, JsonElement[] Observed)
+{
+    internal CheckAdapter Adapter => new(Report.Candidate, Report.RunVerb, Report.PrepareVerb);
+}
 
 internal static class CheckReview
 {
-    private sealed record Evidence(CheckRun Report, ProbeInput[] Requests, JsonElement[] Observed);
     private sealed record Finding(string Run, ProbeDifference Difference);
     private sealed record ReviewSource(string Operation, string Component, string Contract, string Implementation);
     private sealed record ReviewScope(string[] Operations, ProbeInput[] Ordinary, int MinimumOutsideOrdinary = 1,
@@ -22,8 +26,17 @@ internal static class CheckReview
         var progress = args[^1] == "--progress";
         if (progress)
             args = args[..^1];
+        string? requestedRun = null;
+        var runOption = Array.IndexOf(args, "--run");
+        if (runOption >= 0)
+        {
+            if (runOption < 2 || runOption + 1 >= args.Length || !Guid.TryParseExact(args[runOption + 1], "N", out _))
+                throw new ArgumentException("Supply a completed check run ID after --run.");
+            requestedRun = args[runOption + 1];
+            args = [.. args[..runOption], .. args[(runOption + 2)..]];
+        }
         if (args.Length is < 2 or > 4)
-            throw new ArgumentException("Usage: slophawk check-review <workspace> [acknowledgments.json [scope.json]] [--progress]");
+            throw new ArgumentException("Usage: slophawk check-review <workspace> [acknowledgments.json [scope.json]] [--run <run>] [--progress]");
         var scope = args.Length == 4 ? await ReadAsync<ReviewScope>(args[3]) : null;
         if (scope is not null &&
             (scope.Operations is not { Length: > 0 } || scope.Operations.Any(string.IsNullOrWhiteSpace) ||
@@ -41,34 +54,36 @@ internal static class CheckReview
         if (!Directory.Exists(directory))
             throw new DirectoryNotFoundException("Run slophawk check before reviewing its reports.");
 
-        var runs = new Dictionary<string, Evidence>(StringComparer.Ordinal);
+        var runs = new Dictionary<string, CheckEvidence>(StringComparer.Ordinal);
         foreach (var runPath in Directory.EnumerateDirectories(directory).Order(StringComparer.Ordinal))
         {
             var run = Path.GetFileName(runPath);
             var reportPath = Path.Combine(runPath, "report.json");
             if (!Guid.TryParseExact(run, "N", out _) || !File.Exists(reportPath))
                 continue;
-            var report = await ReadAsync<CheckRun>(reportPath);
-            var requests = await ReadAsync<ProbeInput[]>(Path.Combine(runPath, "requests.json"));
-            var observed = await ReadAsync<JsonElement[]>(Path.Combine(runPath, "observed.json"));
-            if (report.Format != ForegroundCheck.Format || report.Run != run ||
-                report.Result.Cases != requests.Length || requests.Length != observed.Length ||
-                (report.Expected is not null && requests.Length != report.Expected.Length))
-                throw new IOException($"Inconsistent checker evidence in run {run}.");
-            runs.Add(run, new(report, requests, observed));
+            runs.Add(run, await ReadRunAsync(runPath, run));
         }
         if (runs.Count == 0)
             throw new IOException("No completed checker reports are available.");
 
-        var findings = runs.Values.SelectMany(run => run.Report.Result.Findings
+        var evidenceSets = runs.Values.GroupBy(run => run.Adapter).ToArray();
+        var adapter = requestedRun is null
+            ? evidenceSets.Length == 1 ? evidenceSets[0].Key : null
+            : runs.TryGetValue(requestedRun, out var requested) ? requested.Adapter
+                : throw new ArgumentException($"Check run {requestedRun} was not found in this workspace.");
+        var selectionRequired = adapter is null;
+        var selected = runs.Where(pair => pair.Value.Adapter == adapter).ToDictionary(StringComparer.Ordinal);
+        var findings = selected.Values.SelectMany(run => run.Report.Result.Findings
             .Select(difference => new Finding(run.Report.Run, difference))).ToArray();
-        CheckAcknowledgment[] acknowledged = args.Length >= 3 ? await ReadAsync<CheckAcknowledgment[]>(args[2]) : [];
+        CheckAcknowledgment[] acknowledged = args.Length >= 3 && !selectionRequired
+            ? (await ReadAsync<CheckAcknowledgment[]>(args[2])).Where(item => item is null ||
+                string.IsNullOrWhiteSpace(item.Run) || selected.ContainsKey(item.Run) || !runs.ContainsKey(item.Run)).ToArray() : [];
         var resolved = new Dictionary<(string Run, int Index), string>();
         foreach (var item in acknowledged)
         {
             if (item is null || string.IsNullOrWhiteSpace(item.Run) || string.IsNullOrWhiteSpace(item.RetestRun) ||
-                !runs.TryGetValue(item.Run, out var original) || !runs.TryGetValue(item.RetestRun, out var retest) ||
-                item.Run == item.RetestRun || !SameAdapter(original, retest) || retest.Report.Expected is null ||
+                !selected.TryGetValue(item.Run, out var original) || !selected.TryGetValue(item.RetestRun, out var retest) ||
+                item.Run == item.RetestRun || retest.Report.Expected is null ||
                 item.RetestIndex < 0 || item.RetestIndex >= retest.Requests.Length ||
                 string.IsNullOrWhiteSpace(item.Reason))
                 throw new ArgumentException("Each acknowledgment needs a finding, a separate retest of the same candidate and adapter, and a reason.");
@@ -90,7 +105,7 @@ internal static class CheckReview
             foreach (var equivalent in findings)
             {
                 var difference = equivalent.Difference;
-                if (!SameAdapter(original, runs[equivalent.Run]) || !SameInput(finding.Input, difference.Input) ||
+                if (!SameInput(finding.Input, difference.Input) ||
                     !JsonElement.DeepEquals(finding.Candidate, difference.Candidate) ||
                     !JsonElement.DeepEquals(finding.Reference, difference.Reference))
                     continue;
@@ -102,8 +117,13 @@ internal static class CheckReview
         }
 
         var outstanding = findings.Where(finding => !resolved.ContainsKey((finding.Run, finding.Difference.Index))).ToArray();
-        var coverage = runs.Values.SelectMany(run => run.Requests.Select((input, index) =>
-                (Input: input, Supported: run.Observed[index].ValueKind is not JsonValueKind.Null, ObserveOnly: run.Report.Expected is null)))
+        var observations = selected.Values.SelectMany(run => run.Requests.Select((input, index) =>
+            (Input: input, Run: run.Report.Run, Observed: run.Observed[index], ObserveOnly: run.Report.Expected is null))).ToArray();
+        var unstable = observations.GroupBy(item => (item.Input.Operation, Args: string.Join(',', item.Input.Args)))
+            .Where(group => group.Skip(1).Any(item => !JsonElement.DeepEquals(item.Observed, group.First().Observed)))
+            .Select(group => new { group.First().Input, Observations = group.Select(item => new { item.Run, item.Observed }) }).ToArray();
+        var coverage = observations.Select(item =>
+                (item.Input, Supported: item.Observed.ValueKind is not JsonValueKind.Null, item.ObserveOnly))
             .GroupBy(item => item.Input.Operation, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal)
             .Select(group => new
             {
@@ -123,14 +143,21 @@ internal static class CheckReview
         var worklist = scope?.Sources?.Where(source => missingOperations.Contains(source.Operation))
             .GroupBy(source => source.Component, StringComparer.Ordinal)
             .Select(group => new { Component = group.Key, Operations = group.ToArray() }).ToArray();
-        var complete = outstanding.Length == 0 && missingCoverage.Length == 0 && coverage.Any(operation => operation.Compared > 0);
+        var complete = !selectionRequired && unstable.Length == 0 && outstanding.Length == 0 &&
+            missingCoverage.Length == 0 && coverage.Any(operation => operation.Compared > 0);
+        var sets = evidenceSets.Select(set => new { Adapter = set.Key, Runs = set.Select(run => run.Report.Run).ToArray() }).ToArray();
         var review = Path.Combine(directory, "review.json");
         await ForegroundCheck.PublishJsonAsync(review, new
         {
             Format = "slophawk-check-review-v1",
             Complete = complete,
-            Runs = runs.Keys.ToArray(),
+            ScopeProvided = scope is not null,
+            RequiresRunSelection = selectionRequired,
+            EvidenceSets = sets,
+            Adapter = adapter,
+            Runs = selected.Keys.ToArray(),
             Coverage = coverage,
+            UnstableInputs = unstable,
             MinimumOutsideOrdinary = scope?.MinimumOutsideOrdinary,
             MissingCoverage = missingCoverage,
             Worklist = worklist,
@@ -139,7 +166,9 @@ internal static class CheckReview
         });
         Console.WriteLine(JsonSerializer.Serialize(new
         {
-            Review = review, Complete = complete, Outstanding = outstanding.Length, MissingCoverage = missingCoverage.Length,
+            Review = review, Complete = complete, RequiresRunSelection = selectionRequired, ScopeProvided = scope is not null,
+            EvidenceSets = selectionRequired ? sets : null, UnstableInputs = unstable.Length,
+            Outstanding = outstanding.Length, MissingCoverage = missingCoverage.Length,
             NextComponent = worklist?.FirstOrDefault()?.Component
         }));
         return complete || progress ? 0 : 1;
@@ -148,9 +177,23 @@ internal static class CheckReview
     private static bool SameInput(ProbeInput left, ProbeInput right) =>
         left.Operation == right.Operation && left.Args.AsSpan().SequenceEqual(right.Args);
 
-    private static bool SameAdapter(Evidence left, Evidence right) =>
-        left.Report.Candidate == right.Report.Candidate && left.Report.RunVerb == right.Report.RunVerb &&
-        left.Report.PrepareVerb == right.Report.PrepareVerb;
+    internal static async Task<CheckEvidence> ReadRunAsync(string path, string run)
+    {
+        var report = await ReadAsync<CheckRun>(Path.Combine(path, "report.json"));
+        var requests = await ReadAsync<ProbeInput[]>(Path.Combine(path, "requests.json"));
+        var observed = await ReadAsync<JsonElement[]>(Path.Combine(path, "observed.json"));
+        if (report.Format != ForegroundCheck.Format || report.Run != run || string.IsNullOrWhiteSpace(report.Candidate) ||
+            report.Result is null || requests.Any(input => input is null || string.IsNullOrWhiteSpace(input.Operation) || input.Args is null) ||
+            requests.Length != observed.Length || (report.Expected is not null && requests.Length != report.Expected.Length))
+            throw new IOException($"Inconsistent checker evidence in run {run}.");
+        var recomputed = report.Expected is { } expected
+            ? ProbeReplay.Check(requests.Select((input, index) => new ProbeExpectation(input.Operation, input.Args, expected[index]))
+                .ToArray(), observed)
+            : ForegroundCheck.Observe(requests.Length, observed);
+        if (!JsonElement.DeepEquals(JsonSerializer.SerializeToElement(report.Result), JsonSerializer.SerializeToElement(recomputed)))
+            throw new IOException($"Checker report disagrees with the saved inputs and observations in run {run}.");
+        return new(report, requests, observed);
+    }
 
     internal static async Task<T> ReadAsync<T>(string path)
     {

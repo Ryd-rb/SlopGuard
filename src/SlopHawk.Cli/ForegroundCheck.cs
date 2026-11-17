@@ -77,17 +77,44 @@ internal static class ForegroundCheck
             ?? throw new JsonException("The adapter must return a JSON array of results.");
         if (observed.Length != inputs.Length)
             throw new ArgumentException("The adapter must return exactly one result per request, in input order.");
-        await WriteJsonAsync(Path.Combine(artifacts, "observed.json"), observed);
-        var result = cases is null
-            ? new ProbeCheckResult(inputs.Length, 0, observed.Count(item => item.ValueKind is JsonValueKind.Null), [])
-            : ProbeReplay.Check(cases, observed);
         if (candidate != await CandidateHashAsync(assembly))
             throw new IOException("The candidate assembly changed during this check.");
+        return (await PublishReportAsync(run, artifacts, candidate, runVerb, prepareVerb, inputs, cases, observed), observed);
+    }
+
+    internal static CheckReceipt PromoteReplay(string workspace, CheckReceipt receipt)
+    {
+        var checks = ChecksPath(workspace);
+        Directory.CreateDirectory(checks);
+        var destination = Path.Combine(checks, receipt.Run);
+        Directory.Move(receipt.Artifacts, destination);
+        return receipt with { Artifacts = destination, Report = Path.Combine(destination, "report.json") };
+    }
+
+    internal static async Task<CheckReceipt> PublishReplaySubsetAsync(string workspace, string candidate,
+        string? runVerb, string? prepareVerb, ProbeExpectation[] cases, JsonElement[] observed)
+    {
+        var inputs = ProbeReplay.InputsForCheck(cases);
+        var run = Guid.NewGuid().ToString("N");
+        var artifacts = Path.Combine(ChecksPath(workspace), run);
+        Directory.CreateDirectory(artifacts);
+        await WriteJsonAsync(Path.Combine(artifacts, "requests.json"), inputs);
+        return await PublishReportAsync(run, artifacts, candidate, runVerb, prepareVerb, inputs, cases, observed);
+    }
+
+    private static async Task<CheckReceipt> PublishReportAsync(string run, string artifacts, string candidate,
+        string? runVerb, string? prepareVerb, ProbeInput[] inputs, ProbeExpectation[]? cases, JsonElement[] observed)
+    {
+        await WriteJsonAsync(Path.Combine(artifacts, "observed.json"), observed);
+        var result = cases is null ? Observe(inputs.Length, observed) : ProbeReplay.Check(cases, observed);
         var report = Path.Combine(artifacts, "report.json");
         await PublishJsonAsync(report, new CheckRun(Format, run, candidate, runVerb, prepareVerb, result,
             cases?.Select(item => item.Expected).ToArray()));
-        return (new(Format, run, report, artifacts, cases is null, result), observed);
+        return new(Format, run, report, artifacts, cases is null, result);
     }
+
+    internal static ProbeCheckResult Observe(int count, JsonElement[] observed) =>
+        new(count, 0, observed.Count(item => item.ValueKind is JsonValueKind.Null), []);
 
     internal static string ChecksPath(string workspace) => Path.GetFullPath(Path.Combine(workspace, ".slophawk", "checks"));
 

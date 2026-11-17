@@ -51,3 +51,11 @@ The checked-in generator reproduced the exact benchmark draw from seed `86537901
 | Without SlopHawk | `01a1e875-cbed-7ad1-a567-4b7bfe3e1c66` |
 
 The candidate assembly SHA-256 was `AF01C74F259008981F0F95324EFF234DA72C83C80064259C94FBEB2C7175A136`. The shared executable rules SHA-256 was `1DB5B7943F2290CC800166B7C9D07133E7466D6AEFFF5DD9B9E41FC6E2A15CA4`. The checker CLI assembly SHA-256 was `7686BB7721D5106BC3B753B0709214221D678E7B0E2834B0F7B38ECA335AB612`. The local coordination bundle `slophawk-combined-c4994e8c00` retains native session records, frozen hashes, and scoring. The author bundle `ForgeLedger-Holdout-20261117` retains the draw receipt and qualification.
+
+## Evidence handling audit
+
+The reporting update preserved all 20 independently verified discrepancies. Two runs on the frozen draw produced identical inputs and observations across all 17 search batches, identical findings, and identical per-operation coverage. Each run made 23,479 comparisons. The corrected build produced zero flags in 52,478 comparisons. An isolated Windows run also retested all 20 discrepancies and completed the scoped review. These were direct CLI runs.
+
+A deliberately altered quote rule added one cent for a one-minute job. It still reproduced both published examples and produced a reproducible false positive on the corrected build. The search receipt identifies the supplied rules as the source of expectations and the published examples as the basis for qualification. Independent replay against the correct reference remains the basis for the benchmark's verified-defect count.
+
+Regression tests exercise changing observations, review coverage from different adapters, inconsistent saved reports, and a failed retest. The updated reporting also preserved all 132 independently replayed Continuity discrepancies with optional input hints removed.
