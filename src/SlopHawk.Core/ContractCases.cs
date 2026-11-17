@@ -14,6 +14,7 @@ public sealed class ContractCases
 {
     private readonly ContractRule[] rules;
     public IReadOnlyList<ContractQualification> Qualification { get; }
+    public IReadOnlyDictionary<string, int> ParameterCounts { get; }
 
     public ContractCases(IReadOnlyList<IntegerContract> contracts, IReadOnlyList<ProbeExpectation> ordinary)
     {
@@ -53,6 +54,8 @@ public sealed class ContractCases
             qualifications.Add(new(definition.Operation, definition.Source, "No published example to qualify the rule."));
         Qualification = qualifications.AsReadOnly();
         rules = [.. rulesToRun];
+        ParameterCounts = rules.ToDictionary(rule => rule.Definition.Operation, rule => rule.Definition.Parameters.Length,
+            StringComparer.Ordinal).AsReadOnly();
     }
 
     public IEnumerable<ProbeExpectation> Generate(int perOperation, int seed, ISet<string>? operations = null,
@@ -75,11 +78,13 @@ public sealed class ContractCases
             using var equalities = rule.EqualityPoints().GetEnumerator();
             using var implementation = rule.ImplementationPoints(
                 implementationLiterals?.GetValueOrDefault(rule.Definition.Operation) ?? []).GetEnumerator();
+            using var combined = rule.CombinedPoints().GetEnumerator();
             for (var attempt = 0; attempt < perOperation * 48 && emitted < perOperation; attempt++)
             {
                 var point = attempt % 4 == 1 && implementation.MoveNext() ? implementation.Current
                     : guideWithBoundaries && attempt % 4 == 0 && boundaries.MoveNext() ? boundaries.Current
                     : guideWithBoundaries && attempt % 4 == 2 && equalities.MoveNext() ? equalities.Current
+                    : guideWithBoundaries && attempt % 8 == 3 && combined.MoveNext() ? combined.Current
                     : attempt % 3 == 0 && probes.MoveNext() ? probes.Current.Args
                     : rule.Mutate(legal, random, guideWithBoundaries);
                 if (!seen.Add(Key(point)) || !rule.TryExpected(point, out var value))
@@ -105,6 +110,7 @@ public sealed class ContractCases
         private readonly long[][] landmarks;
         private readonly long[][] guidedAtoms;
         private readonly (int First, int Second)[] equalityPairs;
+        private readonly ContractComparison[][] combined;
         public IntegerContract Definition { get; }
         public ProbeExpectation[] Ordinary { get; }
 
@@ -123,17 +129,26 @@ public sealed class ContractCases
 
             var names = parameters.Select((name, index) => (name, index)).ToDictionary(item => item.name, item => item.index,
                 StringComparer.Ordinal);
-            domain = new ContractExpression(definition.Domain, names).Compile();
+            var inputs = Enumerable.Range(0, parameters.Length).Select(index => 1u << index).ToList();
+            var domainGroups = new List<ContractComparison[]>();
+            var resultGroups = new List<ContractComparison[]>();
+            domain = new ContractExpression(definition.Domain, names, inputs, domainGroups).Compile().Evaluate;
             var compiled = new List<Func<BigInteger[], BigInteger>>();
             foreach (var pair in definition.Let ?? [])
             {
                 if (!ContractExpression.IsName(pair.Key) || names.ContainsKey(pair.Key))
                     throw new ArgumentException($"Invalid or repeated local '{pair.Key}'.");
-                compiled.Add(new ContractExpression(pair.Value, names).Compile());
+                var binding = new ContractExpression(pair.Value, names, inputs, resultGroups).Compile();
+                compiled.Add(binding.Evaluate);
+                inputs.Add(binding.Inputs);
                 names.Add(pair.Key, names.Count);
             }
             locals = [.. compiled];
-            expected = new ContractExpression(definition.Expected, names).Compile();
+            expected = new ContractExpression(definition.Expected, names, inputs, resultGroups).Compile().Evaluate;
+            combined = resultGroups.OrderByDescending(group => group.Length)
+                .Concat(domainGroups.OrderByDescending(group => group.Length))
+                .Where(group => BitOperations.PopCount(group.Aggregate(0u, (mask, relation) => mask | relation.Inputs)) > 1)
+                .Take(24).ToArray();
             var expressions = string.Join('\n', new[] { definition.Domain, definition.Expected }
                 .Concat(definition.Let?.Values ?? Enumerable.Empty<string>()));
             var bounds = LiteralBoundaries(expressions);
@@ -150,6 +165,8 @@ public sealed class ContractCases
             }).ToArray();
             guidedAtoms = atoms.Select((values, index) => values.Concat(landmarks[index]).Distinct().ToArray()).ToArray();
         }
+
+        public IEnumerable<long[]> CombinedPoints() => ContractConditionCases.Generate(combined, Ordinary, locals);
 
         public IEnumerable<long[]> BoundaryPoints()
         {

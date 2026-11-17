@@ -87,6 +87,45 @@ public sealed class ContractCasesTests
         Assert.Contains(cases, item => item.Args.SequenceEqual([400L, 400, 89, 89]) && item.Expected.GetInt64() == 89);
     }
 
+    [Fact]
+    public void GuidedSearchProjectsDerivedComparisonsTogether()
+    {
+        var rule = new IntegerContract("Combined", ["left", "padding", "total", "stride", "right", "gain"],
+            "left >= 0 && padding >= 0 && total >= 0 && stride >= 0 && right >= 0 && gain >= 0",
+            "sum == total && stride % 82 == 61 && right == gain * 7 ? 9 : 2", "combined.md",
+            new() { ["sum"] = "left + padding" });
+        var catalog = new ContractCases([rule], [Example("Combined", [52, 92, 1247, 422, 166, 97], 2)]);
+
+        var cases = catalog.Generate(48, 1, guideWithBoundaries: true).ToArray();
+
+        Assert.Contains(cases, item => item.Expected.GetInt64() == 9 && item.Args[0] + item.Args[1] == item.Args[2] &&
+            item.Args[3] % 82 == 61 && item.Args[4] == item.Args[5] * 7);
+        Assert.All(cases, item => Assert.All(item.Args, value => Assert.True(value >= 0)));
+    }
+
+    [Fact]
+    public void ImplementationLiteralsCanComeFromAnUnmatchedNumericMethod()
+    {
+        const string operation = "published-route";
+        using var assembly = File.OpenRead(typeof(ContractCasesTests).Assembly.Location);
+        var operationArities = new Dictionary<string, int> { [operation] = 4 };
+
+        var literals = ManagedBodyComparison.IntegerLiterals(assembly, operationArities);
+
+        Assert.Contains(67L, literals[operation]);
+        Assert.DoesNotContain(7949L, literals[operation]);
+        var rule = new IntegerContract(operation, ["a", "b", "c", "d"],
+            "min(min(a, b), min(c, d)) >= 0 && max(max(a, b), max(c, d)) <= 100",
+            "a == c && b == d ? 0 : 1", "routes.md");
+        var catalog = new ContractCases([rule], [Example(operation, [5, 9, 12, 20], 1)]);
+        var cases = catalog.Generate(256, 1, implementationLiterals: literals);
+        Assert.Contains(cases, item => item.Expected.GetInt64() == 1 &&
+            OpaqueRoute(item.Args[0], item.Args[1], item.Args[2], item.Args[3]) == 0);
+    }
+
+    private static long OpaqueRoute(long first, long second, long third, long fourth) => first * 67 + second - (third * 67 + fourth);
+    private static long UnrelatedRoute(long first, long second, long third) => first * 7949 + second - third;
+
     private static long EncodeTuple(long major, long minor)
     {
         long Key(long value) => 31 * value + minor;

@@ -50,10 +50,12 @@ internal static class ContractCheck
         var prepareVerb = args.Length == 8 ? args[7] : null;
         var initial = Math.Min(64, limit);
         await SearchAsync(initial, 0, null);
-        if (limit > initial)
+        if (limit > initial && remaining.Count > 0)
         {
             using var assembly = File.OpenRead(args[1]);
-            var literals = ManagedBodyComparison.IntegerLiterals(assembly, remaining);
+            var arities = remaining.ToDictionary(operation => operation, operation => catalog.ParameterCounts[operation],
+                StringComparer.Ordinal);
+            var literals = ManagedBodyComparison.IntegerLiterals(assembly, arities);
             await SearchAsync(limit - initial, 1, literals);
         }
 

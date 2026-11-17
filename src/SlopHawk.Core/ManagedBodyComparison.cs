@@ -24,6 +24,25 @@ public static class ManagedBodyComparison
             .ToDictionary(group => group.Key, group => group.SelectMany(body => body.Literals).Distinct().Order().ToArray(),
                 StringComparer.Ordinal);
 
+    public static IReadOnlyDictionary<string, long[]> IntegerLiterals(Stream assembly,
+        IReadOnlyDictionary<string, int> operations)
+    {
+        var requested = operations.Keys.ToHashSet(StringComparer.Ordinal);
+        var methods = Read(assembly, requested, operations.Values.ToHashSet()).Values;
+        var byName = methods.Where(body => requested.Contains(body.Name)).ToLookup(body => body.Name, StringComparer.Ordinal);
+        var byArity = methods.Where(body => body.Arity.HasValue).GroupBy(body => body.Arity.GetValueOrDefault())
+            .ToDictionary(group => group.Key, group => group.SelectMany(body => Useful(body.Literals).Distinct()).GroupBy(value => value)
+                .OrderBy(values => values.Count()).ThenByDescending(values => values.Key).Select(values => values.Key).Take(16).ToArray());
+        return operations.ToDictionary(pair => pair.Key, pair =>
+        {
+            var direct = Useful(byName[pair.Key].SelectMany(body => body.Literals)).Distinct().OrderDescending().ToArray();
+            return direct.Length > 0 ? direct : byArity.GetValueOrDefault(pair.Value) ?? [];
+        }, StringComparer.Ordinal);
+
+        static IEnumerable<long> Useful(IEnumerable<long> values) =>
+            values.Where(value => value is > 1 or < -1 && value != long.MinValue).Select(Math.Abs);
+    }
+
     public static IReadOnlyList<ManagedBodyDifference> Compare(Stream candidate, Stream reference)
     {
         var left = Read(candidate);
@@ -57,10 +76,11 @@ public static class ManagedBodyComparison
         return body.Skip(start).Take(Math.Min(end - start, 24)).ToArray();
     }
 
-    private sealed record MethodBody(string Name, string[] Instructions, long[] Literals);
+    private sealed record MethodBody(string Name, string[] Instructions, long[] Literals, int? Arity);
     private sealed record Instruction(int Offset, string Opcode, string? Operand = null, int[]? Targets = null);
 
-    private static Dictionary<string, MethodBody> Read(Stream stream, ISet<string>? methodNames = null)
+    private static Dictionary<string, MethodBody> Read(Stream stream, ISet<string>? methodNames = null,
+        ISet<int>? arities = null)
     {
         using var pe = new PEReader(stream, PEStreamOptions.LeaveOpen);
         if (!pe.HasMetadata)
@@ -75,7 +95,8 @@ public static class ManagedBodyComparison
                 continue;
             var methodName = metadata.GetString(method.Name);
             var operation = methodNames is null ? methodName : RequestedOperation(methodName, methodNames);
-            if (operation is null)
+            var arity = arities is null ? null : NumericArity(method, names, arities);
+            if (operation is null && arity is null)
                 continue;
             var body = pe.GetMethodBody(method.RelativeVirtualAddress);
             var bytes = body.GetILReader();
@@ -104,13 +125,23 @@ public static class ManagedBodyComparison
 
             var symbol = names.Entity(handle);
             var literals = instructions.Select(IntegerLiteral).OfType<long>().Distinct().ToArray();
-            if (!methods.TryAdd(symbol, new MethodBody(operation, normalized.ToArray(), literals)))
+            if (!methods.TryAdd(symbol, new MethodBody(operation ?? methodName, normalized.ToArray(), literals, arity)))
                 throw new BadImageFormatException($"Duplicate managed method {symbol}.");
 
             int Position(int offset) => offsets.TryGetValue(offset, out var index) ? index
                 : throw new BadImageFormatException("A branch or exception region points outside an instruction boundary.");
         }
         return methods;
+    }
+
+    private static int? NumericArity(MethodDefinition method, Names names, ISet<int> arities)
+    {
+        var signature = method.DecodeSignature(names, null);
+        var count = signature.ParameterTypes.Length;
+        return arities.Contains(count) && Integral(signature.ReturnType) && signature.ParameterTypes.All(Integral) ? count : null;
+
+        static bool Integral(string type) => type is "Boolean" or "Char" or "SByte" or "Byte" or
+            "Int16" or "UInt16" or "Int32" or "UInt32" or "Int64" or "UInt64" or "IntPtr" or "UIntPtr";
     }
 
     private static string? RequestedOperation(string name, ISet<string> methodNames)
