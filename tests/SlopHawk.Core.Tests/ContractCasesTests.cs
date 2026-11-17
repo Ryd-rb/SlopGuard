@@ -76,6 +76,17 @@ public sealed class ContractCasesTests
             EncodeTuple(item.Args[0], item.Args[1]) == EncodeTuple(item.Args[2], item.Args[3]));
     }
 
+    [Fact]
+    public void GuidedSearchCanEstablishLinkedEqualitiesInOneInput()
+    {
+        var rule = new IntegerContract("Shared", ["key1", "key2", "room1", "room2"],
+            "key1 >= 0 && key2 >= 0 && room1 >= 0 && room2 >= 0 && (key1 != key2 || room1 == room2)",
+            "key1 == key2 ? room1 : room1 + room2", "shared.md");
+        var catalog = new ContractCases([rule], [Example("Shared", [400, 500, 89, 99], 188)]);
+        var cases = catalog.Generate(24, 1, guideWithBoundaries: true).ToArray();
+        Assert.Contains(cases, item => item.Args.SequenceEqual([400L, 400, 89, 89]) && item.Expected.GetInt64() == 89);
+    }
+
     private static long EncodeTuple(long major, long minor)
     {
         long Key(long value) => 31 * value + minor;

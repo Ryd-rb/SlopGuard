@@ -72,12 +72,14 @@ public sealed class ContractCases
             using var probes = ProbeReplay.Plan(rule.Ordinary.Select(example => new ProbeInput(example.Operation, example.Args)),
                 Math.Max(32, perOperation), seed).GetEnumerator();
             using var boundaries = rule.BoundaryPoints().GetEnumerator();
+            using var equalities = rule.EqualityPoints().GetEnumerator();
             using var implementation = rule.ImplementationPoints(
                 implementationLiterals?.GetValueOrDefault(rule.Definition.Operation) ?? []).GetEnumerator();
             for (var attempt = 0; attempt < perOperation * 48 && emitted < perOperation; attempt++)
             {
                 var point = attempt % 4 == 1 && implementation.MoveNext() ? implementation.Current
                     : guideWithBoundaries && attempt % 4 == 0 && boundaries.MoveNext() ? boundaries.Current
+                    : guideWithBoundaries && attempt % 4 == 2 && equalities.MoveNext() ? equalities.Current
                     : attempt % 3 == 0 && probes.MoveNext() ? probes.Current.Args
                     : rule.Mutate(legal, random, guideWithBoundaries);
                 if (!seen.Add(Key(point)) || !rule.TryExpected(point, out var value))
@@ -102,6 +104,7 @@ public sealed class ContractCases
         private readonly long[][] atoms;
         private readonly long[][] landmarks;
         private readonly long[][] guidedAtoms;
+        private readonly (int First, int Second)[] equalityPairs;
         public IntegerContract Definition { get; }
         public ProbeExpectation[] Ordinary { get; }
 
@@ -134,6 +137,7 @@ public sealed class ContractCases
             var expressions = string.Join('\n', new[] { definition.Domain, definition.Expected }
                 .Concat(definition.Let?.Values ?? Enumerable.Empty<string>()));
             var bounds = LiteralBoundaries(expressions);
+            equalityPairs = EqualityPairs(expressions, parameters);
             landmarks = parameters.Select(name => bounds[name].Concat(definition.Basis?.GetValueOrDefault(name) ?? [])
                 .SelectMany(value => new[] { value, Offset(value, -1), Offset(value, 1) }).Distinct().Take(64).ToArray()).ToArray();
             atoms = parameters.Select((name, index) =>
@@ -157,6 +161,29 @@ public sealed class ContractCases
                         point[field] = value;
                         yield return point;
                     }
+        }
+
+        public IEnumerable<long[]> EqualityPoints()
+        {
+            foreach (var example in Ordinary)
+                for (var first = 0; first < equalityPairs.Length; first++)
+                    for (var second = first; second < equalityPairs.Length; second++)
+                        for (var direction = 0; direction < (first == second ? 2 : 4); direction++)
+                        {
+                            var point = example.Args.ToArray();
+                            Apply(equalityPairs[first], (direction & 1) != 0);
+                            if (second != first)
+                                Apply(equalityPairs[second], (direction & 2) != 0);
+                            yield return point;
+
+                            void Apply((int First, int Second) pair, bool reverse)
+                            {
+                                if (reverse)
+                                    point[pair.First] = point[pair.Second];
+                                else
+                                    point[pair.Second] = point[pair.First];
+                            }
+                        }
         }
 
         public IEnumerable<long[]> ImplementationPoints(IEnumerable<long> literals)
@@ -249,6 +276,17 @@ public sealed class ContractCases
                     ? (long?)value : null))
             .Where(item => item.Value.HasValue)
             .ToLookup(item => item.Name, item => item.Value.GetValueOrDefault(), StringComparer.Ordinal);
+    }
+
+    private static (int First, int Second)[] EqualityPairs(string expressions, string[] parameters)
+    {
+        const string equality = @"\b(?<left>[A-Za-z_]\w*)\s*(?:==|!=)\s*(?<right>[A-Za-z_]\w*)\b";
+        return Regex.Matches(expressions, equality, RegexOptions.CultureInvariant).Select(match =>
+            (Left: Array.IndexOf(parameters, match.Groups["left"].Value),
+                Right: Array.IndexOf(parameters, match.Groups["right"].Value)))
+            .Where(pair => pair.Left >= 0 && pair.Right >= 0 && pair.Left != pair.Right)
+            .Select(pair => (Math.Min(pair.Left, pair.Right), Math.Max(pair.Left, pair.Right)))
+            .Distinct().Take(32).ToArray();
     }
 
     private static long Offset(long value, long delta) => (long)Int128.Clamp((Int128)value + delta, long.MinValue, long.MaxValue);
