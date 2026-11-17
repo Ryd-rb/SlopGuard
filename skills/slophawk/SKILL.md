@@ -20,6 +20,8 @@ For subtle rules that depend on several inputs at once, write a small independen
 
 When a contract defines how related inputs should behave, use `check-observe` on paired requests to test that relationship. For example, a field documented as irrelevant in a given state should have no effect when it changes by itself. Derive the exact contract outcome for a violating pair, then use `check` and a separate retest before reporting a defect.
 
+When the workspace declares a scalar path spec and a separate writable scratch directory, run `slophawk paths build <spec> <scratch>`, then `slophawk paths plan <spec> <scratch> <Build> graph-on` and `slophawk paths check <Plan>`. Read `slophawk paths review <Review>` and account for each reproduced comparison, unstable replay and unresolved target. A structural fallback or predicted edge guides inspection. Ground every flagged discrepancy in the public rule and the original-build replay. For a controlled comparison, use `graph-off` with the same spec and build and record both reports.
+
 For an editable checkout with daemon state available:
 
 1. Run `slophawk start --root <checkout>`. The MCP entry point is `slophawk mcp --root <checkout>` and starts the same daemon if needed. If developing SlopHawk itself, use the local build from its README when the command is unavailable.

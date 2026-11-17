@@ -20,13 +20,17 @@ if (args is [] or ["--help"] or ["-h"])
         Plan probes   slophawk probes plan <seeds.json> <per-operation> [seed [scales.json]]
         Compare       slophawk probes compare <probes.json> <candidate.json> <reference.json>
         Compare IL    slophawk probes methods <candidate.dll> <reference.dll>
+        Path build    slophawk paths build <spec.json> <scratch>
+        Path plan     slophawk paths plan <spec.json> <scratch> <build-manifest.json|-> <graph-off|graph-on>
+        Path check    slophawk paths check <plan-manifest.json>
+        Path review   slophawk paths review <review-manifest.json>
         MCP server    slophawk mcp [--root <checkout>]
         Stop          slophawk stop [--root <checkout>]
         """);
     return 0;
 }
 
-if (args is not ["probes" or "contracts", ..] and not ["check" or "check-contracts" or "check-observe" or "check-retest" or "check-review", ..] and not [_] and not [_, "--root", _])
+if (args is not ["probes" or "contracts" or "paths", ..] and not ["check" or "check-contracts" or "check-observe" or "check-retest" or "check-review", ..] and not [_] and not [_, "--root", _])
 {
     Console.Error.WriteLine("Invalid arguments. Run slophawk --help.");
     return 2;
@@ -38,6 +42,8 @@ try
         return await SlopHawk.Cli.ProbeCommands.RunAsync(args);
     if (args is ["contracts", ..])
         return await SlopHawk.Cli.ContractCheck.QualifyAsync(args);
+    if (args is ["paths", ..])
+        return await SlopHawk.Cli.PathCheck.RunAsync(args);
     if (args is ["check" or "check-observe", ..])
         return await SlopHawk.Cli.ForegroundCheck.RunAsync(args);
     if (args is ["check-contracts", ..])

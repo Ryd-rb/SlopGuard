@@ -49,7 +49,8 @@ internal static class ForegroundCheck
 
     internal static async Task<(CheckReceipt Receipt, JsonElement[] Observed)> ExecuteAsync(
         string assembly, string workspace, string? runVerb, string? prepareVerb,
-        ProbeInput[] inputs, ProbeExpectation[]? cases, string? requiredCandidate = null, string? evidenceDirectory = null)
+        ProbeInput[] inputs, ProbeExpectation[]? cases, string? requiredCandidate = null, string? evidenceDirectory = null,
+        CancellationToken cancellationToken = default)
     {
         assembly = Path.GetFullPath(assembly);
         if (!Path.GetExtension(assembly).Equals(".dll", StringComparison.OrdinalIgnoreCase))
@@ -66,13 +67,13 @@ internal static class ForegroundCheck
         await WriteJsonAsync(requests, inputs);
         if (prepareVerb is not null)
         {
-            var prepared = await RunAdapterAsync(assembly, prepareVerb, requests, artifacts);
+            var prepared = await RunAdapterAsync(assembly, prepareVerb, requests, artifacts, cancellationToken);
             using var document = JsonDocument.Parse(prepared);
             requests = Path.Combine(artifacts, "prepared.json");
             await WriteJsonAsync(requests, document.RootElement);
         }
 
-        var output = await RunAdapterAsync(assembly, runVerb, requests, artifacts);
+        var output = await RunAdapterAsync(assembly, runVerb, requests, artifacts, cancellationToken);
         var observed = JsonSerializer.Deserialize<JsonElement[]>(output)
             ?? throw new JsonException("The adapter must return a JSON array of results.");
         if (observed.Length != inputs.Length)
@@ -144,8 +145,11 @@ internal static class ForegroundCheck
         await JsonSerializer.SerializeAsync(file, value);
     }
 
-    private static async Task<string> RunAdapterAsync(string assembly, string? verb, string input, string scratch)
+    private static async Task<string> RunAdapterAsync(string assembly, string? verb, string input, string scratch,
+        CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested)
+            throw new IOException("The adapter exceeded the check's execution deadline.");
         var start = new ProcessStartInfo("dotnet")
         {
             WorkingDirectory = scratch,
@@ -160,7 +164,8 @@ internal static class ForegroundCheck
             start.ArgumentList.Add(verb);
         start.ArgumentList.Add(input);
         using var child = Process.Start(start) ?? throw new IOException("The .NET adapter did not start.");
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
             var stdout = ReadBoundedAsync(child.StandardOutput, MaximumCharacters, timeout);

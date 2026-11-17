@@ -115,6 +115,44 @@ slophawk probes compare probes.json candidate-results.json reference-results.jso
 
 Use the project's own runner or adapter to replay the **same ordered probes** against both versions. Each result file must be a JSON array with one entry per input in that order. Use `null` for an unsupported input. The comparison reports counts, support mismatches, and the first differing supported result per operation with both observed values and its input. A bounded search can miss differences. Replay evidence applies to the supplied inputs and reference behavior.
 
+### Scalar C# path pilot
+
+Use `paths` for a controlled .NET 10 executable with the foreground batch protocol. Place the spec next to the project and use a separate existing writable scratch directory. The controlled builder compiles the declared sources directly with SDK Roslyn and the .NET 10 reference pack. List the exact source closure and any generated files explicitly. It uses C# 14, nullable enabled, and the specified defines, optimization and overflow options. MSBuild evaluation and generator execution are outside this route. The resulting assembly is the candidate used for the graph and replay.
+
+```json
+{
+  "build": {
+    "project": "Rates.csproj",
+    "sources": ["Program.cs", "Rates.cs"],
+    "referencePack": "/path/to/dotnet/packs/Microsoft.NETCore.App.Ref/10.0.x/ref/net10.0",
+    "defines": ["NET10_0"]
+  },
+  "targets": [
+    { "operation": "rate", "document": "Rates.cs", "signature": "Example.Rates.Quote(int, int)" }
+  ],
+  "rules": "rules.json",
+  "published": "published.json",
+  "runVerb": "probe-batch",
+  "perOperation": 256,
+  "workLimit": 128,
+  "retestLimit": 16,
+  "seed": 1
+}
+```
+
+The signature is Roslyn's qualified C# method display with parameter types. Use a declared, trusted adapter that dispatches the operation to that body and preserves request order. Encode Boolean inputs and results as integer zero or one. Named compiler options and target scope are in the build receipt. Supply `prepareVerb` if the adapter also has a prepare entry point. The builder produces a standalone managed app for the .NET 10 runtime running SlopHawk.
+
+```text
+slophawk paths build <spec.json> <scratch>
+slophawk paths plan <spec.json> <scratch> <build-manifest.json> graph-on
+slophawk paths check <plan-manifest.json>
+slophawk paths review <review-manifest.json>
+```
+
+Use the `Build`, `Plan` and `Review` paths printed by the preceding commands. Plan re-emits and verifies the candidate's build hash. Pass `-` as the build input for a structural graph. Run a second plan in `graph-off` mode with the same settings for an ablation. Its candidate stream includes ordinary cases and current generic, literal, boundary and combined-condition probes. The plan records shared candidates and graph-only proposals separately.
+
+Review the sealed run under `<scratch>/.slophawk/path-checks/`. Treat graph edges as structural and input-to-edge claims as predictions. The review reports which exact comparisons reproduced in a single-case replay on the original build, which remain unconfirmed, and which changed on replay. It also reports search gaps and invalidates currentness if inputs changed. Confirm the cited public rule before flagging a defect. An exit of 1 can accompany a sealed discrepancy or incomplete outcome. [Checker design](docs/path-intent-checker.md) · [Scalar gate](experiments/slophawk-path-intent/benchmark-design.md#scalar-gate)
+
 The optional method comparison reads managed metadata and shows changed bodies, instruction excerpts and integer literals without loading either assembly for execution. Use the method results to prioritize investigation or derive scales. Method changes can include semantic equivalents and compiler-generated code. Confirm observable differences with replay before treating a method change as a regression.
 
 Released under the [MIT License](LICENSE).

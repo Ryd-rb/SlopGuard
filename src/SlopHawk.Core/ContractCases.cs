@@ -99,6 +99,15 @@ public sealed class ContractCases
         }
     }
 
+    public ProbeExpectation? Evaluate(string operation, long[] args)
+    {
+        var rule = rules.FirstOrDefault(candidate => candidate.Definition.Operation == operation);
+        return rule is not null && args.Length == rule.Definition.Parameters.Length &&
+            rule.TryExpected(args, out var value)
+            ? new(operation, args, JsonSerializer.SerializeToElement(value))
+            : null;
+    }
+
     private static string Key(long[] args) => string.Join(',', args);
 
     private sealed class ContractRule

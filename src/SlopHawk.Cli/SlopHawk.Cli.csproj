@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
+    <ProjectReference Include="../SlopHawk.Providers.CSharp/SlopHawk.Providers.CSharp.csproj" />
     <PackageReference Include="ModelContextProtocol.Core" Version="2.3.0" />
   </ItemGroup>
 </Project>
