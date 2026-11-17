@@ -1,0 +1,12 @@
+[package]
+name = "slophawk-probe-replay"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "Pure ordered probe replay comparisons with lossless JSON value semantics"
+license = "MIT"
+publish = false
+
+[lib]
+name = "slophawk_probe_replay"
+path = "src/lib.rs"

@@ -1,0 +1,1 @@
+{"Cases":4,"Compared":3,"Unsupported":1,"Findings":[{"Index":0,"Input":{"Operation":"quota","Args":[1]},"Candidate":2,"Reference":3},{"Index":1,"Input":{"Operation":"quota","Args":[2]},"Candidate":1,"Reference":4}]}
