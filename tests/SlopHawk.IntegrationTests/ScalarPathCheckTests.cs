@@ -40,6 +40,29 @@ public sealed class ScalarPathCheckTests
     }
 
     [Fact]
+    public async Task ATargetWithoutRunnableCasesKeepsTheCheckAndReviewIncomplete()
+    {
+        using var fixture = new Fixture(missingTarget: true);
+        var build = PathOf(await Run("build", fixture.Spec, fixture.Scratch), "Build");
+        var plan = PathOf(await Run("plan", fixture.Spec, fixture.Scratch, build, "graph-off"), "Plan");
+        var check = await Run("check", plan);
+        var review = await Run("review", PathOf(check, "Review", 1));
+
+        Assert.Equal(1, review.Exit);
+        Assert.True(review.Json.GetProperty("Current").GetBoolean());
+        var result = review.Json.GetProperty("Result");
+        Assert.Equal("incomplete", result.GetProperty("Outcome").GetString());
+        Assert.True(result.GetProperty("Compared").GetInt32() > 0);
+        Assert.Empty(result.GetProperty("Reproduced").EnumerateArray());
+        var targets = result.GetProperty("Scope").EnumerateArray().ToArray();
+        Assert.Equal(2, targets.Length);
+        Assert.True(targets[0].GetProperty("PlannedCases").GetInt32() > 0);
+        Assert.Equal("missing", targets[1].GetProperty("Operation").GetString());
+        Assert.False(targets[1].GetProperty("Bound").GetBoolean());
+        Assert.Equal(0, targets[1].GetProperty("PlannedCases").GetInt32());
+    }
+
+    [Fact]
     public async Task ChangedSourceAndAnIncompleteSealBlockExecution()
     {
         using var fixture = new Fixture();
@@ -98,7 +121,7 @@ public sealed class ScalarPathCheckTests
         public string Scratch { get; }
         public string DaemonReport { get; }
 
-        public Fixture(bool reorder = false)
+        public Fixture(bool reorder = false, bool missingTarget = false)
         {
             var source = Directory.CreateDirectory(Path.Combine(root, "source")).FullName;
             Scratch = Directory.CreateDirectory(Path.Combine(root, "scratch")).FullName;
@@ -132,9 +155,14 @@ public sealed class ScalarPathCheckTests
                     public sealed record Request(string Operation, long[] Args);
                 }
                 """);
-            Write("rules.json", new[] { new IntegerContract("rate", ["x", "y"],
-                "x >= 0 && x <= 500 && y >= 0 && y <= 500", reorder ? "x" : "0", "policy.md#ordinary-rate") });
-            Write("published.json", new[] { new ProbeExpectation("rate", [0, 0], JsonSerializer.SerializeToElement(0)) });
+            var rule = new IntegerContract("rate", ["x", "y"],
+                "x >= 0 && x <= 500 && y >= 0 && y <= 500", reorder ? "x" : "0", "policy.md#ordinary-rate");
+            var example = new ProbeExpectation("rate", [0, 0], JsonSerializer.SerializeToElement(0));
+            var targets = new[] { new { Operation = "rate", Document = "Rates.cs", Signature = "Metering.Rates.Charge(int, int)" } };
+            if (missingTarget)
+                targets = [.. targets, new { Operation = "missing", Document = "Rates.cs", Signature = "Metering.Rates.Missing(int, int)" }];
+            Write("rules.json", missingTarget ? new[] { rule, rule with { Operation = "missing" } } : [rule]);
+            Write("published.json", missingTarget ? new[] { example, example with { Operation = "missing" } } : [example]);
             var dotnet = new FileInfo(typeof(object).Assembly.Location).Directory!.Parent!.Parent!.Parent!.FullName;
             var refs = Directory.GetDirectories(Path.Combine(dotnet, "packs", "Microsoft.NETCore.App.Ref"), "10.0.*")
                 .MaxBy(path => Version.Parse(Path.GetFileName(path)))!;
@@ -145,7 +173,7 @@ public sealed class ScalarPathCheckTests
                     Project = "Rates.csproj", Sources = new[] { "Rates.cs" }, ReferencePack = Path.Combine(refs, "ref", "net10.0"),
                     Defines = reorder ? new[] { "REORDER" } : Array.Empty<string>()
                 },
-                Targets = new[] { new { Operation = "rate", Document = "Rates.cs", Signature = "Metering.Rates.Charge(int, int)" } },
+                Targets = targets,
                 Rules = "rules.json", Published = "published.json", PerOperation = 24
             });
 

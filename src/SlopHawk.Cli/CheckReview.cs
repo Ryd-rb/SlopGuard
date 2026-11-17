@@ -16,6 +16,7 @@ internal sealed record CheckEvidence(CheckRun Report, ProbeInput[] Requests, Jso
 
 internal static class CheckReview
 {
+    private sealed record RunHeader(string Format, string Run, string Candidate, string? RunVerb, string? PrepareVerb);
     private sealed record Finding(string Run, ProbeDifference Difference);
     private sealed record ReviewSource(string Operation, string Component, string Contract, string Implementation);
     private sealed record ReviewScope(string[] Operations, ProbeInput[] Ordinary, int MinimumOutsideOrdinary = 1,
@@ -51,28 +52,42 @@ internal static class CheckReview
             throw new ArgumentException("Each source entry needs a unique listed operation and its component, contract and implementation.");
         var ordinary = scope?.Ordinary.ToLookup(input => input.Operation, StringComparer.Ordinal);
         var directory = ForegroundCheck.ChecksPath(args[1]);
-        if (!Directory.Exists(directory))
-            throw new DirectoryNotFoundException("Run slophawk check before reviewing its reports.");
+        if (!Directory.Exists(args[1]))
+            throw new DirectoryNotFoundException("The workspace directory must already exist.");
 
-        var runs = new Dictionary<string, CheckEvidence>(StringComparer.Ordinal);
-        foreach (var runPath in Directory.EnumerateDirectories(directory).Order(StringComparer.Ordinal))
+        var runs = new Dictionary<string, CheckAdapter>(StringComparer.Ordinal);
+        IEnumerable<string> runPaths = Directory.Exists(directory) ? Directory.EnumerateDirectories(directory).Order(StringComparer.Ordinal) : [];
+        foreach (var runPath in runPaths)
         {
             var run = Path.GetFileName(runPath);
             var reportPath = Path.Combine(runPath, "report.json");
             if (!Guid.TryParseExact(run, "N", out _) || !File.Exists(reportPath))
                 continue;
-            runs.Add(run, await ReadRunAsync(runPath, run));
+            var header = await ReadAsync<RunHeader>(reportPath);
+            if (header.Format != ForegroundCheck.Format || header.Run != run || string.IsNullOrWhiteSpace(header.Candidate))
+                throw new IOException($"Inconsistent checker evidence in run {run}.");
+            runs.Add(run, new(header.Candidate, header.RunVerb, header.PrepareVerb));
         }
-        if (runs.Count == 0)
+        if (runs.Count == 0 && requestedRun is null && (!progress || scope is null))
             throw new IOException("No completed checker reports are available.");
 
-        var evidenceSets = runs.Values.GroupBy(run => run.Adapter).ToArray();
+        var evidenceSets = runs.GroupBy(pair => pair.Value, pair => pair.Key).ToArray();
         var adapter = requestedRun is null
             ? evidenceSets.Length == 1 ? evidenceSets[0].Key : null
-            : runs.TryGetValue(requestedRun, out var requested) ? requested.Adapter
+            : runs.TryGetValue(requestedRun, out var requested) ? requested
                 : throw new ArgumentException($"Check run {requestedRun} was not found in this workspace.");
-        var selectionRequired = adapter is null;
-        var selected = runs.Where(pair => pair.Value.Adapter == adapter).ToDictionary(StringComparer.Ordinal);
+        var selectionRequired = adapter is null && evidenceSets.Length > 1;
+        var selected = new Dictionary<string, CheckEvidence>(StringComparer.Ordinal);
+        foreach (var (run, runAdapter) in runs)
+        {
+            if (requestedRun is not null && runAdapter != adapter)
+                continue;
+            var evidence = await ReadRunAsync(Path.Combine(directory, run), run);
+            if (evidence.Adapter != runAdapter)
+                throw new IOException($"Checker evidence changed during review of run {run}.");
+            if (runAdapter == adapter)
+                selected.Add(run, evidence);
+        }
         var findings = selected.Values.SelectMany(run => run.Report.Result.Findings
             .Select(difference => new Finding(run.Report.Run, difference))).ToArray();
         CheckAcknowledgment[] acknowledged = args.Length >= 3 && !selectionRequired
@@ -119,6 +134,7 @@ internal static class CheckReview
         var outstanding = findings.Where(finding => !resolved.ContainsKey((finding.Run, finding.Difference.Index))).ToArray();
         var observations = selected.Values.SelectMany(run => run.Requests.Select((input, index) =>
             (Input: input, Run: run.Report.Run, Observed: run.Observed[index], ObserveOnly: run.Report.Expected is null))).ToArray();
+        var unsupportedComparisons = observations.Count(item => !item.ObserveOnly && item.Observed.ValueKind == JsonValueKind.Null);
         var unstable = observations.GroupBy(item => (item.Input.Operation, Args: string.Join(',', item.Input.Args)))
             .Where(group => group.Skip(1).Any(item => !JsonElement.DeepEquals(item.Observed, group.First().Observed)))
             .Select(group => new { group.First().Input, Observations = group.Select(item => new { item.Run, item.Observed }) }).ToArray();
@@ -144,8 +160,9 @@ internal static class CheckReview
             .GroupBy(source => source.Component, StringComparer.Ordinal)
             .Select(group => new { Component = group.Key, Operations = group.ToArray() }).ToArray();
         var complete = !selectionRequired && unstable.Length == 0 && outstanding.Length == 0 &&
-            missingCoverage.Length == 0 && coverage.Any(operation => operation.Compared > 0);
-        var sets = evidenceSets.Select(set => new { Adapter = set.Key, Runs = set.Select(run => run.Report.Run).ToArray() }).ToArray();
+            unsupportedComparisons == 0 && missingCoverage.Length == 0 && coverage.Any(operation => operation.Compared > 0);
+        var sets = evidenceSets.Select(set => new { Adapter = set.Key, Runs = set.ToArray() }).ToArray();
+        Directory.CreateDirectory(directory);
         var review = Path.Combine(directory, "review.json");
         await ForegroundCheck.PublishJsonAsync(review, new
         {
@@ -157,6 +174,7 @@ internal static class CheckReview
             Adapter = adapter,
             Runs = selected.Keys.ToArray(),
             Coverage = coverage,
+            UnsupportedComparisons = unsupportedComparisons,
             UnstableInputs = unstable,
             MinimumOutsideOrdinary = scope?.MinimumOutsideOrdinary,
             MissingCoverage = missingCoverage,
@@ -168,7 +186,7 @@ internal static class CheckReview
         {
             Review = review, Complete = complete, RequiresRunSelection = selectionRequired, ScopeProvided = scope is not null,
             EvidenceSets = selectionRequired ? sets : null, UnstableInputs = unstable.Length,
-            Outstanding = outstanding.Length, MissingCoverage = missingCoverage.Length,
+            UnsupportedComparisons = unsupportedComparisons, Outstanding = outstanding.Length, MissingCoverage = missingCoverage.Length,
             NextComponent = worklist?.FirstOrDefault()?.Component
         }));
         return complete || progress ? 0 : 1;

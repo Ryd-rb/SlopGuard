@@ -243,13 +243,13 @@ internal static class PathCheck
         }
         var pending = (initial?.Result.Findings.Count ?? 0) - stable.Count - changes.Count;
         var unsupported = initial?.Result.Unsupported ?? 0;
-        var outcome = blocker is not null || unsupported != 0 || pending != 0 || changes.Count != 0
+        var scope = plan.Methods.Select(method => new PathScope(method.Operation, method.Signature, method.Bound, method.Reason,
+            method.Unknown.Count, cases.Count(item => item.Operation == method.Operation))).ToArray();
+        var outcome = blocker is not null || unsupported != 0 || pending != 0 || changes.Count != 0 || HasMissingCoverage(scope)
             ? "incomplete" : stable.Count != 0 ? "reproduced-discrepancy" : "no-discrepancy-in-scope";
         var review = new PathReview(manifest, PathArtifacts.Hash(manifest), plan.Mode, outcome, cases.Length,
             initial?.Result.Compared ?? 0, unsupported, retests, pending, plan.Methods.Sum(method => method.Work),
-            plan.PlanMilliseconds, timer.ElapsedMilliseconds, initial?.Run, stable, changes.Count, blocker,
-            plan.Methods.Select(method => new PathScope(method.Operation, method.Signature, method.Bound, method.Reason,
-                method.Unknown.Count, cases.Count(item => item.Operation == method.Operation))).ToArray());
+            plan.PlanMilliseconds, timer.ElapsedMilliseconds, initial?.Run, stable, changes.Count, blocker, scope);
         await artifacts.WriteAsync("review.json", review);
         await artifacts.WriteAsync("unstable.json", changes);
         var published = await artifacts.PublishAsync("review");
@@ -264,6 +264,8 @@ internal static class PathCheck
     {
         var path = PathArtifacts.Read(manifest, "review", "review.json", "unstable.json");
         var review = PathArtifacts.ReadJson<PathReview>(Path.Combine(path, "review.json"));
+        if (HasMissingCoverage(review.Scope))
+            review = review with { Outcome = "incomplete" };
         if (PathArtifacts.Hash(review.Plan) != review.PlanSha256)
             throw new IOException("The review does not match the referenced plan.");
         var plan = ReadPlan(review.Plan);
@@ -280,6 +282,8 @@ internal static class PathCheck
         return Task.FromResult(Print(new { Review = manifest, Current = stale is null, HistoricalReason = stale, Result = review },
             stale is null && review.Outcome == "no-discrepancy-in-scope" ? 0 : 1));
     }
+
+    private static bool HasMissingCoverage(PathScope[] scope) => scope.Any(target => !target.Bound || target.PlannedCases == 0);
 
     private static PathPlan ReadPlan(string manifest)
     {

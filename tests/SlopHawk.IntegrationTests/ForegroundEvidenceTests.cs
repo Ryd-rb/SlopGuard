@@ -35,6 +35,77 @@ public sealed class ForegroundEvidenceTests
     }
 
     [Fact]
+    public async Task ProgressPublishesScopedWorklistBeforeAnyChecksRun()
+    {
+        using var workspace = new TestWorkspace();
+        var acknowledgments = workspace.Write("acknowledgments.json", Array.Empty<object>());
+        var scope = workspace.Write("scope.json", new
+        {
+            Operations = new[] { "sample" },
+            Ordinary = Array.Empty<object>(),
+            Sources = new[] { new { Operation = "sample", Component = "rates", Contract = "rules.md", Implementation = "Rates.cs" } }
+        });
+
+        var progress = await Run("check-review", workspace.Path, acknowledgments, scope, "--progress");
+
+        Assert.True(progress.ExitCode == 0, progress.Error);
+        Assert.False(progress.Json.GetProperty("Complete").GetBoolean());
+        Assert.False(progress.Json.GetProperty("RequiresRunSelection").GetBoolean());
+        Assert.Equal(1, progress.Json.GetProperty("MissingCoverage").GetInt32());
+        Assert.Equal("rates", progress.Json.GetProperty("NextComponent").GetString());
+        var report = workspace.Read(progress.Json.GetProperty("Review").GetString()!);
+        Assert.Empty(report.GetProperty("Runs").EnumerateArray());
+        Assert.Empty(report.GetProperty("Coverage").EnumerateArray());
+        Assert.Equal("sample", Assert.Single(report.GetProperty("MissingCoverage").EnumerateArray()).GetString());
+    }
+
+    [Fact]
+    public async Task UnsupportedComparisonKeepsReviewIncompleteAlongsidePassingComparisons()
+    {
+        using var workspace = new TestWorkspace();
+        var passing = workspace.Write("passing.json", new[] { Example("sample", 7, 7) });
+        var observation = workspace.Write("observation.json", new[] { new ProbeInput("unsupported", [9]) });
+        Assert.Equal(0, (await Run("check", FixtureAssembly, passing, workspace.Path, "probe-batch")).ExitCode);
+        Assert.Equal(1, (await Run("check-observe", FixtureAssembly, observation, workspace.Path, "probe-batch")).ExitCode);
+        Assert.Equal(0, (await Run("check-review", workspace.Path)).ExitCode);
+
+        var unsupported = workspace.Write("unsupported.json", new[] { Example("unsupported", 9, 9) });
+        var check = await Run("check", FixtureAssembly, unsupported, workspace.Path, "probe-batch");
+        var review = await Run("check-review", workspace.Path);
+
+        Assert.Equal(1, check.ExitCode);
+        Assert.Equal(1, review.ExitCode);
+        Assert.False(review.Json.GetProperty("Complete").GetBoolean());
+        Assert.Equal(1, review.Json.GetProperty("UnsupportedComparisons").GetInt32());
+        Assert.Equal(0, review.Json.GetProperty("Outstanding").GetInt32());
+        Assert.Equal(0, review.Json.GetProperty("UnstableInputs").GetInt32());
+    }
+
+    [Fact]
+    public async Task SelectedRunValidatesOnlyItsOwnAdapterEvidence()
+    {
+        using var workspace = new TestWorkspace();
+        var cases = workspace.Write("cases.json", new[] { Example("sample", 7, 7) });
+        var first = await Run("check", FixtureAssembly, cases, workspace.Path, "probe-batch");
+        var other = await Run("check", FixtureAssembly, cases, workspace.Path, "alternate-probe-batch");
+        Assert.Equal(0, first.ExitCode);
+        Assert.Equal(0, other.ExitCode);
+        var firstRun = first.Json.GetProperty("Run").GetString()!;
+        var otherRun = other.Json.GetProperty("Run").GetString()!;
+        File.Delete(Path.Combine(other.Json.GetProperty("Artifacts").GetString()!, "observed.json"));
+
+        var review = await Run("check-review", workspace.Path, "--run", firstRun);
+        var damaged = await Run("check-review", workspace.Path, "--run", otherRun);
+
+        Assert.True(review.ExitCode == 0, review.Error);
+        Assert.True(review.Json.GetProperty("Complete").GetBoolean());
+        var report = workspace.Read(review.Json.GetProperty("Review").GetString()!);
+        Assert.Equal(firstRun, Assert.Single(report.GetProperty("Runs").EnumerateArray()).GetString());
+        Assert.Equal(1, damaged.ExitCode);
+        Assert.Contains("observed.json", damaged.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ReviewDoesNotCombineCoverageFromSeparateAdapterRuns()
     {
         using var workspace = new TestWorkspace();

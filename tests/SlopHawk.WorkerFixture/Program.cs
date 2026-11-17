@@ -16,6 +16,7 @@ internal static class Program
                 var requests = JsonSerializer.Deserialize<ProbeInput[]>(await File.ReadAllTextAsync(input))!;
                 Console.WriteLine(JsonSerializer.Serialize(requests.Select(request => request.Operation switch
                 {
+                    "unsupported" => (long?)null,
                     "steady" => 2,
                     "changes" => requests.Length > 4 ? 2 : 3,
                     "disappears" => requests.Length > 4 ? 2 : 1,
