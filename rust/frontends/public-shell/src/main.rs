@@ -16,7 +16,7 @@ Lifecycle     slophawk-native start|status|results|recheck|stop [--root <checkou
 MCP           slophawk-native mcp [--root <checkout>]\n\
 Foreground    slophawk-native projects|check|check-contracts|check-observe|check-retest|check-review|contracts|probes|paths ...\n\
 Shadow        slophawk-native shadow --request <request.json>\n\
-Requires an owner-pinned legacy C# launcher for projects, contract/probe and path fallback, daemon start and unsupported native platforms.";
+Requires an owner-pinned legacy C# launcher for projects, check-contracts, paths, daemon start and unsupported native platforms.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -51,7 +51,13 @@ fn run(args: &[String]) -> Result<i32> {
         return slophawk_foreground_checks::run(args)
             .map(i32::from).map_err(|error| failure("foreground_check_failed", error));
     }
-    if matches!(verb, "check-contracts" | "contracts" | "probes" | "paths" | "projects" | "serve") {
+    if matches!(verb, "contracts" | "probes") {
+        let (output, code) = slophawk_contracts_probes::passive::run(args)
+            .map_err(|error| failure("foreground_check_failed", error))?;
+        println!("{output}");
+        return Ok(i32::from(code));
+    }
+    if matches!(verb, "check-contracts" | "paths" | "projects" | "serve") {
         let registry = Registry::load(Some(&std::env::current_dir().map_err(|e| failure("invalid_root", e))?))?;
         return registry.legacy()?.forward(args, None);
     }

@@ -41,8 +41,9 @@ than claiming native support. The shell runs Rust foreground checks and review
 for the `check`, `check-observe`, `check-retest` and `check-review` commands.
 `slophawk-native shadow --request <request.json>` runs the native C#, Python,
 Rust and FluxR checker against the explicitly enumerated inputs in a
-[shadow request](../../native-checks/README.md). Projects, contract/probe and
-path compatibility commands use the configured C# launcher.
+[shadow request](../../native-checks/README.md). `contracts qualify` and
+`probes plan|compare|methods` use the Rust checkers. Projects, `check-contracts`
+and path compatibility commands use the configured C# launcher.
 
 A `trusted_peer` launcher may be selected explicitly in the registry and must
 still present the **same** published handshake. The separate private

@@ -191,8 +191,13 @@ dependencies = [
  "serde_json",
  "sha2",
  "slophawk-contracts",
+ "slophawk-managed-methods",
  "slophawk-probe-replay",
 ]
+
+[[package]]
+name = "slophawk-managed-methods"
+version = "0.1.0"
 
 [[package]]
 name = "slophawk-probe-replay"

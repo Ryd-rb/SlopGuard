@@ -3,6 +3,8 @@
 //! The binary's explicit C# `check` peer owns executable observations; IL hints
 //! are untrusted *search hints*, never sources of expected results.
 
+pub mod passive;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, value::RawValue};
 use sha2::{Digest, Sha256};

@@ -99,7 +99,7 @@ public static class NativeEngine
                 profile.BinarySha256, profileDigest, profile.GrantReference, reconcile: command == "recheck"));
             return 0;
         }
-        if (command is not ("check" or "check-observe" or "check-retest" or "check-review" or "shadow"))
+        if (command is not ("check" or "check-observe" or "check-retest" or "check-review" or "shadow" or "contracts" or "probes"))
             throw new IOException($"Native command '{command}' has no Rust-owned entry point in this release.");
         return await ForwardAsync(binary, commandArgs);
     }

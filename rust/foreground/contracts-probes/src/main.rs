@@ -3,21 +3,21 @@
 use serde::Serialize;
 use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
-use slophawk_contracts::{ContractCases, plan_inputs};
+use slophawk_contracts::ContractCases;
 use slophawk_contracts_probes::{
-    CheckPeer, FORMAT, Observation, Publication, Result, SearchOutcome, SOURCE_LIMIT,
+    CheckPeer, FORMAT, Observation, Publication, Result, SearchOutcome,
     expectations_json, inputs_json, operations_json, parse_peer_evidence, qualify,
-    qualifications_json, raw, read_literal_hints, read_scales, replay_changes_json,
+    qualifications_json, raw, read_literal_hints, replay_changes_json,
     search, sha256_hex, values_json,
 };
+use slophawk_contracts_probes::passive::{self, positive_count, read_limited};
 use slophawk_probe_replay::{
-    ProbeExpectation, check, check_result_json, compare_sources,
-    operation_results_json, parse_inputs,
+    ProbeExpectation, check, check_result_json,
 };
 use std::collections::hash_map::RandomState;
 use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -36,32 +36,10 @@ fn main() -> ExitCode {
 fn execute(args: &[String]) -> Result<u8> {
     let parts = args.iter().map(String::as_str).collect::<Vec<_>>();
     match parts.as_slice() {
-        ["contracts", "qualify", rules, published] => {
-            let catalog = qualify(&read_limited(rules)?, &read_limited(published)?)?;
-            println!("{}", qualifications_json(catalog.qualification()));
-            Ok(if catalog.qualification().iter().all(|q| q.error.is_none()) {0} else {1})
-        }
-        ["probes", "plan", seeds, limit, rest @ ..] if rest.len() <= 2 => {
-            let count = positive_count(limit)?;
-            let seed = rest.first().map_or(Ok(0), |s| signed_seed(s))?;
-            let scales = if let Some(path) = rest.get(1) { read_scales(&read_limited(path)?)? }
-                else { Vec::new() };
-            let inputs = parse_inputs(&read_limited(seeds)?).map_err(|e| e.to_string())?;
-            let result = plan_inputs(&inputs, count, seed, &scales).map_err(|e| e.to_string())?;
-            println!("{}", inputs_json(&result)?);
-            Ok(0)
-        }
-        ["probes", "compare", inputs, candidate, reference] => {
-            let result = compare_sources(&read_limited(inputs)?, &read_limited(candidate)?,
-                &read_limited(reference)?).map_err(|e| e.to_string())?;
-            println!("{}", operation_results_json(&result));
-            Ok(0)
-        }
-        // The managed PE/CLI comparison is still the published C# authority.
-        ["probes", "methods", candidate, reference] => {
-            let code = Command::new(peer_executable()).args(["probes", "methods", candidate, reference])
-                .status().map_err(|e| format!("C# managed-method peer could not start: {e}"))?;
-            Ok(if code.success() {0} else {2})
+        ["contracts" | "probes", ..] => {
+            let (output, code) = passive::run(args)?;
+            println!("{output}");
+            Ok(code)
         }
         ["check-contracts", assembly, rules, published, workspace, rest @ ..] if rest.len() <= 3 => {
             let count = rest.first().map_or(Ok(512), |s| positive_count(s))?;
@@ -75,29 +53,6 @@ fn execute(args: &[String]) -> Result<u8> {
     }
 }
 
-fn signed_seed(text: &str) -> Result<i32> {
-    text.trim().parse::<i32>().map_err(|_| "The optional random seed must be a signed 32-bit integer.".into())
-}
-fn positive_count(text: &str) -> Result<usize> {
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("The probe count must be a positive integer.".into());
-    }
-    let value: usize = text.parse().map_err(|_| "The probe count is too large.".to_string())?;
-    if value == 0 { return Err("The probe count must be positive.".into()); }
-    Ok(value)
-}
-fn read_limited(path: impl AsRef<Path>) -> Result<Vec<u8>> {
-    let path = path.as_ref();
-    let len = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
-    if len > SOURCE_LIMIT as u64 { return Err(format!("{} exceeds the 8 MiB input budget.", path.display())); }
-    // A file may grow after metadata: cap the read itself before allocating.
-    let mut bytes = Vec::with_capacity((len as usize).min(SOURCE_LIMIT));
-    File::open(path).map_err(|e| format!("{}: {e}", path.display()))?
-        .take(SOURCE_LIMIT as u64 + 1).read_to_end(&mut bytes)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    if bytes.len() > SOURCE_LIMIT { return Err("File grew beyond the input budget.".into()); }
-    Ok(bytes)
-}
 fn peer_executable() -> String {
     std::env::var("SLOPHAWK_CSHARP_CLI").unwrap_or_else(|_| "slophawk".into())
 }
