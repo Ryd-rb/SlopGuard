@@ -1,0 +1,18 @@
+[package]
+name = "slophawk-rust-source-provider"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+description = "Bounded, read-only Rust source facts for SlopHawk's provider pilot"
+publish = false
+
+[workspace]
+
+[lib]
+name = "slophawk_rust_source_provider"
+path = "src/lib.rs"
+
+[dependencies]
+ra_ap_syntax = "=0.0.363"
+sha2 = "=0.10.9"
