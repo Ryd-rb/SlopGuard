@@ -24,6 +24,7 @@ After an edit, the agent can ask these questions.
 
 - [Daemon architecture](docs/architecture.md) covers watching, change tracking, scheduling, compatibility, trust and resource use.
 - [Checker and test design](docs/checkers.md) covers the rule catalog, similarity scoring, and test discovery and selection.
+- [Rust checker migration](docs/rust-checker-migration.md) covers the four language providers, compatibility and RAM acceptance.
 - [Shared semantic index](docs/semantic-index.md) covers incremental symbol, call and value-flow tracking.
 - [Verification needs](docs/verification.md) covers test gaps and detection of pre-production, deploy, release and post-release checks.
 - [Current report publication](docs/result-publication.md) covers attribution, stale output invalidation and disk limits.
