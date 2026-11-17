@@ -120,6 +120,7 @@ jobs:
           test "$status" -eq 1
           test -f "$RUNNER_TEMP/analysis.json"
       - name: Measure matched resident release processes in user cgroups
+        if: ${{ !cancelled() && steps.workers.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail

@@ -47,7 +47,7 @@ internal static partial class Sampler
             try
             {
                 var roots = OperatingSystem.IsWindows()
-                    ? WindowsProcesses(scope.RootPid)
+                    ? ((WindowsJobScope)scope).Members()
                     : LinuxProcesses(scope.RootPid, scope.CgroupPath);
                 if (roots.Count == 0 || !roots.Contains(scope.RootPid) && !scope.HasExited)
                     errors.Add("root_process_or_tree_missing");
@@ -56,18 +56,24 @@ internal static partial class Sampler
                 {
                     privateBytes = 0;
                     commitBytes = 0;
+                    var countersComplete = true;
                     foreach (var pid in roots)
                     {
                         var counters = WindowsMetrics(pid);
-                        if (counters is null) { errors.Add("windows_process_counters_incomplete"); continue; }
+                        if (counters is null) { countersComplete = false; break; }
                         privateBytes += counters.Value.PrivateWorkingSet;
                         commitBytes += counters.Value.Commit;
                     }
                     jobBytes = scope.ReadJobPeak();
+                    // A process can leave the Job between the membership and counter reads.
+                    // Discard that observation instead of recording a partial working set.
+                    if (!roots.SetEquals(((WindowsJobScope)scope).Members()))
+                    {
+                        await Task.Delay(spec.IntervalMilliseconds);
+                        continue;
+                    }
+                    if (!countersComplete) errors.Add("windows_process_counters_incomplete");
                     if (jobBytes is null) errors.Add("missing_job_peak");
-                    var activeJobProcesses = scope.ReadJobActive();
-                    if (activeJobProcesses is null || activeJobProcesses != roots.Count)
-                        errors.Add("job_membership_does_not_match_process_tree");
                 }
                 else
                 {
@@ -142,7 +148,6 @@ internal static partial class Sampler
         internal abstract bool EnrolledBeforeExecution { get; }
         internal virtual string? CgroupPath => null;
         internal virtual double? ReadJobPeak() => null;
-        internal virtual int? ReadJobActive() => null;
         internal abstract bool Drain();
         public abstract void Dispose();
     }
@@ -211,31 +216,6 @@ internal static partial class Sampler
         return long.TryParse(value, CultureInfo.InvariantCulture, out var bytes) ? bytes : null;
     }
 
-    private static HashSet<int> WindowsProcesses(int root)
-    {
-        var parents = new Dictionary<int, int>();
-        var snapshot = CreateToolhelp32Snapshot(2, 0);
-        if (snapshot == new IntPtr(-1)) throw new Win32Exception();
-        try
-        {
-            var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf<ProcessEntry>() };
-            if (Process32FirstW(snapshot, ref entry))
-                do { parents[(int)entry.Pid] = (int)entry.ParentPid; }
-                while (Process32NextW(snapshot, ref entry));
-        }
-        finally { CloseHandle(snapshot); }
-        var active = new HashSet<int> { root };
-        var grew = true;
-        while (grew)
-        {
-            grew = false;
-            foreach (var pair in parents)
-                if (!active.Contains(pair.Key) && active.Contains(pair.Value))
-                    grew |= active.Add(pair.Key);
-        }
-        return active;
-    }
-
     private static (double PrivateWorkingSet, double Commit)? WindowsMetrics(int pid)
     {
         IntPtr handle = OpenProcess(0x1000 | 0x0400, false, (uint)pid);
@@ -299,12 +279,27 @@ internal static partial class Sampler
             return QueryInformationJobObject(job, 9, ref info, (uint)Marshal.SizeOf<JobExtendedLimits>(), IntPtr.Zero)
                 ? info.PeakJobMemory.ToInt64() : null;
         }
-        internal override int? ReadJobActive()
+        internal HashSet<int> Members()
         {
-            var accounting = new JobBasicAccounting();
-            return QueryInformationJobObject(job, 1, ref accounting,
-                (uint)Marshal.SizeOf<JobBasicAccounting>(), IntPtr.Zero)
-                    ? checked((int)accounting.ActiveProcesses) : null;
+            // This Job forbids breakaway and is assigned before the root runs.
+            // Class 3 enumerates the kernel-owned membership, including nested Jobs.
+            const int headerSize = 2 * sizeof(uint);
+            const int capacity = 4096;
+            var size = headerSize + capacity * IntPtr.Size;
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                if (!QueryInformationJobObject(job, 3, buffer, (uint)size, IntPtr.Zero))
+                    throw new Win32Exception();
+                var count = Marshal.ReadInt32(buffer, sizeof(uint));
+                if (count is < 0 or > capacity || count != Marshal.ReadInt32(buffer))
+                    throw new IOException("Windows Job membership is incomplete.");
+                var members = new HashSet<int>();
+                for (var index = 0; index < count; index++)
+                    members.Add(checked((int)Marshal.ReadIntPtr(buffer, headerSize + index * IntPtr.Size)));
+                return members;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
         }
         internal override bool Drain()
         {
@@ -312,9 +307,16 @@ internal static partial class Sampler
             if (WaitForSingleObject(process, 5000) != 0) return false;
             // A killed root alone is insufficient; an empty process count from
             // JobBasicAccountingInformation confirms all supervised children drained.
-            var accounting = new JobBasicAccounting();
-            return QueryInformationJobObject(job, 1, ref accounting,
-                (uint)Marshal.SizeOf<JobBasicAccounting>(), IntPtr.Zero) && accounting.ActiveProcesses == 0;
+            var clock = Stopwatch.StartNew();
+            do
+            {
+                var accounting = new JobBasicAccounting();
+                if (!QueryInformationJobObject(job, 1, ref accounting,
+                    (uint)Marshal.SizeOf<JobBasicAccounting>(), IntPtr.Zero)) return false;
+                if (accounting.ActiveProcesses == 0) return true;
+                Thread.Sleep(10);
+            } while (clock.ElapsedMilliseconds < 5000);
+            return false;
         }
         public override void Dispose()
         {
@@ -339,16 +341,6 @@ internal static partial class Sampler
         return b.ToString();
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct ProcessEntry
-    {
-        internal uint Size, Usage, Pid;
-        internal IntPtr Heap;
-        internal uint Module, Threads, ParentPid;
-        internal int BasePriority;
-        internal uint Flags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] internal string? Name;
-    }
     [StructLayout(LayoutKind.Sequential)]
     private struct ProcessMemoryCountersEx2
     {
@@ -401,11 +393,6 @@ internal static partial class Sampler
         internal uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses;
     }
 
-    [DllImport("kernel32", SetLastError = true)] private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
-    [DllImport("kernel32", EntryPoint = "Process32FirstW", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)] private static extern bool Process32FirstW(IntPtr snapshot, ref ProcessEntry entry);
-    [DllImport("kernel32", EntryPoint = "Process32NextW", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)] private static extern bool Process32NextW(IntPtr snapshot, ref ProcessEntry entry);
     [DllImport("kernel32", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("psapi", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetProcessMemoryInfo(IntPtr process,
@@ -423,6 +410,9 @@ internal static partial class Sampler
     [DllImport("kernel32", EntryPoint = "QueryInformationJobObject", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool QueryInformationJobObject(IntPtr job,
         int infoClass, ref JobBasicAccounting info, uint size, IntPtr returnLength);
+    [DllImport("kernel32", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)] private static extern bool QueryInformationJobObject(IntPtr job,
+        int infoClass, IntPtr buffer, uint size, IntPtr returnLength);
     [DllImport("kernel32", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32", SetLastError = true)]

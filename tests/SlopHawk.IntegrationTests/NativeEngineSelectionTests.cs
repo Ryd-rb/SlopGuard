@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using System.Text.Json;
 using System.Diagnostics;
+using System.Reflection;
 using Microsoft.Data.Sqlite;
 using SlopHawk.Cli;
 using SlopHawk.Daemon;
@@ -246,6 +247,10 @@ public sealed class NativeEngineSelectionTests
         if (string.IsNullOrWhiteSpace(binary) || string.IsNullOrWhiteSpace(host)) return;
         using var home = new TempWorkspace();
         var root = home.Workspace.Root;
+        var sdk = typeof(Providers.CSharp.Worker.Program).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .Single(attribute => attribute.Key == "SlopHawk.BuildSdk").Value;
+        await File.WriteAllTextAsync(Path.Combine(root, "global.json"),
+            JsonSerializer.Serialize(new { sdk = new { version = sdk, rollForward = "disable", allowPrerelease = false } }));
         await File.WriteAllTextAsync(Path.Combine(root, "App.csproj"), """
             <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>
             """);
