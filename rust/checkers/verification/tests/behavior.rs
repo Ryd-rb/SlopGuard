@@ -101,8 +101,15 @@ fn only(request: &VerificationRequest) -> VerificationDecision {
 }
 
 #[test]
-fn supports_only_edited_branch() {
-    assert_eq!(SUPPORTED_RULE_IDS, &["sg.verification.edited-branch"]);
+fn supports_all_three_rule_ids() {
+    assert_eq!(
+        SUPPORTED_RULE_IDS,
+        &[
+            "sg.verification.edited-branch",
+            "sg.verification.public-contract",
+            "sg.verification.serialization",
+        ]
+    );
     assert_eq!(RULE_VERSION, 1);
 }
 

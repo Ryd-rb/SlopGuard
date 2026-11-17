@@ -1,20 +1,29 @@
-//! Pure v1 decision engine for SlopHawk's edited-branch verification rule.
+//! Pure v1 decision engine for SlopHawk's typed verification rules.
 //!
 //! Ported from `SlopHawk.Core.Verification.VerificationRuleEvaluator.Evaluate`
 //! at commit `978a6464a6e5013fb1ad3a56c4e2877e62c18ac4`.
 //! Callers supply facts *after* receipt, provenance, artifact, and target-mapping
 //! validation. The evaluator performs no I/O and makes no new evidence claims.
+//! `evaluate` retains the existing edited-branch API; `typed` adds mixed-rule input.
 
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
 
-/// This slice has deliberately no capability for contract or serialization rules.
+pub mod typed;
+
+/// Versioned rule IDs for already validated, typed producer facts.
 pub const EDITED_BRANCH_RULE_ID: &str = "sg.verification.edited-branch";
+pub const PUBLIC_CONTRACT_RULE_ID: &str = "sg.verification.public-contract";
+pub const SERIALIZATION_RULE_ID: &str = "sg.verification.serialization";
 /// The version of the pinned rule semantics, not the Cargo package version.
 pub const RULE_VERSION: u32 = 1;
 /// Advertise only capabilities actually implemented by this standalone crate.
-pub const SUPPORTED_RULE_IDS: &[&str] = &[EDITED_BRANCH_RULE_ID];
+pub const SUPPORTED_RULE_IDS: &[&str] = &[
+    EDITED_BRANCH_RULE_ID,
+    PUBLIC_CONTRACT_RULE_ID,
+    SERIALIZATION_RULE_ID,
+];
 
 /// Identity is contextual: an overload, branch arm, target, or source/build
 /// revision cannot be substituted for another.
@@ -160,12 +169,22 @@ impl Default for VerificationLimits {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VerificationCategory {
     CoverageTests,
+    ContractTests,
 }
 
 impl VerificationCategory {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::CoverageTests => "coverage-tests",
+            Self::ContractTests => "contract-tests",
+        }
+    }
+
+    /// Match the pinned C# enum `ToString()` in contract action messages.
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::CoverageTests => "CoverageTests",
+            Self::ContractTests => "ContractTests",
         }
     }
 }
