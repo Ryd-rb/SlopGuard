@@ -19,6 +19,11 @@ public static class ManagedBodyComparison
         .Select(field => (OpCode)field.GetValue(null)!).GroupBy(opcode => unchecked((ushort)opcode.Value))
         .ToDictionary(group => group.Key, group => group.First());
 
+    public static IReadOnlyDictionary<string, long[]> IntegerLiterals(Stream assembly, ISet<string> methodNames) =>
+        Read(assembly, methodNames).Values.GroupBy(body => body.Name, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.SelectMany(body => body.Literals).Distinct().Order().ToArray(),
+                StringComparer.Ordinal);
+
     public static IReadOnlyList<ManagedBodyDifference> Compare(Stream candidate, Stream reference)
     {
         var left = Read(candidate);
@@ -55,7 +60,7 @@ public static class ManagedBodyComparison
     private sealed record MethodBody(string Name, string[] Instructions, long[] Literals);
     private sealed record Instruction(int Offset, string Opcode, string? Operand = null, int[]? Targets = null);
 
-    private static Dictionary<string, MethodBody> Read(Stream stream)
+    private static Dictionary<string, MethodBody> Read(Stream stream, ISet<string>? methodNames = null)
     {
         using var pe = new PEReader(stream, PEStreamOptions.LeaveOpen);
         if (!pe.HasMetadata)
@@ -67,6 +72,9 @@ public static class ManagedBodyComparison
         {
             var method = metadata.GetMethodDefinition(handle);
             if (method.RelativeVirtualAddress == 0 || (method.ImplAttributes & MethodImplAttributes.CodeTypeMask) != MethodImplAttributes.IL)
+                continue;
+            var methodName = metadata.GetString(method.Name);
+            if (methodNames is not null && !methodNames.Contains(methodName))
                 continue;
             var body = pe.GetMethodBody(method.RelativeVirtualAddress);
             var bytes = body.GetILReader();
@@ -95,7 +103,7 @@ public static class ManagedBodyComparison
 
             var symbol = names.Entity(handle);
             var literals = instructions.Select(IntegerLiteral).OfType<long>().Distinct().ToArray();
-            if (!methods.TryAdd(symbol, new MethodBody(metadata.GetString(method.Name), normalized.ToArray(), literals)))
+            if (!methods.TryAdd(symbol, new MethodBody(methodName, normalized.ToArray(), literals)))
                 throw new BadImageFormatException($"Duplicate managed method {symbol}.");
 
             int Position(int offset) => offsets.TryGetValue(offset, out var index) ? index

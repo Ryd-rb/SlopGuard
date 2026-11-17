@@ -60,6 +60,24 @@ public sealed class ContractCasesTests
         Assert.All(cases, item => Assert.InRange(item.Args[0], 0, 910));
     }
 
+    [Fact]
+    public void ImplementationConstantsGuideInputsWithoutChangingTheExpectedRule()
+    {
+        var rule = new IntegerContract(nameof(EncodeTuple), ["a", "b", "c", "d"],
+            "min(min(a, b), min(c, d)) >= 0 && max(max(a, b), max(c, d)) <= 100",
+            "a == c && b == d ? 0 : 1", "grouping.md");
+        var catalog = new ContractCases([rule], [Example(nameof(EncodeTuple), [2, 4, 6, 8], 1)]);
+        using var assembly = File.OpenRead(typeof(ContractCasesTests).Assembly.Location);
+        var literals = ManagedBodyComparison.IntegerLiterals(assembly, new HashSet<string> { nameof(EncodeTuple) });
+        Assert.Contains(31L, literals[nameof(EncodeTuple)]);
+
+        var cases = catalog.Generate(128, 1, implementationLiterals: literals).ToArray();
+        Assert.Contains(cases, item => item.Expected.GetInt64() == 1 &&
+            EncodeTuple(item.Args[0], item.Args[1]) == EncodeTuple(item.Args[2], item.Args[3]));
+    }
+
+    private static long EncodeTuple(long major, long minor) => 31 * major + minor;
+
     private static ProbeExpectation Example(string operation, long[] args, long value) =>
         new(operation, args, JsonSerializer.SerializeToElement(value));
 }

@@ -56,7 +56,7 @@ public sealed class ContractCases
     }
 
     public IEnumerable<ProbeExpectation> Generate(int perOperation, int seed, ISet<string>? operations = null,
-        bool guideWithBoundaries = false)
+        bool guideWithBoundaries = false, IReadOnlyDictionary<string, long[]>? implementationLiterals = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(perOperation, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(perOperation, 8192);
@@ -72,9 +72,12 @@ public sealed class ContractCases
             using var probes = ProbeReplay.Plan(rule.Ordinary.Select(example => new ProbeInput(example.Operation, example.Args)),
                 Math.Max(32, perOperation), seed).GetEnumerator();
             using var boundaries = rule.BoundaryPoints().GetEnumerator();
+            using var implementation = rule.ImplementationPoints(
+                implementationLiterals?.GetValueOrDefault(rule.Definition.Operation) ?? []).GetEnumerator();
             for (var attempt = 0; attempt < perOperation * 48 && emitted < perOperation; attempt++)
             {
-                var point = guideWithBoundaries && attempt % 4 == 0 && boundaries.MoveNext() ? boundaries.Current
+                var point = attempt % 4 == 1 && implementation.MoveNext() ? implementation.Current
+                    : guideWithBoundaries && attempt % 4 == 0 && boundaries.MoveNext() ? boundaries.Current
                     : attempt % 3 == 0 && probes.MoveNext() ? probes.Current.Args
                     : rule.Mutate(legal, random, guideWithBoundaries);
                 if (!seen.Add(Key(point)) || !rule.TryExpected(point, out var value))
@@ -156,6 +159,40 @@ public sealed class ContractCases
                     }
         }
 
+        public IEnumerable<long[]> ImplementationPoints(IEnumerable<long> literals)
+        {
+            var scales = literals.Where(value => value is > 1 or < -1 && value != long.MinValue)
+                .Select(Math.Abs).Distinct().OrderDescending().Take(16).ToArray();
+            foreach (var scale in scales)
+                foreach (var example in Ordinary)
+                {
+                    var baseline = example.Args;
+                    for (var field = 0; field < baseline.Length; field++)
+                        foreach (var delta in new[] { 0, -1, 1 })
+                        {
+                            var point = baseline.ToArray();
+                            point[field] = Offset(scale, delta);
+                            yield return point;
+                        }
+
+                    // Probe tuples that can collide in an encoding such as major * scale + minor.
+                    for (var stride = 1; stride < baseline.Length; stride++)
+                        for (var source = 0; source + stride < baseline.Length; source++)
+                            for (var target = 0; target + stride < baseline.Length; target++)
+                            {
+                                if (source == target || source + stride == target || target + stride == source)
+                                    continue;
+                                foreach (var direction in new[] { -1, 1 })
+                                {
+                                    var point = baseline.ToArray();
+                                    point[target] = Offset(baseline[source], direction);
+                                    point[target + stride] = Offset(baseline[source + stride], -direction * scale);
+                                    yield return point;
+                                }
+                            }
+                }
+        }
+
         public bool TryExpected(long[] input, out long result)
         {
             var values = new BigInteger[input.Length + locals.Length];
@@ -214,5 +251,5 @@ public sealed class ContractCases
             .ToLookup(item => item.Name, item => item.Value.GetValueOrDefault(), StringComparer.Ordinal);
     }
 
-    private static long Offset(long value, int delta) => (long)Int128.Clamp((Int128)value + delta, long.MinValue, long.MaxValue);
+    private static long Offset(long value, long delta) => (long)Int128.Clamp((Int128)value + delta, long.MinValue, long.MaxValue);
 }

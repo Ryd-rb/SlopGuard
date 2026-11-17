@@ -47,9 +47,13 @@ internal static class ContractCheck
         var runVerb = args.Length >= 7 ? args[6] : null;
         var prepareVerb = args.Length == 8 ? args[7] : null;
         var initial = Math.Min(64, limit);
-        await SearchAsync(initial, 0);
+        await SearchAsync(initial, 0, null);
         if (limit > initial)
-            await SearchAsync(limit - initial, 1);
+        {
+            using var assembly = File.OpenRead(args[1]);
+            var literals = ManagedBodyComparison.IntegerLiterals(assembly, remaining);
+            await SearchAsync(limit - initial, 1, literals);
+        }
 
         var witnesses = selected.Values.Concat(matched.Where(pair => !selected.ContainsKey(pair.Key)).Select(pair => pair.Value))
             .ToArray();
@@ -82,9 +86,10 @@ internal static class ContractCheck
         return report is not null && result.ReplayUnsupported == 0 && selected.Count == 0 && result.Findings == 0 && unsupported == 0 &&
             catalog.Qualification.All(item => item.Error is null && processed[item.Operation] > 0) ? 0 : 1;
 
-        async Task SearchAsync(int count, int seed)
+        async Task SearchAsync(int count, int seed, IReadOnlyDictionary<string, long[]>? literals)
         {
-            foreach (var batch in catalog.Generate(count, seed, remaining, guideWithBoundaries: seed != 0).Chunk(768))
+            foreach (var batch in catalog.Generate(count, seed, remaining, guideWithBoundaries: seed != 0,
+                implementationLiterals: literals).Chunk(768))
             {
                 var cases = batch.Where(item => remaining.Contains(item.Operation) &&
                     tested.Add((item.Operation, string.Join(',', item.Args)))).ToArray();
