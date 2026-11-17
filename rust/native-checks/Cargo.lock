@@ -838,6 +838,7 @@ dependencies = [
  "slophawk-fluxr-provider",
  "slophawk-python-syntax-provider",
  "slophawk-rust-source-provider",
+ "slophawk-worker-scope",
 ]
 
 [[package]]
@@ -857,6 +858,10 @@ dependencies = [
  "ra_ap_syntax",
  "sha2",
 ]
+
+[[package]]
+name = "slophawk-worker-scope"
+version = "0.1.0"
 
 [[package]]
 name = "smallvec"
