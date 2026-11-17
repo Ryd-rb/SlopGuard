@@ -74,7 +74,8 @@ public static class ManagedBodyComparison
             if (method.RelativeVirtualAddress == 0 || (method.ImplAttributes & MethodImplAttributes.CodeTypeMask) != MethodImplAttributes.IL)
                 continue;
             var methodName = metadata.GetString(method.Name);
-            if (methodNames is not null && !methodNames.Contains(methodName))
+            var operation = methodNames is null ? methodName : RequestedOperation(methodName, methodNames);
+            if (operation is null)
                 continue;
             var body = pe.GetMethodBody(method.RelativeVirtualAddress);
             var bytes = body.GetILReader();
@@ -103,13 +104,29 @@ public static class ManagedBodyComparison
 
             var symbol = names.Entity(handle);
             var literals = instructions.Select(IntegerLiteral).OfType<long>().Distinct().ToArray();
-            if (!methods.TryAdd(symbol, new MethodBody(methodName, normalized.ToArray(), literals)))
+            if (!methods.TryAdd(symbol, new MethodBody(operation, normalized.ToArray(), literals)))
                 throw new BadImageFormatException($"Duplicate managed method {symbol}.");
 
             int Position(int offset) => offsets.TryGetValue(offset, out var index) ? index
                 : throw new BadImageFormatException("A branch or exception region points outside an instruction boundary.");
         }
         return methods;
+    }
+
+    private static string? RequestedOperation(string name, ISet<string> methodNames)
+    {
+        if (methodNames.Contains(name))
+            return name;
+        if (!name.StartsWith('<'))
+            return null;
+        var close = name.IndexOf('>');
+        if (close <= 1)
+            return null;
+        var suffix = name.AsSpan(close + 1);
+        if (!suffix.StartsWith("g__", StringComparison.Ordinal) && !suffix.StartsWith("b__", StringComparison.Ordinal))
+            return null;
+        var containingMethod = name[1..close];
+        return methodNames.Contains(containingMethod) ? containingMethod : null;
     }
 
     private static long? IntegerLiteral(Instruction instruction)

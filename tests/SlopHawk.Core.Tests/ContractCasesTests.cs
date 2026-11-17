@@ -76,7 +76,11 @@ public sealed class ContractCasesTests
             EncodeTuple(item.Args[0], item.Args[1]) == EncodeTuple(item.Args[2], item.Args[3]));
     }
 
-    private static long EncodeTuple(long major, long minor) => 31 * major + minor;
+    private static long EncodeTuple(long major, long minor)
+    {
+        long Key(long value) => 31 * value + minor;
+        return Key(major);
+    }
 
     private static ProbeExpectation Example(string operation, long[] args, long value) =>
         new(operation, args, JsonSerializer.SerializeToElement(value));
