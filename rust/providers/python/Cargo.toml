@@ -1,0 +1,17 @@
+[package]
+name = "slophawk-python-syntax-provider"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+
+[lib]
+name = "slophawk_python_syntax_provider"
+path = "src/lib.rs"
+
+[dependencies]
+ruff_python_parser = "=0.0.22"
+ruff_python_ast = "=0.0.22"
+ruff_text_size = "=0.0.22"
+sha2 = "=0.10.9"
