@@ -48,9 +48,7 @@ internal static partial class Sampler
             {
                 var roots = OperatingSystem.IsWindows()
                     ? ((WindowsJobScope)scope).Members()
-                    : LinuxProcesses(scope.RootPid, scope.CgroupPath);
-                if (roots.Count == 0 || !roots.Contains(scope.RootPid) && !scope.HasExited)
-                    errors.Add("root_process_or_tree_missing");
+                    : LinuxMembers(scope.CgroupPath);
                 double? privateBytes = null, commitBytes = null, jobBytes = null, pssBytes = null, cgroupBytes = null;
                 if (OperatingSystem.IsWindows())
                 {
@@ -78,15 +76,26 @@ internal static partial class Sampler
                 else
                 {
                     pssBytes = 0;
+                    var countersComplete = true;
                     foreach (var pid in roots)
                     {
                         var pss = LinuxPss(pid);
-                        if (pss is null) { errors.Add("linux_pss_unavailable"); continue; }
+                        if (pss is null) { countersComplete = false; break; }
                         pssBytes += pss.Value;
                     }
                     cgroupBytes = LinuxCgroupPeak(scope.CgroupPath);
+                    var descendants = LinuxDescendants(scope.RootPid);
+                    if (!roots.SetEquals(LinuxMembers(scope.CgroupPath)))
+                    {
+                        await Task.Delay(spec.IntervalMilliseconds);
+                        continue;
+                    }
+                    if (!descendants.IsSubsetOf(roots)) errors.Add("linux_descendant_outside_cgroup");
+                    if (!countersComplete) errors.Add("linux_pss_unavailable");
                     if (cgroupBytes is null) errors.Add("missing_cgroup_peak");
                 }
+                if (roots.Count == 0 || !roots.Contains(scope.RootPid) && !scope.HasExited)
+                    errors.Add("root_process_or_tree_missing");
                 samples.Add(new SamplePoint(timer.ElapsedMilliseconds, roots.Count,
                     privateBytes, commitBytes, jobBytes, pssBytes, cgroupBytes,
                     recordedLatencies.Count > samples.Count ? recordedLatencies[samples.Count] : null));
@@ -152,7 +161,28 @@ internal static partial class Sampler
         public abstract void Dispose();
     }
 
-    private static HashSet<int> LinuxProcesses(int root, string? cgroup)
+    private static HashSet<int> LinuxMembers(string? cgroup)
+    {
+        if (cgroup is null) throw new IOException("Linux measurement scope has no cgroup.");
+        var members = new HashSet<int>();
+        var groups = new Queue<string>();
+        groups.Enqueue(cgroup);
+        var count = 0;
+        while (groups.TryDequeue(out var group))
+        {
+            foreach (var line in File.ReadLines(Path.Combine(group, "cgroup.procs")))
+                members.Add(int.Parse(line, CultureInfo.InvariantCulture));
+            foreach (var child in Directory.EnumerateDirectories(group))
+            {
+                if (++count > 4096 || (File.GetAttributes(child) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("The measurement cgroup tree exceeded its scope.");
+                groups.Enqueue(child);
+            }
+        }
+        return members;
+    }
+
+    private static HashSet<int> LinuxDescendants(int root)
     {
         var parents = new Dictionary<int, int>();
         foreach (var path in Directory.EnumerateDirectories("/proc"))
@@ -170,23 +200,14 @@ internal static partial class Sampler
             catch (IOException) { /* disappeared between /proc enumeration and read */ }
             catch (UnauthorizedAccessException) { /* not readable: caller must fail coverage */ }
         }
-        var active = new HashSet<int> { root };
+        var active = new HashSet<int>();
         var grew = true;
         while (grew)
         {
             grew = false;
             foreach (var pair in parents)
-                if (!active.Contains(pair.Key) && active.Contains(pair.Value))
+                if (pair.Value == root || active.Contains(pair.Value))
                     grew |= active.Add(pair.Key);
-        }
-        if (cgroup is not null)
-        {
-            var membersPath = Path.Combine(cgroup, "cgroup.procs");
-            var members = File.ReadAllLines(membersPath)
-                .Select(int.Parse).ToHashSet();
-            if (!active.IsSubsetOf(members))
-                return []; // scope leakage is not a valid memory sample
-            active.UnionWith(members); // include children reparented after parent exit
         }
         return active;
     }
