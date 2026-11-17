@@ -1,0 +1,18 @@
+[package]
+name = "slophawk-managed-methods"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "Bounded passive ECMA-335 method and IL comparison for SlopHawk"
+license = "MIT"
+publish = false
+
+[lib]
+name = "slophawk_managed_methods"
+path = "src/lib.rs"
+
+[[bin]]
+name = "managed-methods"
+path = "src/main.rs"
+
+[dependencies]
