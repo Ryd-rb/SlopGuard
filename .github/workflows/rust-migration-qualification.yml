@@ -1,0 +1,67 @@
+name: Rust migration qualification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [voda-linux-validation]
+
+permissions:
+  contents: read
+
+jobs:
+  language-exchanges:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Start an authenticated systemd user manager
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          test -f /sys/fs/cgroup/cgroup.controllers
+          for attempt in $(seq 1 20); do
+            if systemctl --user show-environment >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          systemctl --user show-environment >/dev/null
+          systemd-run --user --wait --quiet --pipe -- /usr/bin/true
+      - name: Build pinned Rust workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/voda-target"
+          echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 build --locked --manifest-path rust/project-context/fluxr/Cargo.toml
+          cargo +1.99.1 test --locked --manifest-path rust/workers/language-execution/Cargo.toml --no-run
+          echo "VODA_FLUXR_WORKER_BIN=$CARGO_TARGET_DIR/debug/slophawk-fluxr-checked-worker" >> "$GITHUB_ENV"
+          echo "VODA_CARGO_BIN=$(rustup which --toolchain 1.99.1 cargo)" >> "$GITHUB_ENV"
+          echo "VODA_RUSTC_BIN=$(rustup which --toolchain 1.99.1 rustc)" >> "$GITHUB_ENV"
+      - name: Prepare pinned pytest and report plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv --copies "$RUNNER_TEMP/voda-python"
+          py="$RUNNER_TEMP/voda-python/bin/python3"
+          mkdir "$RUNNER_TEMP/voda-wheelhouse"
+          "$py" -m pip download --only-binary=:all: --dest "$RUNNER_TEMP/voda-wheelhouse" pytest==8.4.2 pytest-json-report==1.5.0 pytest-metadata==3.1.1
+          "$py" -m pip install --no-index --find-links "$RUNNER_TEMP/voda-wheelhouse" pytest==8.4.2 pytest-json-report==1.5.0 pytest-metadata==3.1.1
+          echo "VODA_PYTHON_BIN=$py" >> "$GITHUB_ENV"
+          echo "VODA_PYTEST_SHA256=$(sha256sum "$RUNNER_TEMP"/voda-wheelhouse/pytest-*.whl | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          echo "VODA_PLUGIN_SHA256=$(sha256sum "$RUNNER_TEMP"/voda-wheelhouse/pytest_json_report-*.whl | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          echo "VODA_EFFECTIVE_PYTEST_CONFIG_SHA256=$(printf '%s' 'pytest-8.4.2;pytest-json-report-1.5.0;fixture-testpaths=tests;autoload=off' | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+      - name: Run real language worker exchanges
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CARGO_NET_OFFLINE=true
+          cargo +1.99.1 test --locked --offline --manifest-path rust/runtime/worker-scope/Cargo.toml
+          cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml
+          cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml --test real_workers -- --ignored --nocapture --test-threads=1
