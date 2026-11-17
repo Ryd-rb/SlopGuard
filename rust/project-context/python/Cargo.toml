@@ -1,0 +1,14 @@
+[package]
+name = "slophawk-python-project-context"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+
+[lib]
+name = "slophawk_python_project_context"
+path = "src/lib.rs"
+
+# Intentionally no runtime dependencies: static, offline and source-only.
+[dependencies]
