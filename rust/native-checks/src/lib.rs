@@ -1,0 +1,162 @@
+//! SG-MIG-02: opt-in one-shot native shadow checker.
+//! No changes to the existing C# CLI, daemon, watcher, publication or test-runner.
+#![deny(unsafe_code)]
+pub mod contract;
+pub mod base64;
+mod providers;
+mod worker;
+mod supervisor;
+
+use contract::{DocumentReport, EXACT, Gap, Language, Loaded, Pair, RENAMED, Report, ScopeRequest, Status};
+use slophawk_clone_index::{CloneIndexSettings, CloneMatchClass, CloneQueryLimits, CloneTokenDocument, TokenCloneIndex};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicBool;
+use std::time::Instant;
+
+pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, String> {
+    let started = Instant::now();
+    let (job, mut sources) = request.admit()?;
+    // Sorting makes worker closure and index updates independent of enumeration order.
+    sources.sort_by(|a,b| a.source.document_id.cmp(&b.source.document_id));
+    let csharp_sources: Vec<&Loaded> = sources.iter().filter(|s| s.source.language == Language::Csharp).collect();
+    let attempted_workers = csharp_sources.len();
+    let mut projections = Vec::new();
+    for source in &sources {
+        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("shadow job cancelled before publication".into());
+        }
+        let mut p = match source.source.language {
+            Language::Python => providers::python(&job, source),
+            Language::Rust => providers::rust(&job, source),
+            Language::Fluxr => providers::fluxr(&job, source),
+            Language::Csharp => providers::csharp(&job, source, &csharp_sources, cancel),
+        };
+        if source.source.byte_mapping == "unavailable" && source.source.language != Language::Csharp {
+            p.blocks.clear();
+            p.original_byte_spans.clear();
+            p.report.status = Status::Partial;
+            p.report.blocks_indexed = 0;
+            p.report.tokens_indexed = 0;
+            p.report.gaps.push(Gap {
+                reason: "caller_declared_unmapped: no original byte coordinates admitted".into(),
+                document_id: source.source.document_id.clone(), span: None,
+            });
+            for r in &mut p.report.rules {
+                if r.id == EXACT || r.id == RENAMED { r.status = Status::Unsupported; }
+            }
+        }
+        projections.push(p);
+    }
+    // A failed worker, stale terminal, overflow, or source-provider failure
+    // aborts the *whole* staged operation, not just the failing document.
+    // The receipt retains failures/frontiers but publishes no clone pairs.
+    if projections.iter().any(|p| p.report.status == Status::Failed) {
+        for p in &mut projections {
+            p.blocks.clear();
+            p.original_byte_spans.clear();
+            p.report.blocks_indexed = 0;
+            p.report.tokens_indexed = 0;
+            if p.report.status != Status::Failed {
+                p.report.status = Status::Partial;
+                p.report.gaps.push(Gap { reason: "job:peer_failed_staged_facts_discarded".into(),
+                    document_id: p.report.document_id.clone(), span: None });
+                for r in &mut p.report.rules {
+                    if r.status == Status::Complete { r.status = Status::Partial; }
+                }
+            }
+        }
+    }
+    let mut indices: BTreeMap<Language, TokenCloneIndex> = BTreeMap::new();
+    let mut locations: BTreeMap<(Language, String, String), contract::ByteSpan> = BTreeMap::new();
+    let mut all_gaps = Vec::new();
+    for p in &projections {
+        all_gaps.extend(p.report.gaps.clone());
+    }
+    for (source, projected) in sources.iter().zip(&projections) {
+        for (block_id, byte_span) in &projected.original_byte_spans {
+            locations.insert((source.source.language, source.source.document_id.clone(), block_id.clone()), byte_span.clone());
+        }
+        if projected.blocks.is_empty() || projected.report.status == Status::Failed { continue; }
+        let index = if let Some(index) = indices.get_mut(&source.source.language) { index } else {
+            indices.insert(source.source.language, TokenCloneIndex::new(CloneIndexSettings {
+                minimum_tokens: job.limits.min_clone_tokens,
+                maximum_tokens_per_block: job.limits.max_tokens_per_block,
+                maximum_fingerprint_postings: job.limits.max_fingerprint_postings,
+            }).map_err(|e| format!("clone settings: {e}"))?);
+            indices.get_mut(&source.source.language).ok_or("missing fresh clone index")?
+        };
+        index.upsert(CloneTokenDocument {
+            document_id: source.source.document_id.clone(), version: source.digest.clone(),
+            is_generated: source.source.provenance == contract::Provenance::Generated,
+            is_excluded: false, blocks: projected.blocks.clone(),
+        }).map_err(|e| format!("clone upsert for {}: {e}", source.source.document_id))?;
+    }
+    let mut pairs = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (language, index) in &indices {
+        let query = index.query(CloneQueryLimits {
+            maximum_candidate_pairs: job.limits.max_candidate_pairs,
+            maximum_output_pairs: job.limits.max_output_pairs,
+            maximum_compared_tokens: job.limits.max_compared_tokens,
+        }).map_err(|e| format!("clone query: {e}"))?;
+        for g in query.gaps {
+            all_gaps.push(Gap { reason: format!("clone-index:{:?}:{}:{}",g.reason,g.scope_key,g.affected_count),
+                document_id: "*".into(), span: None });
+        }
+        for p in query.pairs {
+            let classification = match p.match_class {
+                CloneMatchClass::Exact => "exact",
+                CloneMatchClass::RenamedLocalIdentifiers => "renamed_proven_local",
+            };
+            let key = (*language, p.pair_id.clone());
+            if !seen.insert(key) { return Err("clone checker produced duplicate pair identity".into()); }
+            let left_bytes = locations.get(&(*language, p.left.document_id.clone(), p.left.block_id.clone()))
+                .ok_or("clone index returned unknown left block identity")?;
+            let right_bytes = locations.get(&(*language, p.right.document_id.clone(), p.right.block_id.clone()))
+                .ok_or("clone index returned unknown right block identity")?;
+            pairs.push(Pair {
+                pair_id: p.pair_id, language: *language, classification: classification.into(),
+                left_bytes: [left_bytes.start, left_bytes.end],
+                right_bytes: [right_bytes.start, right_bytes.end],
+                left_document: p.left.document_id, right_document: p.right.document_id,
+                left_block: p.left.block_id, right_block: p.right.block_id,
+                left_utf16: [p.left.span.start_offset, p.left.span.end_offset],
+                right_utf16: [p.right.span.start_offset, p.right.span.end_offset],
+                token_count: p.left.token_count,
+            });
+        }
+    }
+    pairs.sort_by(|a,b| (a.language, &a.pair_id).cmp(&(b.language,&b.pair_id)));
+    all_gaps.sort_by(|a,b| (&a.document_id, &a.reason, a.span.as_ref().map(|s| s.start))
+        .cmp(&(&b.document_id,&b.reason,b.span.as_ref().map(|s|s.start))));
+    let documents: Vec<DocumentReport> = projections.into_iter().map(|p| p.report).collect();
+    let status = if documents.iter().any(|d| d.status == Status::Failed) { Status::Failed }
+        else if documents.iter().any(|d| d.status != Status::Complete ||
+            d.rules.iter().any(|r| r.status != Status::Complete)) || !all_gaps.is_empty() {
+            Status::Partial
+        } else { Status::Complete };
+    Ok(Report {
+        schema: "slophawk.native-shadow/1", workspace_epoch: job.workspace_epoch,
+        committed_revision: job.committed_revision, context_key: job.context.key,
+        status, documents, pairs, gaps: all_gaps,
+        limits: job.limits, worker_invocations: attempted_workers,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+/// Produce a bounded deterministic JSON receipt. Limit truncation never silently drops findings.
+pub fn bounded_report(mut report: Report) -> Result<Vec<u8>, String> {
+    let maximum = report.limits.max_report_bytes;
+    loop {
+        let encoded = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
+        if encoded.len() <= maximum { return Ok(encoded); }
+        if report.pairs.pop().is_some() {
+            if !report.gaps.iter().any(|g| g.reason == "report:pair_budget") {
+                report.gaps.push(Gap { reason: "report:pair_budget".into(), document_id: "*".into(), span: None });
+            }
+            report.status = Status::Partial;
+        } else {
+            return Err("report budget too small to include complete scope and gap metadata".into());
+        }
+    }
+}

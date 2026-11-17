@@ -1,0 +1,27 @@
+[package]
+name = "slophawk-native-checks"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+description = "Opt-in, scoped four-language shadow clone checker (SG-MIG-02)"
+
+[workspace]
+
+[lib]
+name = "slophawk_native_checks"
+path = "src/lib.rs"
+
+[[bin]]
+name = "slophawk-native-checks"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
+slophawk-clone-index = { path = "../checkers/clone-index" }
+slophawk-python-syntax-provider = { path = "../providers/python" }
+slophawk-rust-source-provider = { path = "../providers/rust" }
+slophawk-fluxr-provider = { path = "../providers/fluxr" }
