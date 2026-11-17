@@ -34,6 +34,17 @@ const MAX_INTENTS: usize = 2_048;
 const MAX_HISTORY: usize = 64;
 const SCOPED_PEER: &str = "scoped_inventory_worker_v1";
 
+/// Passive observation for an external durable writer that owns its own state.
+pub fn observe_workspace(root: &Path) -> io::Result<(GitSnapshot, Snapshot)> {
+    let identity = root_identity(root)?;
+    let before = git::observe(root)?;
+    let files = scan::scan(root)?;
+    if identity != root_identity(root)? || before != git::observe(root)? {
+        return Err(invalid("workspace changed during native observation"));
+    }
+    Ok((before, files))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fence {
     pub generation: u64,

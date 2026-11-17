@@ -18,6 +18,9 @@ name = "slophawk-native"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "=0.22.1"
+slophawk-worker-scope = { path = '../../runtime/worker-scope' }
+slophawk-native-coordinator = { path = "../../native-coordinator" }
 slophawk-foreground-checks = { path = "../../foreground/checks" }
 slophawk-native-checks = { path = "../../native-checks" }
 serde = { version = "=1.0.229", features = ["derive"] }

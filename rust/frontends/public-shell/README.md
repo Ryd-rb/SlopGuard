@@ -1,10 +1,9 @@
 # SlopHawk native public compatibility shell (SG-MIG-05)
 
-This **source-only** Rust CLI implements the published daemon lifecycle and MCP
-stdio tools without depending on an unpublished native daemon. The wire contract
+This Rust CLI implements the published daemon lifecycle and MCP stdio client.
+The wire contract
 is frozen to **local IPC version 1, report schema 2** at SlopHawk upstream
-`a367ef58076f7e29d2ae475a3b593daad04c4998`. There is no new worker job
-transport in this crate, and the report contains no roadmap-only result marks.
+`a367ef58076f7e29d2ae475a3b593daad04c4998`.
 
 ## What this shell actually supports
 
@@ -46,10 +45,11 @@ Rust and FluxR checker against the explicitly enumerated inputs in a
 path compatibility commands use the configured C# launcher.
 
 A `trusted_peer` launcher may be selected explicitly in the registry and must
-still present the **same** published handshake. No dependency on SG-MIG-03 or
-later native daemon APIs is assumed. This crate does not implement the
-`slophawk.migration-job/1` protocol because it creates **no new internal job
-transport**: it uses only existing local IPC and MCP stdio.
+still present the **same** published handshake. The separate private
+`slophawk.migration-job/1` entry point implements explicit state transfer,
+inspection, reconciliation and rollback with the managed CLI. See the
+[qualification guide](../../../docs/rust-migration-qualification.md) for the
+supported stateful commands and release gates.
 
 ## Owner-managed executable and argv registry
 

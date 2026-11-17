@@ -1,0 +1,333 @@
+using System.Security.Cryptography;
+using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
+using SlopHawk.Cli;
+using SlopHawk.Daemon;
+using Xunit;
+
+namespace SlopHawk.IntegrationTests;
+
+public sealed class NativeEngineSelectionTests
+{
+    [Fact]
+    public void MigrationFrameRejectsOversizedLengthBeforeAllocatingBody()
+    {
+        using var stream = new MemoryStream(new byte[] { 0x01, 0x00, 0x02, 0x00 });
+        Assert.Throws<IOException>(() => MigrationStateBridge.ReadFrame(stream, CancellationToken.None));
+    }
+
+    [Fact]
+    public void MigrationFrameRejectsTruncatedBodyAndPrefix()
+    {
+        using var truncatedPrefix = new MemoryStream(new byte[] { 0x10, 0x00 });
+        Assert.Throws<EndOfStreamException>(() =>
+            MigrationStateBridge.ReadFrame(truncatedPrefix, CancellationToken.None));
+        using var truncatedBody = new MemoryStream(new byte[] { 0x0A, 0, 0, 0, (byte)'{' });
+        Assert.Throws<EndOfStreamException>(() =>
+            MigrationStateBridge.ReadFrame(truncatedBody, CancellationToken.None));
+    }
+
+    [Fact]
+    public void MigrationFrameRoundTripsBoundedUtf8Json()
+    {
+        using var stream = new MemoryStream();
+        MigrationStateBridge.WriteFrame(stream, new { kind = "request", job = "case-14" }, CancellationToken.None);
+        stream.Position = 0;
+        using var frame = MigrationStateBridge.ReadFrame(stream, CancellationToken.None);
+        Assert.Equal("request", frame!.RootElement.GetProperty("kind").GetString());
+        Assert.Equal("case-14", frame.RootElement.GetProperty("job").GetString());
+        Assert.Null(MigrationStateBridge.ReadFrame(stream, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ExplicitSelectionRejectsAnUnpinnedProfileBeforeAnyChildIsStarted()
+    {
+        using var home = new TempWorkspace();
+        var file = Path.Combine(home.Parent, "engine-profile.json");
+        await File.WriteAllTextAsync(file, "{}");
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            NativeEngine.RunAsync(["engine", "native", file, new string('A', 64), "--", "status"]));
+    }
+
+    [Theory]
+    [InlineData("partial")]
+    [InlineData("unsupported")]
+    [InlineData("missing-terminal")]
+    [InlineData("truncated")]
+    [InlineData("oversized")]
+    [InlineData("echo-mismatch")]
+    [InlineData("bad-digest")]
+    [InlineData("duplicate-terminal")]
+    public void ControlledPeerCannotPublishWriterOnBadOrIncompleteTerminal(string mode)
+    {
+        // The owner explicitly builds this separate fixture before enabling this
+        // suite; it is never included in a release qualification receipt.
+        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_TEST_PEER_BINARY");
+        if (string.IsNullOrWhiteSpace(binary)) return;
+        using var home = new TempWorkspace();
+        Seed(home);
+        var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binary)));
+        var previous = Environment.GetEnvironmentVariable("SLOPHAWK_PEER_FIXTURE_MODE");
+        try
+        {
+            Environment.SetEnvironmentVariable("SLOPHAWK_PEER_FIXTURE_MODE", mode);
+            Assert.ThrowsAny<IOException>(() => MigrationStateBridge.TransferToNative(
+                home.Workspace, binary, digest, new string('A', 64), "controlled-test-only"));
+            Assert.Throws<IOException>(() => MigrationStateBridge.RequireLegacyWriter(home.Workspace));
+            Assert.Throws<IOException>(() => MigrationStateBridge.RequireNativeWriter(
+                home.Workspace, digest, new string('A', 64)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("SLOPHAWK_PEER_FIXTURE_MODE", previous);
+        }
+    }
+
+    [Fact]
+    public void InstalledRustPeerTransfersAndReturnsDurableState()
+    {
+        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
+        if (string.IsNullOrWhiteSpace(binary)) return;
+        using var home = new TempWorkspace();
+        Seed(home);
+        var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binary)));
+        var profile = new string('A', 64);
+
+        MigrationStateBridge.TransferToNative(home.Workspace, binary, digest, profile, "native-integration");
+        MigrationStateBridge.RequireNativeWriter(home.Workspace, digest, profile);
+        Assert.Throws<IOException>(() => MigrationStateBridge.RequireLegacyWriter(home.Workspace));
+        Assert.Throws<IOException>(() => DaemonHost.Run(home.Workspace));
+
+        var path = Path.Combine(home.Workspace.StateDirectory, "migration-engine.json");
+        var marker = JsonNode.Parse(File.ReadAllText(path))!;
+        var epoch = marker["epoch"]!.GetValue<string>();
+        var native = Path.Combine(home.Workspace.StateDirectory, $"native-{epoch}.json");
+        var state = JsonNode.Parse(File.ReadAllText(native))!;
+        Assert.Equal(7L, state["revision"]!.GetValue<long>());
+        Assert.Equal("graph:5", state["tables"]![3]!["rows"]![0]![6]!["value"]!.GetValue<string>());
+
+        var edited = Path.Combine(home.Workspace.Root, "Source.cs");
+        File.WriteAllText(edited, "class ChangedInRust {}\n");
+        var expectedDigest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(edited)));
+        var updated = JsonNode.Parse(MigrationStateBridge.ReadNativeState(home.Workspace, binary,
+            digest, profile, "native-integration", reconcile: true))!;
+        Assert.Equal(8L, updated["committedRevision"]!.GetValue<long>());
+        Assert.Equal("rust", updated["engine"]!.GetValue<string>());
+        var unchanged = JsonNode.Parse(MigrationStateBridge.ReadNativeState(home.Workspace, binary,
+            digest, profile, "native-integration", reconcile: true))!;
+        Assert.Equal(8L, unchanged["committedRevision"]!.GetValue<long>());
+
+        marker["state"] = "rollback-uncertain";
+        File.WriteAllText(path + ".pending", marker.ToJsonString());
+        Assert.Throws<IOException>(() => MigrationStateBridge.RequireNativeWriter(home.Workspace, digest, profile));
+        MigrationStateBridge.RollbackToLegacy(home.Workspace, binary, digest, profile, "native-integration");
+        MigrationStateBridge.RequireLegacyWriter(home.Workspace);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(native))),
+            File.ReadAllText(Path.Combine(home.Workspace.StateDirectory, $"native-{epoch}.stopped")));
+        using var restored = Open(home.Workspace);
+        Assert.Equal(8L, Scalar(restored, "SELECT revision FROM workspace"));
+        Assert.Equal(expectedDigest, Text(restored, "SELECT digest FROM source"));
+        Assert.Equal("graph:5", Text(restored, "SELECT predecessor FROM test_intent"));
+        Assert.Equal(3L, Scalar(restored, "SELECT first_revision FROM intent_fallback"));
+        Assert.Equal(8L, Scalar(restored, "SELECT last_revision FROM intent_fallback"));
+        Assert.Equal("interrupted", Text(restored, "SELECT state FROM test_attempt"));
+        Assert.Equal("lease-11", Text(restored, "SELECT lease_id FROM test_attempt"));
+        Assert.Equal("receipt-7", Text(restored, "SELECT reason_code FROM test_run_receipt"));
+    }
+
+    [Fact]
+    public void InstalledRustPeerAbortsAnUnconfirmedImport()
+    {
+        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
+        if (string.IsNullOrWhiteSpace(binary)) return;
+        using var home = new TempWorkspace();
+        Seed(home);
+        var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binary)));
+        var profile = new string('A', 64);
+        MigrationStateBridge.TransferToNative(home.Workspace, binary, digest, profile, "native-integration");
+
+        // Model the crash interval between native import and the managed commit.
+        var path = Path.Combine(home.Workspace.StateDirectory, "migration-engine.json");
+        var marker = JsonNode.Parse(File.ReadAllText(path))!;
+        var epoch = marker["epoch"]!.GetValue<string>();
+        marker["state"] = "transition-uncertain";
+        File.WriteAllText(path, marker.ToJsonString());
+        Assert.Throws<IOException>(() => MigrationStateBridge.RequireLegacyWriter(home.Workspace));
+        Assert.Throws<IOException>(() => MigrationStateBridge.RequireNativeWriter(home.Workspace, digest, profile));
+
+        MigrationStateBridge.RollbackToLegacy(home.Workspace, binary, digest, profile, "native-integration");
+        MigrationStateBridge.RequireLegacyWriter(home.Workspace);
+        Assert.Equal("aborted", File.ReadAllText(Path.Combine(home.Workspace.StateDirectory, $"native-{epoch}.stopped")));
+        using var restored = Open(home.Workspace);
+        Assert.Equal(7L, Scalar(restored, "SELECT revision FROM workspace"));
+        Assert.Equal("receipt-7", Text(restored, "SELECT reason_code FROM test_run_receipt"));
+    }
+
+    [Fact]
+    public void SemanticExportPreservesPredecessorPendingReceiptsAndInterruptedLeaseIdentity()
+    {
+        using var home = new TempWorkspace();
+        Seed(home);
+        var root = MigrationStateBridge.ReadRootIdentity(home.Workspace);
+        var inventory = new SourceInventory(home.Workspace);
+        var snapshot = inventory.ExportMigration(root);
+
+        Assert.Equal(SourceInventory.MigrationFormat, snapshot.Format);
+        Assert.Equal(7L, snapshot.Revision);
+        Assert.Equal("graph:5", Assert.Single(snapshot.Tables[3].Rows)[6].Value);
+        Assert.Equal("interrupted", Assert.Single(snapshot.Tables[5].Rows)[8].Value);
+        Assert.Equal("lease-11", Assert.Single(snapshot.Tables[5].Rows)[11].Value);
+        Assert.Equal("receipt-7", Assert.Single(snapshot.Tables[8].Rows)[27].Value);
+        Assert.Equal("old-fingerprint", Assert.Single(snapshot.Tables[3].Rows)[3].Value);
+    }
+
+    [Fact]
+    public void RoundTripAfterDrainCarriesDetailedAndFallbackCausesAcrossFreshHandles()
+    {
+        using var home = new TempWorkspace();
+        Seed(home);
+        var root = MigrationStateBridge.ReadRootIdentity(home.Workspace);
+        var inventory = new SourceInventory(home.Workspace);
+        var export = inventory.ExportMigration(root);
+        inventory.ImportMigration(export, root, 7);
+        using var connection = Open(home.Workspace);
+        Assert.Equal(7L, Scalar(connection, "SELECT revision FROM workspace"));
+        Assert.Equal("graph:5", Text(connection, "SELECT predecessor FROM test_intent"));
+        Assert.Equal(3L, Scalar(connection, "SELECT first_revision FROM intent_fallback"));
+        Assert.Equal(7L, Scalar(connection, "SELECT last_revision FROM intent_fallback"));
+        Assert.Equal("interrupted", Text(connection, "SELECT state FROM test_attempt"));
+        Assert.Equal("lease-11", Text(connection, "SELECT lease_id FROM test_attempt"));
+        Assert.Equal("profile-11", Text(connection, "SELECT profile_revision FROM test_attempt"));
+        Assert.Equal("receipt-7", Text(connection, "SELECT reason_code FROM test_run_receipt"));
+        Assert.Equal("old-fingerprint", Text(connection, "SELECT old_digest FROM test_intent"));
+        Assert.Equal("changed-fingerprint", Text(connection, "SELECT new_digest FROM test_intent"));
+        Assert.Equal(1L, Scalar(connection, "SELECT count(*) FROM test_evidence"));
+        Assert.Equal(1L, Scalar(connection, "SELECT count(*) FROM project_graph"));
+    }
+
+    [Fact]
+    public void UnsupportedInterchangeIsRejectedBeforeAnyMutation()
+    {
+        using var home = new TempWorkspace();
+        Seed(home);
+        var root = MigrationStateBridge.ReadRootIdentity(home.Workspace);
+        var inventory = new SourceInventory(home.Workspace);
+        var snapshot = inventory.ExportMigration(root);
+        Assert.Throws<IOException>(() => inventory.ImportMigration(snapshot with { Format = 99 }, root, 7));
+        using var verify = Open(home.Workspace);
+        Assert.Equal("running", Text(verify, "SELECT state FROM test_attempt"));
+        Assert.Equal("graph:5", Text(verify, "SELECT predecessor FROM test_intent"));
+        Assert.Equal(1L, Scalar(verify, "SELECT count(*) FROM test_run_receipt"));
+    }
+
+    [Fact]
+    public void UnsupportedDurableSchemaBlocksExportWithoutUpgradingOrDeletingPendingWork()
+    {
+        using var home = new TempWorkspace();
+        Seed(home);
+        using (var connection = Open(home.Workspace))
+            Exec(connection, "PRAGMA user_version = 6;");
+        var root = MigrationStateBridge.ReadRootIdentity(home.Workspace);
+        Assert.Throws<IOException>(() => new SourceInventory(home.Workspace).ExportMigration(root));
+        using var verify = Open(home.Workspace);
+        Assert.Equal(6L, Scalar(verify, "PRAGMA user_version"));
+        Assert.Equal(1L, Scalar(verify, "SELECT count(*) FROM test_intent"));
+        Assert.Equal(1L, Scalar(verify, "SELECT count(*) FROM test_run_receipt"));
+    }
+
+    [Fact]
+    public void RevisionFencePreventsOldRollbackFromReplacingLaterCommit()
+    {
+        using var home = new TempWorkspace();
+        Seed(home);
+        var root = MigrationStateBridge.ReadRootIdentity(home.Workspace);
+        var inventory = new SourceInventory(home.Workspace);
+        var snapshot = inventory.ExportMigration(root);
+        using (var connection = Open(home.Workspace))
+            Exec(connection, "UPDATE workspace SET revision = 8 WHERE id = 1;");
+        Assert.Throws<IOException>(() => inventory.ImportMigration(snapshot, root, 7));
+        using var verify = Open(home.Workspace);
+        Assert.Equal(8L, Scalar(verify, "SELECT revision FROM workspace"));
+        Assert.Equal("graph:5", Text(verify, "SELECT predecessor FROM test_intent"));
+    }
+
+    private static void Seed(TempWorkspace home)
+    {
+        var inventory = new SourceInventory(home.Workspace);
+        _ = inventory.Load(); // create pinned schema-v5 tables in the test's isolated user state
+        var root = MigrationStateBridge.ReadRootIdentity(home.Workspace);
+        using var connection = Open(home.Workspace);
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "UPDATE workspace SET revision = 7, root_identity = $root, " +
+            "policy = 'csharp.syntax:inventory-v1' WHERE id = 1";
+        command.Parameters.AddWithValue("$root", root);
+        command.ExecuteNonQuery();
+        command.Parameters.Clear();
+        command.CommandText = "INSERT INTO source VALUES ('SOURCE.CS','Source.cs','changed-fingerprint',1)";
+        command.ExecuteNonQuery();
+        command.CommandText = "INSERT INTO test_intent VALUES " +
+            "(6,'SOURCE.CS','Source.cs','old-fingerprint','Source.cs','changed-fingerprint','graph:5')";
+        command.ExecuteNonQuery();
+        command.CommandText = "INSERT INTO intent_fallback VALUES (1,3,7)";
+        command.ExecuteNonQuery();
+        command.CommandText = "INSERT INTO test_attempt " +
+            "(id,number,revision,epoch,target,fingerprint,causes,plan_key,state,lease_id,profile_revision) " +
+            "VALUES (1,1,7,'00000000-0000-0000-0000-000000000001','unit','fp-1','[\"cause-6\"]','plan-7'," +
+            "'running','lease-11','profile-11')";
+        command.ExecuteNonQuery();
+        command.CommandText = "INSERT INTO test_evidence VALUES ('cause-6','unit','fp-1')";
+        command.ExecuteNonQuery();
+        command.Parameters.AddWithValue("$root", root);
+        command.CommandText = "INSERT INTO project_graph VALUES (7,$root,1,x'7B7D')";
+        command.ExecuteNonQuery();
+        command.CommandText = "INSERT INTO test_run_receipt " +
+            "(attempt_id,format,revision,epoch,fence_sequence,git_fingerprint,root_identity,target," +
+            "fingerprint,profile_revision,platform,runner,artifact,execution,reason_code) VALUES " +
+            "(1,1,7,'00000000-0000-0000-0000-000000000001',5,'" + new string('A', 64) +
+            "',$root,'unit','fp-1','profile-11','Incomplete','Incomplete','Incomplete','Unknown','receipt-7')";
+        command.ExecuteNonQuery();
+        transaction.Commit();
+    }
+
+    private static SqliteConnection Open(Workspace workspace)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = workspace.InventoryPath, Pooling = false, Mode = SqliteOpenMode.ReadWrite
+        }.ToString());
+        connection.Open();
+        return connection;
+    }
+    private static void Exec(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
+    }
+    private static long Scalar(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return (long)command.ExecuteScalar()!;
+    }
+    private static string Text(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return (string)command.ExecuteScalar()!;
+    }
+
+    private sealed class TempWorkspace : IDisposable
+    {
+        internal string Parent { get; } = Path.Combine(Path.GetTempPath(), "slophawk-engine-" + Guid.NewGuid().ToString("N"));
+        internal Workspace Workspace { get; }
+        internal TempWorkspace()
+        {
+            var root = Directory.CreateDirectory(Path.Combine(Parent, "checkout")).FullName;
+            Workspace = new Workspace(root, Directory.CreateDirectory(Path.Combine(Parent, "state")).FullName);
+        }
+        public void Dispose() => Directory.Delete(Parent, recursive: true);
+    }
+}

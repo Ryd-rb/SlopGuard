@@ -16,6 +16,9 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: 10.0.404
       - name: Start an authenticated systemd user manager
         shell: bash
         run: |
@@ -33,6 +36,7 @@ jobs:
           systemctl --user show-environment >/dev/null
           systemd-run --user --wait --quiet --pipe -- /usr/bin/true
       - name: Build pinned Rust workers
+        id: workers
         shell: bash
         run: |
           set -euo pipefail
@@ -74,3 +78,41 @@ jobs:
           set -euo pipefail
           export SLOPHAWK_LIVE_NATIVE_SCOPE=1
           cargo +1.99.1 test --locked --offline --manifest-path rust/native-coordinator/Cargo.toml -- --test-threads=1
+      - name: Run the four-language checker suite with an actual Roslyn worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/voda-dotnet"
+          dotnet build src/SlopHawk.Providers.CSharp.Worker/SlopHawk.Providers.CSharp.Worker.csproj --artifacts-path "$artifacts"
+          export VARO_DOTNET="$(readlink -f "$(command -v dotnet)")"
+          export VARO_WORKER_DLL="$artifacts/bin/SlopHawk.Providers.CSharp.Worker/debug/SlopHawk.Providers.CSharp.Worker.dll"
+          export VARO_REFERENCE_PACK="$(dirname "$VARO_DOTNET")/packs/Microsoft.NETCore.App.Ref/10.0.0/ref/net10.0"
+          if ! test -f "$VARO_REFERENCE_PACK/System.Runtime.dll"; then
+            export VARO_REFERENCE_PACK="$(find "$(dirname "$VARO_DOTNET")/packs/Microsoft.NETCore.App.Ref" -path '*/ref/net10.0' -type d | sort -V | tail -n 1)"
+          fi
+          test -f "$VARO_REFERENCE_PACK/System.Runtime.dll"
+          export VARO_REQUIRE_REAL_WORKER=1 VODA_TEST_SYSTEMD_SCOPE=1
+          cargo +1.99.1 test --locked --manifest-path rust/native-checks/Cargo.toml -- --test-threads=1
+      - name: Transfer, update and return durable state with the Rust peer
+        if: ${{ !cancelled() && steps.workers.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/voda-dotnet"
+          cargo +1.99.1 build --locked --manifest-path rust/frontends/public-shell/Cargo.toml
+          dotnet build tests/fixtures/native-engine/ControlledPeer.csproj --artifacts-path "$artifacts"
+          export SLOPHAWK_NATIVE_MIGRATION_BINARY="$CARGO_TARGET_DIR/debug/slophawk-native"
+          export SLOPHAWK_NATIVE_TEST_PEER_BINARY="$artifacts/bin/ControlledPeer/debug/slophawk-controlled-migration-peer"
+          test -x "$SLOPHAWK_NATIVE_TEST_PEER_BINARY"
+          dotnet test SlopHawk.slnx --artifacts-path "$artifacts" --logger 'console;verbosity=normal'
+      - name: Reject incomplete release evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/voda-dotnet"
+          dotnet build tools/SlopHawk.RustMigrationQualification/SlopHawk.RustMigrationQualification.csproj --artifacts-path "$artifacts"
+          status=0
+          dotnet "$artifacts/bin/SlopHawk.RustMigrationQualification/debug/SlopHawk.RustMigrationQualification.dll" \
+            qualify tests/fixtures/native-engine/missing-scope.json "$RUNNER_TEMP/receipt.json" "$RUNNER_TEMP/analysis.json" || status=$?
+          test "$status" -eq 1
+          test -f "$RUNNER_TEMP/analysis.json"

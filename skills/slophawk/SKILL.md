@@ -28,3 +28,38 @@ For an editable checkout with daemon state available:
 2. Read the daemon-owned `.slophawk/results.json` through `slophawk results --root <checkout>` or MCP `get_findings`. In 0.2 previews, check the Git context, source count and committed revision. Use `workspace_status` to inspect pending intents and scheduler state. Ready inventory means the source observations reconciled. An `awaiting_adapter` scheduler leaves test intents outstanding.
 3. The watcher rechecks edits and Git changes. Use `slophawk recheck --root <checkout>` or MCP `run_checks` for an explicit refresh, then read the new revision. Treat the report as read-only. Acknowledge each reported problem and exercise an appropriate reproducing or regression test before closing it. Recheck after changes and account for new findings the same way.
 4. Before reporting completion, review current evidence and run the repository's build and tests. SlopHawk delegates compiler and analyzer checks to the build.
+
+## Explicit native engine selection and safe rollback (SG-MIG-14)
+
+The ordinary public commands and MCP routing remain managed by default. A
+standalone Rust binary does **not** replace those owners merely by being installed.
+Only use an owner-qualified *exact binary* after reading
+[the qualification guide](../../docs/rust-migration-qualification.md). This is
+an opt-in compatibility and process-containment gate, not a general execution
+grant or a way to bypass workspace authorization.
+
+- `slophawk engine native <external-profile.json> <PROFILE_SHA256> -- <public-command> [args]`
+  selects the native path only when the physical profile, SHA-256, exact binary,
+  OS and owner qualification receipt agree. No silent fallback to managed occurs.
+  `status` and `recheck` operate on transferred state and require the matching
+  writer marker.
+- `slophawk engine transfer <external-profile.json> <PROFILE_SHA256> --root <checkout>`
+  transfers inventory, pending causes and receipts to the qualified Rust peer.
+- `slophawk engine rollback <external-profile.json> <PROFILE_SHA256> --root <checkout>`
+  asks the same pinned native peer to quiesce, drain admitted worker scopes and
+  export semantic state. The managed writer is only released after a validated
+  schema-v5 import commits. A generic directory copy cannot transfer ownership.
+- `unsupported_feature`, unsupported interchange/schema, stale epoch/revision,
+  missing qualification receipt, mismatch in binary/profile digest, absent
+  process-tree drainage, incomplete provider or artifact scope, and a missing or
+  invalid migration terminal are **failures**. Do not mask them by restarting a
+  legacy daemon or replaying a report. A `transition-uncertain` marker prohibits
+  both writers until the owner recovers a compatible peer and proves custody.
+  Preserve user-state `migration-backup-<epoch>.json` and `migration-engine.json` for
+  review; never delete or modify them to force a startup.
+
+Before any default change, produce and inspect same-binary Windows/Linux
+compatibility, containment, recovery and performance receipts, including
+whole-tree warm/idle and checker peaks and p95 latency. Missing evidence remains
+unqualified. If the new engine lacks a required capability, keep managed as
+the default and explicitly report the unsupported scope.

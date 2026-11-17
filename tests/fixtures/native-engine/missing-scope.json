@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux",
+  "binarySha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "legacyBinarySha256": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+  "matrix": [],
+  "samples": [],
+  "compatibility": {"name":"compatibility", "platform":"linux", "binarySha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "complete":false,"omissions":["mcp"],"proofSha256":[]},
+  "containment": {"name":"containment", "platform":"linux", "binarySha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "complete":false,"omissions":["cgroup"],"proofSha256":[]},
+  "recovery": {"name":"recovery", "platform":"linux", "binarySha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "complete":false,"omissions":["interrupted-worker"],"proofSha256":[]}
+}

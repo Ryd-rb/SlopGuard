@@ -26,11 +26,14 @@ if (args is [] or ["--help"] or ["-h"])
         Path review   slophawk paths review <review-manifest.json>
         MCP server    slophawk mcp [--root <checkout>]
         Stop          slophawk stop [--root <checkout>]
+        Native        slophawk engine native <external-profile> <SHA256> -- <public-command> [args]
+        Transfer      slophawk engine transfer <external-profile> <SHA256> --root <checkout>
+        Rollback      slophawk engine rollback <external-profile> <SHA256> --root <checkout>
         """);
     return 0;
 }
 
-if (args is not ["probes" or "contracts" or "paths", ..] and not ["check" or "check-contracts" or "check-observe" or "check-retest" or "check-review", ..] and not [_] and not [_, "--root", _])
+if (args is not ["engine", ..] and not ["probes" or "contracts" or "paths", ..] and not ["check" or "check-contracts" or "check-observe" or "check-retest" or "check-review", ..] and not [_] and not [_, "--root", _])
 {
     Console.Error.WriteLine("Invalid arguments. Run slophawk --help.");
     return 2;
@@ -38,6 +41,8 @@ if (args is not ["probes" or "contracts" or "paths", ..] and not ["check" or "ch
 
 try
 {
+    if (args is ["engine", ..])
+        return await SlopHawk.Cli.NativeEngine.RunAsync(args);
     if (args is ["probes", ..])
         return await SlopHawk.Cli.ProbeCommands.RunAsync(args);
     if (args is ["contracts", ..])
@@ -54,6 +59,7 @@ try
         return await SlopHawk.Cli.CheckReview.RunAsync(args);
 
     var workspace = new Workspace(args.Length == 3 ? args[2] : Environment.CurrentDirectory);
+    MigrationStateBridge.RequireLegacyWriter(workspace);
     var connection = new DaemonConnection(workspace);
     switch (args[0])
     {

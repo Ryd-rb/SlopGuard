@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+mod migration;
 
 const HELP: &str = "SlopHawk native compatibility shell (wire 1, report schema 2)\n\
 Lifecycle     slophawk-native start|status|results|recheck|stop [--root <checkout>]\n\
@@ -19,6 +20,13 @@ Requires an owner-pinned legacy C# launcher for projects, contract/probe and pat
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.as_slice(), [verb] if verb == "--slophawk-migration-job-v1") {
+        if let Err(error) = migration::run_stdio() {
+            eprintln!("Native state transition refused: {error}");
+            std::process::exit(2);
+        }
+        return;
+    }
     match run(&args) {
         Ok(code) => std::process::exit(code),
         Err(error) => { eprintln!("{error}"); std::process::exit(1); }

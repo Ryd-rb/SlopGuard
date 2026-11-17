@@ -25,6 +25,7 @@ public static class DaemonHost
 
         try
         {
+            MigrationStateBridge.RequireLegacyWriter(workspace);
             RunOwnedAsync(workspace, adapter, cancellationToken).GetAwaiter().GetResult();
         }
         finally

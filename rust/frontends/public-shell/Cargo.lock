@@ -53,6 +53,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -912,6 +918,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "slophawk-native-coordinator"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slophawk-worker-scope",
+]
+
+[[package]]
 name = "slophawk-probe-replay"
 version = "0.1.0"
 
@@ -919,11 +934,14 @@ version = "0.1.0"
 name = "slophawk-public-shell"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
  "sha2",
  "slophawk-foreground-checks",
  "slophawk-native-checks",
+ "slophawk-native-coordinator",
+ "slophawk-worker-scope",
 ]
 
 [[package]]

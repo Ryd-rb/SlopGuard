@@ -54,12 +54,12 @@ daemon's named-pipe address are untouched. The state is specific to this native
 policy and is **not** an upgrade or replacement for the C# schema 5 inventory.
 There is no automatic import of native pending causes into C#.
 
-An owner can opt into one of two standalone modes *after source-only delivery
-has been integrated and verified*:
+Standalone entry points include:
 
 ```text
 slophawk-native-coordinator serve --root <existing-physical-root>
 slophawk-native-coordinator serve-ipc --root <existing-physical-root>
+slophawk-native-coordinator run-peer --root <existing-physical-root> --profile <absolute-user-profile> --context <context>
 ```
 
 `serve` exposes a **test-only line-delimited JSON reply** interface on stdout:
@@ -91,11 +91,14 @@ outside the checkout and checks its full SHA-256 before building a job
 identity. On Linux the default *suggested* profile location is
 `~/.config/slophawk-native-coordinator/execution-v1.json` (JSON field
 `rootIdentity` must match this native coordinator's physical-root digest).
-These functions only prepare an identity; they do **not** authorize process
-launch. `require_authenticated_containment` deliberately rejects Windows Job
-and Linux systemd/cgroup v2 until the owner supplies and validates an adapter
-which enrolls the child before it executes repository code and can authenticate
-and drain the process scope after an owner crash.
+`run-peer` verifies the explicit `inventory` grant and persists a running
+attempt before launching the peer using the shared worker scope. Windows uses
+a named Job and Linux uses an authenticated user-systemd cgroup v2 service.
+The installed coordinator accepts the framed inventory request through its
+private worker entry point. A successful attempt attests only the requested
+inventory records. Pending test causes remain queued. On restart the
+coordinator consults the shared recovery journal under its writer lock and
+withdraws the report when scope recovery is uncertain.
 
 The user-wide `heavy.lock` is an OS-level single-heavy-worker reservation for
 the controlled fake-worker fixture; its PID/start-time and Linux process-group
