@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
+using System.Text.Json;
 using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using SlopHawk.Cli;
@@ -212,6 +213,39 @@ public sealed class NativeEngineSelectionTests
             Assert.True(child.ExitCode == 0, await error);
             return await output;
         }
+    }
+
+    [Fact]
+    public async Task RustProjectsRoutesPinnedMsbuildFactsWithTheManagedPublicShape()
+    {
+        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
+        var host = Environment.GetEnvironmentVariable("SLOPHAWK_PROJECT_TEST_DOTNET");
+        if (string.IsNullOrWhiteSpace(binary) || string.IsNullOrWhiteSpace(host)) return;
+        using var home = new TempWorkspace();
+        var root = home.Workspace.Root;
+        await File.WriteAllTextAsync(Path.Combine(root, "App.csproj"), """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>
+            """);
+        await File.WriteAllTextAsync(Path.Combine(root, "Source.cs"), "internal class Source {}\n");
+        var worker = Path.Combine(AppContext.BaseDirectory, "SlopHawk.Providers.CSharp.Worker.dll");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var expected = await new ProjectEvaluator(home.Workspace).EvaluateAsync(deadline.Token);
+        Assert.True(expected.Complete, JsonSerializer.Serialize(expected.Issues));
+        var start = new ProcessStartInfo(binary) { UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var arg in new[] { "projects", "--root", root }) start.ArgumentList.Add(arg);
+        start.Environment["SLOPHAWK_PROJECT_WORKER"] = worker;
+        start.Environment["SLOPHAWK_PROJECT_WORKER_SHA256"] = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(worker)));
+        start.Environment["SLOPHAWK_NATIVE_DOTNET"] = host;
+        start.Environment["SLOPHAWK_NATIVE_DOTNET_SHA256"] = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(host)));
+        using var child = Process.Start(start)!;
+        var output = child.StandardOutput.ReadToEndAsync(deadline.Token);
+        var error = child.StandardError.ReadToEndAsync(deadline.Token);
+        await child.WaitForExitAsync(deadline.Token);
+        Assert.True(child.ExitCode == 0, await error);
+        var graph = JsonNode.Parse(await output);
+        Assert.True(JsonNode.DeepEquals(JsonSerializer.SerializeToNode(expected, new JsonSerializerOptions(JsonSerializerDefaults.Web)), graph));
+        Assert.Single(graph!["targets"]!.AsArray());
     }
 
     [Fact]

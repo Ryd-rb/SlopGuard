@@ -551,13 +551,17 @@ fn attested_build(manifest: &Path, current: &Identity, scratch: &Path) -> Result
     Ok((dir, receipt))
 }
 
-fn inspect(worker: &Path, source: &Source, current: &Identity, candidate: &Path,
+fn inspect(worker: &Path, source: &Source, current: &Identity, candidate: Option<&Path>,
     graph_on: bool) -> Result<InspectResult> {
     let reply = worker_call(worker, current, json!({
         "specPath": source.path, "candidatePath": candidate, "graphOn": graph_on
     }))?;
     let result: InspectResult = serde_json::from_value(reply).map_err(|e| e.to_string())?;
-    if result.candidate_sha256 != hash(&read_file(candidate, MAX_SOURCE)?) ||
+    let digest = match candidate {
+        Some(path) => hash(&read_file(path, MAX_SOURCE)?),
+        None => hash(&[]),
+    };
+    if result.candidate_sha256 != digest ||
         result.targets.len() != source.spec.targets.len() {
         return Err("The fact export disagrees with its build or target set".into());
     }
@@ -679,9 +683,12 @@ pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path
     if mode != "graph-on" && mode != "graph-off" { return Err("Use graph-on or graph-off".into()); }
     let source = Source::open(spec, scratch)?;
     let identity = source.identity("inspect", worker)?;
+    if build == Path::new("-") {
+        return structural_plan(&source, &identity, mode, worker);
+    }
     let (build_dir, receipt) = attested_build(build, &identity, &source.scratch)?;
     let candidate = build_dir.join("candidate.dll");
-    let inspected = inspect(worker, &source, &identity, &candidate, mode == "graph-on")?;
+    let inspected = inspect(worker, &source, &identity, Some(&candidate), mode == "graph-on")?;
     if inspected.compiler_sha256 != receipt.compiler_sha256 ||
         inspected.compiler_inputs != receipt.compiler_inputs ||
         inspected.runtime_version != receipt.runtime_version ||
@@ -777,6 +784,33 @@ pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path
     result
 }
 
+fn structural_plan(source: &Source, identity: &Identity, mode: &str, worker: &Path) -> Result<Value> {
+    let inspected = inspect(worker, source, identity, None, false)?;
+    let blocker = "No controlled build was supplied.";
+    let mut graphs = serde_json::Map::new();
+    let mut methods = Vec::new();
+    for target in inspected.targets {
+        graphs.insert(target.operation.clone(), target.graph.unwrap_or(Value::Null));
+        let searched = search(&parse_wire(&target.facts).map_err(|error| error.to_string())?);
+        methods.push(MethodPlan { operation: target.operation, signature: target.signature, bound: target.bound,
+            eligible: false, reason: target.reason.or_else(|| Some(blocker.into())), rule_source: target.rule_source,
+            work: searched.work, unknown: searched.unknown, rejected_by_domain: 0, baseline_cases: 0, graph_proposals: 0 });
+    }
+    let receipt = BuildReceipt { compiler_sha256: inspected.compiler_sha256, runtime_version: inspected.runtime_version,
+        candidate_sha256: inspected.candidate_sha256, compiler_inputs: inspected.compiler_inputs };
+    let plan = PathPlan { identity: identity.clone(), inputs: source.inputs(&receipt)?,
+        scratch: source.scratch.display().to_string(), build: String::new(), build_sha256: String::new(),
+        candidate_sha256: String::new(), compiler_inputs: receipt.compiler_inputs, mode: mode.into(),
+        per_operation: source.spec.per_operation, retest_limit: source.spec.retest_limit,
+        methods, cases: Vec::new(), blocker: Some(blocker.into()) };
+    let (stage, destination) = staging(&source.scratch, "plan", &identity.job)?;
+    write_json(&stage.join("graph.json"), &json!({"BuildAttested": false, "Graphs": graphs}))?;
+    write_json(&stage.join("candidates.json"), &json!({"Baseline": {}, "Graph": {}}))?;
+    write_json(&stage.join("plan.json"), &plan)?;
+    let manifest = publish(&stage, &destination, "plan", identity)?;
+    Ok(json!({"Plan": manifest, "Mode": mode, "Cases": 0, "Blocker": blocker, "Methods": plan.methods}))
+}
+
 fn replay(worker: &Path, source: &Source, candidate: &Path, current: &Identity,
     cases: &[Expectation]) -> Result<ReplayResult> {
     let (stage, _unused) = staging(&source.scratch, "review", &current.job)?;
@@ -813,7 +847,7 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
         return Err("The plan does not reference the exact original compilation".into());
     }
     let candidate = build_dir.join("candidate.dll");
-    let inspected = inspect(worker, &source, &current, &candidate, plan.mode == "graph-on")?;
+    let inspected = inspect(worker, &source, &current, Some(&candidate), plan.mode == "graph-on")?;
     if inspected.compiler_sha256 != receipt.compiler_sha256 ||
         inspected.compiler_inputs != receipt.compiler_inputs {
         return Err("Compiler options, sources or reference closure changed".into());
@@ -869,7 +903,7 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
     let late = Source::open(&source.path, &source.scratch)?;
     let late_id = late.identity("inspect", worker)?;
     if !late_id.same_authority(&current) { return Err("Authority or policy changed during replay".into()); }
-    let final_inspect = inspect(worker, &late, &late_id, &candidate, plan.mode == "graph-on")?;
+    let final_inspect = inspect(worker, &late, &late_id, Some(&candidate), plan.mode == "graph-on")?;
     if final_inspect.compiler_inputs != receipt.compiler_inputs ||
         final_inspect.candidate_sha256 != receipt.candidate_sha256 ||
         final_inspect.compiler_sha256 != receipt.compiler_sha256 {
@@ -921,7 +955,7 @@ pub fn review(review_manifest: &Path, worker: &Path) -> Result<Value> {
         return Err("Review authority is stale".into());
     }
     let (build_dir, receipt) = attested_build(Path::new(&plan.build), &identity, &source.scratch)?;
-    let inspected = inspect(worker, &source, &identity, &build_dir.join("candidate.dll"), plan.mode == "graph-on")?;
+    let inspected = inspect(worker, &source, &identity, Some(&build_dir.join("candidate.dll")), plan.mode == "graph-on")?;
     if receipt.compiler_sha256 != inspected.compiler_sha256 ||
         receipt.candidate_sha256 != inspected.candidate_sha256 ||
         receipt.compiler_inputs != inspected.compiler_inputs ||

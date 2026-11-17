@@ -22,7 +22,7 @@ internal sealed record ScalarSpec(ScalarBuildOptions Build, TargetSpec[] Targets
 internal sealed record BuildReceipt(string CompilerSha256, string RuntimeVersion, string CandidateSha256,
     ScalarCompilerInputs CompilerInputs);
 internal sealed record BuildRequest(string SpecPath, string OutputDir);
-internal sealed record InspectRequest(string SpecPath, string CandidatePath, bool GraphOn);
+internal sealed record InspectRequest(string SpecPath, string? CandidatePath, bool GraphOn);
 internal sealed record EvaluationRequest(string Operation, long[] Args);
 internal sealed record EvaluateRequest(string SpecPath, EvaluationRequest[] Requests);
 internal sealed record ReplayRequest(string SpecPath, string CandidatePath, string WorkDir, ProbeInput[] Inputs);
@@ -155,14 +155,16 @@ internal static class Program
     {
         RequireExactSpec(specPath, request.SpecPath);
         var compiler = ScalarCompilation.Create(root, spec.Build);
-        var binary = compiler.Emit();
-        if (!Hex(ReadBoundedFile(request.CandidatePath, MaxFrame)).Equals(Hex(binary), StringComparison.Ordinal))
+        var binary = request.CandidatePath is null ? [] : compiler.Emit();
+        if (request.CandidatePath is not null &&
+            !Hex(ReadBoundedFile(request.CandidatePath, MaxFrame)).Equals(Hex(binary), StringComparison.Ordinal))
             throw new IOException("Inspection requires the exact original emitted candidate.");
         var catalog = Catalog(root, spec);
         var arities = catalog.ParameterCounts.Where(pair => spec.Targets.Any(t => t.Operation == pair.Key))
             .ToDictionary();
         using var stream = new MemoryStream(binary, writable: false);
-        var literals = ManagedBodyComparison.IntegerLiterals(stream, arities);
+        var literals = request.CandidatePath is null ? new Dictionary<string, long[]>() :
+            ManagedBodyComparison.IntegerLiterals(stream, arities);
         var targets = new List<InspectedTarget>();
         foreach (var target in spec.Targets)
         {
@@ -171,12 +173,13 @@ internal static class Program
             var parameters = facts.Parameters.Select(p => p.Type).ToArray();
             var compatible = facts.Bound && facts.Eligible &&
                 arities.TryGetValue(target.Operation, out var arity) && arity == parameters.Length;
-            var originals = compatible ? OriginalCases(catalog, spec, target.Operation, seeds, literals, parameters) : [];
+            var originals = compatible && request.CandidatePath is not null
+                ? OriginalCases(catalog, spec, target.Operation, seeds, literals, parameters) : [];
             targets.Add(new(target.Operation, target.Signature, facts.Bound, compatible,
                 facts.Reason ?? (!compatible ? "Unqualified public rule or unsupported signature." : null),
                 catalog.Qualification.FirstOrDefault(q => q.Operation == target.Operation)?.Source,
                 parameters, facts.ToWire(seeds.Select(s => s.Args).ToArray(), spec.WorkLimit,
-                    request.GraphOn && compatible ? spec.PerOperation : 0), facts.Graph,
+                    request.GraphOn && compatible && request.CandidatePath is not null ? spec.PerOperation : 0), facts.Graph,
                 originals, seeds.Select(s => Key(s.Args)).ToArray()));
         }
         var receipt = Receipt(compiler, binary);

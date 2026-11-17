@@ -9,6 +9,55 @@ namespace SlopHawk.IntegrationTests;
 public sealed class ScalarPathCheckTests
 {
     [Fact]
+    public async Task NativeForegroundRoutesBuildPlanCheckAndReviewThroughTheScalarWorker()
+    {
+        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
+        var worker = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_SCALAR_WORKER");
+        if (string.IsNullOrWhiteSpace(binary) || string.IsNullOrWhiteSpace(worker)) return;
+        using var fixture = new Fixture();
+        var output = await Native("build", fixture.Spec, fixture.Scratch);
+        var build = PathOf(output, "Build");
+        var plan = PathOf(await Native("plan", fixture.Spec, fixture.Scratch, build, "graph-on"), "Plan");
+        var checkedRun = await Native("check", plan);
+        var review = await Native("review", PathOf(checkedRun, "Review", 1));
+        Assert.True(review.Json.GetProperty("Current").GetBoolean());
+        var observed = Assert.Single(review.Json.GetProperty("Result").GetProperty("Reproduced").EnumerateArray());
+        Assert.Equal(1, observed.GetProperty("Observed").GetInt32());
+        var structural = await Native("plan", fixture.Spec, fixture.Scratch, "-", "graph-on");
+        var structuralPlan = PathOf(structural, "Plan", 1);
+        using var graphs = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(
+            Path.GetDirectoryName(structuralPlan)!, "graph.json")));
+        Assert.False(graphs.RootElement.GetProperty("BuildAttested").GetBoolean());
+        Assert.Equal("Structural", graphs.RootElement.GetProperty("Graphs").GetProperty("rate").GetProperty("Status").GetString());
+        Assert.Equal(1, (await Native("check", structuralPlan)).Exit);
+        Assert.Equal("daemon sentinel", File.ReadAllText(fixture.DaemonReport));
+
+        var source = Path.GetDirectoryName(fixture.Spec)!;
+        var contracts = await NativeTool("check-contracts", PathOf(output, "Candidate"),
+            Path.Combine(source, "rules.json"), Path.Combine(source, "published.json"), fixture.Scratch, "24");
+        Assert.InRange(contracts.Exit, 0, 1);
+        Assert.True(contracts.Json.GetProperty("Compared").GetInt32() > 0);
+
+        Task<(int Exit, JsonElement Json, string Error)> Native(params string[] args) => NativeTool("paths", args);
+
+        async Task<(int Exit, JsonElement Json, string Error)> NativeTool(string command, params string[] args)
+        {
+            var start = new ProcessStartInfo(binary) { UseShellExecute = false, CreateNoWindow = true };
+            start.ArgumentList.Add(command);
+            foreach (var arg in args) start.ArgumentList.Add(arg);
+            start.Environment["SLOPHAWK_SCALAR_WORKER"] = worker;
+            start.Environment["SLOPHAWK_SCALAR_WORKER_SHA256"] = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(worker)));
+            start.Environment["SLOPHAWK_PATHS_GRANT"] = "native-qualification-fixture";
+            start.Environment["SLOPHAWK_PATHS_EPOCH"] = "scalar-fixture";
+            start.Environment["SLOPHAWK_PATHS_REVISION"] = "1";
+            start.Environment["SLOPHAWK_PATHS_BUDGET"] = "fixture-budget";
+            start.Environment["SLOPHAWK_PATHS_SEAL_KEY"] = fixture.Scratch.PadRight(32, '#');
+            return await Run(start);
+        }
+    }
+
+    [Fact]
     public async Task GraphPlanReplaysTheSameCandidateAndExposesLedgerAndStructuralFallback()
     {
         using var fixture = new Fixture();
@@ -103,6 +152,11 @@ public sealed class ScalarPathCheckTests
     {
         var start = Commands.Create(["paths", .. args]);
         start.ArgumentList[0] = Path.Combine(AppContext.BaseDirectory, "slophawk.dll");
+        return await Run(start);
+    }
+
+    private static async Task<(int Exit, JsonElement Json, string Error)> Run(ProcessStartInfo start)
+    {
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;
         using var process = Process.Start(start)!;

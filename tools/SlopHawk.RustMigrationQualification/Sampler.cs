@@ -18,9 +18,10 @@ internal sealed record SamplePoint(long SinceStartMilliseconds, int Processes,
 internal sealed record SampleCapture(string Platform, string Engine, string Scenario, string BinarySha256,
     int ElapsedMilliseconds, bool ScopeComplete, string[] ScopeOmissions, SamplePoint[] Samples);
 
-internal static class Sampler
+internal static partial class Sampler
 {
-    internal static async Task<SampleCapture> CaptureAsync(SampleSpec spec)
+    internal static async Task<SampleCapture> CaptureAsync(SampleSpec spec, Func<Task>? ready = null,
+        Func<Task<IReadOnlyList<double>>>? workload = null)
     {
         if (spec.SchemaVersion != 1 || (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) ||
             spec.Platform != (OperatingSystem.IsWindows() ? "windows" : "linux") ||
@@ -36,8 +37,10 @@ internal static class Sampler
 
         var errors = new HashSet<string>(StringComparer.Ordinal);
         var samples = new List<SamplePoint>();
-        var timer = Stopwatch.StartNew();
         using var scope = StartSampleProcess(spec);
+        if (ready is not null) await ready();
+        var timer = Stopwatch.StartNew();
+        var execution = workload?.Invoke();
         var recordedLatencies = ReadLatencies(spec.LatencyEventsPath);
         while (timer.ElapsedMilliseconds < spec.ElapsedMilliseconds)
         {
@@ -45,7 +48,7 @@ internal static class Sampler
             {
                 var roots = OperatingSystem.IsWindows()
                     ? WindowsProcesses(scope.RootPid)
-                    : LinuxProcesses(scope.RootPid, spec.LinuxCgroupPath);
+                    : LinuxProcesses(scope.RootPid, scope.CgroupPath);
                 if (roots.Count == 0 || !roots.Contains(scope.RootPid) && !scope.HasExited)
                     errors.Add("root_process_or_tree_missing");
                 double? privateBytes = null, commitBytes = null, jobBytes = null, pssBytes = null, cgroupBytes = null;
@@ -75,7 +78,7 @@ internal static class Sampler
                         if (pss is null) { errors.Add("linux_pss_unavailable"); continue; }
                         pssBytes += pss.Value;
                     }
-                    cgroupBytes = LinuxCgroupPeak(spec.LinuxCgroupPath);
+                    cgroupBytes = LinuxCgroupPeak(scope.CgroupPath);
                     if (cgroupBytes is null) errors.Add("missing_cgroup_peak");
                 }
                 samples.Add(new SamplePoint(timer.ElapsedMilliseconds, roots.Count,
@@ -96,6 +99,13 @@ internal static class Sampler
             errors.Add("insufficient_samples");
         if (!scope.EnrolledBeforeExecution)
             errors.Add("process_scope_not_enrolled_before_execution");
+        if (execution is not null)
+        {
+            if (!execution.IsCompleted) errors.Add("workload_outlasted_sample_scope");
+            var events = await execution;
+            for (var index = 0; index < Math.Min(events.Count, samples.Count); index++)
+                samples[index] = samples[index] with { LatencyMilliseconds = events[index] };
+        }
         return new SampleCapture(spec.Platform, spec.Engine, spec.Scenario, spec.BinarySha256,
             (int)timer.ElapsedMilliseconds, errors.Count == 0, errors.Order().ToArray(), samples.ToArray());
     }
@@ -122,18 +132,7 @@ internal static class Sampler
     {
         if (OperatingSystem.IsWindows())
             return WindowsJobScope.Start(spec);
-        // A bare Process.Start cannot enroll a process before first execution in a
-        // delegated cgroup. Collect observations but mark scope unqualified unless
-        // the owner uses an external supervisor and attests the containment gate.
-        var info = new ProcessStartInfo(spec.BinaryPath)
-        {
-            WorkingDirectory = spec.WorkingDirectory, UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        foreach (var arg in spec.Arguments)
-            info.ArgumentList.Add(arg);
-        var child = Process.Start(info) ?? throw new IOException("The sampled process did not start.");
-        return new LinuxSampleScope(child);
+        return LinuxMeasurementScope.Start(spec);
     }
 
     private abstract class SampleScope : IDisposable
@@ -141,24 +140,11 @@ internal static class Sampler
         internal abstract int RootPid { get; }
         internal abstract bool HasExited { get; }
         internal abstract bool EnrolledBeforeExecution { get; }
+        internal virtual string? CgroupPath => null;
         internal virtual double? ReadJobPeak() => null;
         internal virtual int? ReadJobActive() => null;
         internal abstract bool Drain();
         public abstract void Dispose();
-    }
-    private sealed class LinuxSampleScope(Process process) : SampleScope
-    {
-        internal override int RootPid => process.Id;
-        internal override bool HasExited => process.HasExited;
-        internal override bool EnrolledBeforeExecution => false;
-        internal override bool Drain()
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-            process.WaitForExit(5000);
-            return false; // no persisted, independently queried cgroup scope
-        }
-        public override void Dispose() => process.Dispose();
     }
 
     private static HashSet<int> LinuxProcesses(int root, string? cgroup)
