@@ -51,12 +51,12 @@ jobs:
           python3 -m venv --copies "$RUNNER_TEMP/voda-python"
           py="$RUNNER_TEMP/voda-python/bin/python3"
           mkdir "$RUNNER_TEMP/voda-wheelhouse"
-          "$py" -m pip download --only-binary=:all: --dest "$RUNNER_TEMP/voda-wheelhouse" pytest==8.4.2 pytest-json-report==1.5.0 pytest-metadata==3.1.1
-          "$py" -m pip install --no-index --find-links "$RUNNER_TEMP/voda-wheelhouse" pytest==8.4.2 pytest-json-report==1.5.0 pytest-metadata==3.1.1
+          "$py" -m pip download --only-binary=:all: --dest "$RUNNER_TEMP/voda-wheelhouse" pytest==9.0.2 pytest-json-report==1.5.0 pytest-metadata==3.1.1
+          "$py" -m pip install --no-index --find-links "$RUNNER_TEMP/voda-wheelhouse" pytest==9.0.2 pytest-json-report==1.5.0 pytest-metadata==3.1.1
           echo "VODA_PYTHON_BIN=$py" >> "$GITHUB_ENV"
           echo "VODA_PYTEST_SHA256=$(sha256sum "$RUNNER_TEMP"/voda-wheelhouse/pytest-*.whl | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
           echo "VODA_PLUGIN_SHA256=$(sha256sum "$RUNNER_TEMP"/voda-wheelhouse/pytest_json_report-*.whl | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
-          echo "VODA_EFFECTIVE_PYTEST_CONFIG_SHA256=$(printf '%s' 'pytest-8.4.2;pytest-json-report-1.5.0;fixture-testpaths=tests;autoload=off' | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          echo "VODA_EFFECTIVE_PYTEST_CONFIG_SHA256=$(printf '%s' 'pytest-9.0.2;pytest-json-report-1.5.0;fixture-testpaths=tests;autoload=off' | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
       - name: Run real language worker exchanges
         shell: bash
         run: |

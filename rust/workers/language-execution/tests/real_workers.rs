@@ -249,7 +249,10 @@ fn real_locked_cargo_two_package_graph_and_test_receipt() {
     };
     let capture = run(&scratch, test_job).unwrap();
     let classified = classify_cargo_test(&capture, &graph, &test).unwrap();
-    assert_eq!(classified.disposition, rust::Disposition::Passed, "{classified:?}");
+    let stderr = capture.payload()["stderr"].as_array().unwrap().iter().take(4096)
+        .map(|byte| byte.as_u64().unwrap() as u8).collect::<Vec<_>>();
+    assert_eq!(classified.disposition, rust::Disposition::Passed,
+        "{classified:?}\n{}", String::from_utf8_lossy(&stderr));
     assert!(classified.counters.unwrap().passed >= 1);
 }
 
@@ -287,9 +290,10 @@ fn real_fluxr_checked_and_unqualified_codec() {
     bad.identity.job_id = "fluxr-check-32".into();
     if let Operation::FluxrCheck { modules, .. } = &mut bad.operation {
         modules[0].codec = "compact".into();
+        bad.identity.source_sha256 = protocol::sha256(&serde_json::to_vec(modules).unwrap());
     }
     let denial = run(&scratch, bad).unwrap_err();
-    assert!(matches!(denial, Refusal::WorkerStatus { status: Status::Unsupported, .. }));
+    assert!(matches!(denial, Refusal::WorkerStatus { status: Status::Unsupported, .. }), "{denial:?}");
 }
 
 #[test]

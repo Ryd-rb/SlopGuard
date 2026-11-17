@@ -1,12 +1,61 @@
 use super::*;
 use std::collections::HashMap;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, ExitStatus};
 
 const SYSTEMD_RUN: &str = "/usr/bin/systemd-run";
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const HELPER_BUDGET: Duration = Duration::from_millis(700);
+
+struct OutputPipe {
+    reader: UnixStream,
+    remaining: usize,
+    closed: bool,
+}
+
+impl OutputPipe {
+    fn open(cap: usize) -> std::io::Result<(Self, Stdio)> {
+        let (reader, writer) = UnixStream::pair()?;
+        reader.set_nonblocking(true)?;
+        Ok((
+            Self {
+                reader,
+                remaining: cap,
+                closed: false,
+            },
+            Stdio::from(OwnedFd::from(writer)),
+        ))
+    }
+
+    fn drain(&mut self, file: &mut File) -> Result<(), String> {
+        if self.closed {
+            return Ok(());
+        }
+        let mut bytes = [0; 32 * 1024];
+        match self.reader.read(&mut bytes) {
+            Ok(0) => self.closed = true,
+            Ok(len) if len <= self.remaining => {
+                self.remaining -= len;
+                file.write_all(&bytes[..len])
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(_) => return Err("worker exceeded transport output limit".into()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                ()
+            }
+            Err(error) => return Err(format!("read scope output: {error}")),
+        }
+        Ok(())
+    }
+}
 
 struct Service {
     name: String,
@@ -468,10 +517,10 @@ fn run_service(
     if !budget.active(cancel) {
         return Err("worker cancelled before systemd admission".into());
     }
-    let (stdin, stdout, stderr) = files.stdio()?;
+    let (mut out, stdout) = OutputPipe::open(stdout_cap).map_err(|error| error.to_string())?;
+    let (mut err, stderr) = OutputPipe::open(stderr_cap).map_err(|error| error.to_string())?;
     let seconds = budget.remaining().as_secs().saturating_add(3).max(4);
     let runtime = format!("--property=RuntimeMaxSec={seconds}s");
-    let fsize = format!("--property=LimitFSIZE={}", stdout_cap.max(stderr_cap));
     let unit = format!("--unit={}", service.name);
     let mut command = user_manager(SYSTEMD_RUN)?;
     for name in &worker.env {
@@ -498,13 +547,12 @@ fn run_service(
             "--property=KillMode=control-group",
             "--property=SendSIGKILL=yes",
             runtime.as_str(),
-            fsize.as_str(),
             unit.as_str(),
             "--",
         ])
         .arg(&worker.program)
         .args(&worker.args)
-        .stdin(stdin)
+        .stdin(files.stdin()?)
         .stdout(stdout)
         .stderr(stderr)
         .spawn()
@@ -515,11 +563,11 @@ fn run_service(
             return Err(format!("systemd worker service launch failed: {error}"));
         }
     };
+    drop(command);
     let exchange = (|| -> Result<u32, String> {
         while budget.active(cancel) {
-            if !files.sizes_ok(stdout_cap, stderr_cap) {
-                return Err("worker exceeded transport output limit".into());
-            }
+            out.drain(&mut files.output)?;
+            err.drain(&mut files.error)?;
             let observation = show(&service.name, &files.directory, budget.remaining())?;
             if observation.load == "loaded" && observation.invocation.bytes().any(|b| b != b'0') {
                 let before = (service.invocation.clone(), service.group.clone());
@@ -540,8 +588,14 @@ fn run_service(
                     // systemd-run --wait waits for the service to become
                     // inactive. Stop it only after saving its terminal proof.
                     remove(&service, &files.directory);
+                    let mut launcher = None;
                     loop {
-                        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                        out.drain(&mut files.output)?;
+                        err.drain(&mut files.error)?;
+                        if launcher.is_none() {
+                            launcher = child.try_wait().map_err(|e| e.to_string())?;
+                        }
+                        if let Some(status) = launcher.filter(|_| out.closed && err.closed) {
                             return if status.code().and_then(|code| u32::try_from(code).ok())
                                 == Some(code)
                             {

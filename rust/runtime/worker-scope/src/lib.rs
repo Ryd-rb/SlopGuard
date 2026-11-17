@@ -1,8 +1,7 @@
 //! Worker lifetime is an OS scope, not merely the PID returned by Command::spawn.
 //!
-//! Stdio is backed by private, seekable files: a peer that never reads stdin or
-//! leaves stdout/stderr inherited by descendants cannot strand a writer/reader
-//! thread. The supervisor has one wall-clock budget for admission, execution,
+//! Input is staged in a private file. Output is captured without an unbounded
+//! wait on descendants. The supervisor has one budget for admission, execution,
 //! exit, observation, cancellation, and drain. No fact is returned without a
 //! successful direct worker exit AND positive scope drainage evidence.
 use std::ffi::OsString;
@@ -112,11 +111,9 @@ impl Files {
             .map_err(|e| format!("cannot create private worker file: {e}"))
     }
     #[cfg(target_os = "linux")]
-    fn stdio(&self) -> Result<(Stdio, Stdio, Stdio), String> {
-        Ok((
-            Stdio::from(self.input.try_clone().map_err(|e| e.to_string())?),
-            Stdio::from(self.output.try_clone().map_err(|e| e.to_string())?),
-            Stdio::from(self.error.try_clone().map_err(|e| e.to_string())?),
+    fn stdin(&self) -> Result<Stdio, String> {
+        Ok(Stdio::from(
+            self.input.try_clone().map_err(|e| e.to_string())?,
         ))
     }
     fn read_limited(file: &mut File, cap: usize) -> Result<Vec<u8>, String> {
@@ -133,6 +130,7 @@ impl Files {
         }
         Ok(bytes)
     }
+    #[cfg(target_os = "windows")]
     fn sizes_ok(&self, stdout_cap: usize, stderr_cap: usize) -> bool {
         self.output
             .metadata()
