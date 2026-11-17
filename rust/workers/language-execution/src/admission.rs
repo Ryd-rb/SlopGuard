@@ -250,12 +250,22 @@ pub fn run_admitted(profile_path: &Path, job: Job, cancelled: &AtomicBool) -> Re
                 deadline: std::time::Duration::from_millis(job.budget.deadline_ms),
             }, cancelled, &current) {
             Ok(output) => output,
-            Err(_) if cancelled.load(Ordering::Acquire) => return Err(Refusal::WorkerStatus {
-                status: protocol::Status::Cancelled, reasons: vec!["cancelled_during_execution".into()],
-                omissions: vec!["receipt_discarded".into()],
-            }),
-            Err(_) if !current() => return Err(Refusal::Stale("authority revoked during execution")),
-            Err(_) => return Err(Refusal::Failed("worker launch, deadline or scope drainage failed")),
+            Err(reason) => {
+                if std::env::var_os("SLOPHAWK_SCOPE_DIAGNOSTICS").is_some() {
+                    eprintln!("language worker scope: {}", reason.chars().take(600).collect::<String>());
+                }
+                if slophawk_worker_scope::recover(std::time::Duration::from_secs(3)).is_ok() {
+                    let _ = fs::remove_dir_all(&artifact_dir);
+                }
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(Refusal::WorkerStatus {
+                        status: protocol::Status::Cancelled, reasons: vec!["cancelled_during_execution".into()],
+                        omissions: vec!["receipt_discarded".into()],
+                    });
+                }
+                if !current() { return Err(Refusal::Stale("authority revoked during execution")); }
+                return Err(Refusal::Failed("worker launch, deadline or scope drainage failed"));
+            }
         };
         let result = (|| {
             if output.code != 0 {

@@ -287,6 +287,24 @@ struct Invocation {
     env: Vec<OsString>,
 }
 
+/// Prove any interrupted scope has drained under the same user-wide admission
+/// lock used at launch. Nothing from a repository can select a recovery target.
+pub fn recover(deadline: Duration) -> Result<(), String> {
+    let current = || true;
+    let budget = Budget {
+        started: Instant::now(),
+        limit: deadline,
+        current: &current,
+    };
+    let cancel = AtomicBool::new(false);
+    #[cfg(target_os = "windows")]
+    return windows::recover(&budget, &cancel);
+    #[cfg(target_os = "linux")]
+    return linux::recover(&budget, &cancel);
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    Err("unsupported worker recovery platform".into())
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 

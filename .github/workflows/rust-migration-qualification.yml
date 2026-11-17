@@ -62,6 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           export CARGO_NET_OFFLINE=true
+          export SLOPHAWK_SCOPE_DIAGNOSTICS=1
           cargo +1.99.1 test --locked --offline --manifest-path rust/runtime/worker-scope/Cargo.toml
           cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml
           cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml --test real_workers -- --ignored --nocapture --test-threads=1

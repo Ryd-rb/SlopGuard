@@ -104,8 +104,8 @@ fn read_record(path: &Path) -> Result<Option<Service>, String> {
             .strip_prefix("slophawk-shadow-")
             .and_then(|s| s.strip_suffix(".service"))
             .is_some_and(hex)
-        || invocation.is_empty() != group.is_empty()
-        || !invocation.is_empty() && (!hex(invocation) || !safe_group(group, name))
+        || !invocation.is_empty() && !hex(invocation)
+        || !group.is_empty() && (invocation.is_empty() || !safe_group(group, name))
     {
         return Err("invalid Linux worker recovery record".into());
     }
@@ -124,12 +124,13 @@ fn recover_pending(path: &Path, transport: &Path, remaining: Duration) -> Result
     if discovered.load == "not-found" {
         // A planned launch may still be in flight after a crash. An absent
         // previously pinned invocation and cgroup can be safely retired.
-        let group = service
-            .group
-            .as_deref()
-            .ok_or("unconfirmed Linux worker launch; recovery blocked")?;
-        if populated(group, &service.name)?.is_some() {
-            return Err("Linux worker cgroup still exists without its manager identity".into());
+        if service.invocation.is_none() {
+            return Err("unconfirmed Linux worker launch; recovery blocked".into());
+        }
+        if let Some(group) = &service.group {
+            if populated(group, &service.name)?.is_some() {
+                return Err("Linux worker cgroup still exists without its manager identity".into());
+            }
         }
     } else {
         verified(&mut service, &discovered)?;
@@ -147,6 +148,9 @@ struct Observation {
     load: String,
     active: String,
     sub: String,
+    exit_type: String,
+    kill_mode: String,
+    remain: String,
     invocation: String,
     group: String,
     result: String,
@@ -226,15 +230,13 @@ fn show(service: &str, directory: &Path, remaining: Duration) -> Result<Observat
             "--user",
             "--no-pager",
             "show",
-            "--property=LoadState,ActiveState,SubState,InvocationID,ControlGroup,Result,ExecMainCode,ExecMainStatus",
+            "--all",
+            "--property=LoadState,ActiveState,SubState,InvocationID,ControlGroup,Result,ExecMainCode,ExecMainStatus,ExitType,KillMode,RemainAfterExit",
             service,
         ],
         directory,
         remaining,
     )?;
-    if !status.success() {
-        return Err("systemctl show did not authenticate the worker scope".into());
-    }
     let mut values = HashMap::new();
     for line in lines.lines() {
         let (key, value) = line
@@ -250,15 +252,25 @@ fn show(service: &str, directory: &Path, remaining: Duration) -> Result<Observat
             .map(|v| (*v).to_owned())
             .ok_or_else(|| format!("missing systemctl scope property {k}"))
     };
+    let load = get("LoadState")?;
+    // systemctl returns a failure status for an otherwise authenticated
+    // not-found observation. Missing manager output never implies absence.
+    if !status.success() && load != "not-found" {
+        return Err("systemctl show did not authenticate the worker scope".into());
+    }
+    let value = |key: &str| values.get(key).copied().unwrap_or_default().to_owned();
     Ok(Observation {
-        load: get("LoadState")?,
-        active: get("ActiveState")?,
-        sub: get("SubState")?,
-        invocation: get("InvocationID")?,
-        group: get("ControlGroup")?,
-        result: get("Result")?,
-        main_code: get("ExecMainCode")?,
-        main_status: get("ExecMainStatus")?,
+        load,
+        active: value("ActiveState"),
+        sub: value("SubState"),
+        exit_type: value("ExitType"),
+        kill_mode: value("KillMode"),
+        remain: value("RemainAfterExit"),
+        invocation: value("InvocationID"),
+        group: value("ControlGroup"),
+        result: value("Result"),
+        main_code: value("ExecMainCode"),
+        main_status: value("ExecMainStatus"),
     })
 }
 fn safe_group(group: &str, unit: &str) -> bool {
@@ -296,6 +308,10 @@ fn verified(service: &mut Service, o: &Observation) -> Result<(), String> {
     if o.load != "loaded"
         || o.invocation.len() != 32
         || !o.invocation.bytes().all(|b| b.is_ascii_hexdigit())
+        || o.invocation.bytes().all(|b| b == b'0')
+        || o.exit_type != "cgroup"
+        || o.kill_mode != "control-group"
+        || o.remain != "yes"
     {
         return Err("systemd unit lacked authenticated invocation identity".into());
     }
@@ -319,10 +335,7 @@ fn verified(service: &mut Service, o: &Observation) -> Result<(), String> {
     {
         return Err("worker scope changed cgroup".into());
     }
-    if service.group.is_none() {
-        if !safe_group(&o.group, &service.name) {
-            return Err("worker cgroup could not be pinned".into());
-        }
+    if service.group.is_none() && !o.group.is_empty() {
         service.group = Some(o.group.clone());
     }
     service
@@ -333,22 +346,25 @@ fn verified(service: &mut Service, o: &Observation) -> Result<(), String> {
 fn drained(service: &mut Service, directory: &Path, remaining: Duration) -> Result<bool, String> {
     let o = show(&service.name, directory, remaining)?;
     verified(service, &o)?;
-    let terminal = (o.active == "inactive" && o.sub == "dead")
-        || (o.active == "active" && o.sub == "exited")
-        || (o.active == "failed" && o.sub == "failed");
+    terminal_drained(service, &o)
+}
+
+fn terminal_drained(service: &Service, o: &Observation) -> Result<bool, String> {
+    let terminal = matches!(
+        (o.active.as_str(), o.sub.as_str()),
+        ("inactive", "dead") | ("active", "exited") | ("failed", "failed")
+    );
     if !terminal {
         return Ok(false);
     }
-    // A missing *previously pinned* cgroup is a drainage witness only if
-    // the same manager invocation is terminal. Missing before pinning fails.
-    Ok(matches!(
-        populated(
-            service.group.as_deref().ok_or("unpinned worker cgroup")?,
-            &service.name
-        )?,
-        Some(false) | None
-    ))
+    // ExitType=cgroup makes the authenticated terminal authoritative even if
+    // systemd has already removed the empty group of a very short-lived peer.
+    match &service.group {
+        Some(group) => Ok(populated(group, &service.name)? != Some(true)),
+        None => Ok(true),
+    }
 }
+
 fn kill(service: &Service, directory: &Path, deadline: Duration) -> Result<(), String> {
     let (status, _) = helper(
         SYSTEMCTL,
@@ -427,30 +443,7 @@ pub(super) fn run(
     budget: &Budget,
     cancel: &AtomicBool,
 ) -> Result<u32, String> {
-    let directory = runtime_directory()?;
-    let lease = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(0x20000)
-        .open(directory.join("admission.lock"))
-        .map_err(|error| error.to_string())?;
-    let metadata = lease.metadata().map_err(|error| error.to_string())?;
-    if !metadata.is_file() || metadata.mode() & 0o077 != 0 {
-        return Err("Linux worker lease is not an ordinary private file".into());
-    }
-    while budget.active(cancel) {
-        match lease.try_lock() {
-            Ok(()) => break,
-            Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(POLL),
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    if !budget.active(cancel) {
-        return Err("Linux worker admission deadline or revocation".into());
-    }
+    let (directory, _lease) = acquire(budget, cancel)?;
     let pending = directory.join("pending");
     recover_pending(&pending, &files.directory, budget.remaining())?;
     let result = run_service(
@@ -499,6 +492,8 @@ fn run_service(
             "--wait",
             "--pipe",
             "--service-type=exec",
+            "--remain-after-exit",
+            "--property=ExitType=cgroup",
             "--expand-environment=no",
             "--property=KillMode=control-group",
             "--property=SendSIGKILL=yes",
@@ -520,99 +515,108 @@ fn run_service(
             return Err(format!("systemd worker service launch failed: {error}"));
         }
     };
-    let mut pinned = false;
-    let mut exit = None;
-    let mut reason: Option<String> = None;
-    while budget.active(cancel) {
-        if !files.sizes_ok(stdout_cap, stderr_cap) {
-            reason = Some("worker exceeded transport output limit".into());
-            break;
-        }
-        if !pinned {
-            if let Ok(o) = show(&service.name, &files.directory, budget.remaining()) {
-                if o.load == "loaded" {
-                    if let Err(e) = verified(&mut service, &o) {
-                        reason = Some(e);
-                        break;
+    let exchange = (|| -> Result<u32, String> {
+        while budget.active(cancel) {
+            if !files.sizes_ok(stdout_cap, stderr_cap) {
+                return Err("worker exceeded transport output limit".into());
+            }
+            let observation = show(&service.name, &files.directory, budget.remaining())?;
+            if observation.load == "loaded" && observation.invocation.bytes().any(|b| b != b'0') {
+                let before = (service.invocation.clone(), service.group.clone());
+                verified(&mut service, &observation)?;
+                if before != (service.invocation.clone(), service.group.clone()) {
+                    set_record(pending, &service)?;
+                }
+                if terminal_drained(&service, &observation)? {
+                    let code = observation
+                        .main_status
+                        .parse::<u32>()
+                        .map_err(|_| "invalid scoped worker exit code")?;
+                    if observation.main_code != "1"
+                        || !matches!(observation.result.as_str(), "success" | "exit-code")
+                    {
+                        return Err("scoped worker did not exit normally".into());
                     }
-                    if let Err(error) = set_record(pending, &service) {
-                        reason = Some(error);
-                        break;
+                    // systemd-run --wait waits for the service to become
+                    // inactive. Stop it only after saving its terminal proof.
+                    remove(&service, &files.directory);
+                    loop {
+                        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                            return if status.code().and_then(|code| u32::try_from(code).ok())
+                                == Some(code)
+                            {
+                                Ok(code)
+                            } else {
+                                Err("worker and service exit identities differ".into())
+                            };
+                        }
+                        if !budget.active(cancel) {
+                            return Err(
+                                "systemd launcher did not exit after the drained service stopped"
+                                    .into(),
+                            );
+                        }
+                        std::thread::sleep(POLL);
                     }
-                    pinned = true;
                 }
             }
-        }
-        match child.try_wait() {
-            Ok(Some(code)) => {
-                exit = Some(code);
-                break;
+            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                return Err(format!(
+                    "systemd launcher exited without a terminal scope: {status}"
+                ));
             }
-            Ok(None) => std::thread::sleep(POLL),
-            Err(e) => {
-                reason = Some(format!("systemd-run wait: {e}"));
-                break;
-            }
+            std::thread::sleep(POLL);
         }
-    }
-    if !pinned {
-        reason.get_or_insert_with(|| "missing authenticated worker cgroup/InvocationID".into());
-    }
-    if !budget.active(cancel) {
-        reason.get_or_insert_with(|| "C# worker deadline or cancellation".into());
-    }
-    if reason.is_some() || exit.is_none() {
-        // Never treat process-group signaling as containment. Kill the unit,
-        // then require manager+cgroup evidence; errors remain failures.
-        let killed = kill(&service, &files.directory, DRAIN_GRACE);
+        Err("worker deadline, cancellation or authority revocation".into())
+    })();
+    if let Err(reason) = exchange {
+        // On failure leave an unverified record in place. A later owner
+        // must recover it under the same lease before a new scope can run.
+        let recovery = recover_pending(pending, &files.directory, DRAIN_GRACE);
         let _ = child.kill();
         let _ = child.try_wait();
-        let drain = if pinned {
-            until_drained(&mut service, &files.directory, DRAIN_GRACE)
-        } else {
-            Err("scope identity never pinned; drain not proven".into())
-        };
-        if drain.is_ok() {
-            remove(&service, &files.directory);
-        }
         return Err(format!(
-            "{}; scope kill: {}; scope drain: {}",
-            reason.unwrap_or_else(|| "worker did not exit".into()),
-            killed.err().unwrap_or_else(|| "sent".into()),
-            drain.err().unwrap_or_else(|| "verified".into())
+            "{reason}; scope recovery: {}",
+            recovery.err().as_deref().unwrap_or("verified")
         ));
     }
-    let exit = exit.ok_or("worker scope manager lacked an exit status")?;
-    if !pinned {
-        return Err("worker scope identity not authenticated".into());
+    exchange
+}
+
+fn acquire(budget: &Budget, cancel: &AtomicBool) -> Result<(PathBuf, File), String> {
+    let directory = runtime_directory()?;
+    let lease = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(0x20000)
+        .open(directory.join("admission.lock"))
+        .map_err(|error| error.to_string())?;
+    let metadata = lease.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.mode() & 0o077 != 0 {
+        return Err("Linux worker lease is not an ordinary private file".into());
     }
-    if let Err(e) = until_drained(&mut service, &files.directory, budget.remaining()) {
-        // The launcher may exit before descendants. Never strand the unit
-        // when normal completion cannot prove process-tree drainage.
-        let killed = kill(&service, &files.directory, DRAIN_GRACE);
-        let drain = until_drained(&mut service, &files.directory, DRAIN_GRACE);
-        if drain.is_ok() {
-            remove(&service, &files.directory);
+    while budget.active(cancel) {
+        match lease.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(POLL),
+            Err(error) => return Err(error.to_string()),
         }
-        return Err(format!(
-            "{e}; recursive kill: {}; drain: {}",
-            killed.err().unwrap_or_else(|| "sent".into()),
-            drain.err().unwrap_or_else(|| "verified".into())
-        ));
     }
-    let o = show(&service.name, &files.directory, budget.remaining())?;
-    verified(&mut service, &o)?;
-    let code = o
-        .main_status
-        .parse::<u32>()
-        .map_err(|_| "invalid scoped worker exit code")?;
-    let status_ok = o.main_code == "1" && (o.result == "success" || o.result == "exit-code");
-    remove(&service, &files.directory);
-    if !status_ok || exit.code().and_then(|c| u32::try_from(c).ok()) != Some(code) {
-        return Err("worker and service exit identities differ".into());
+    if !budget.active(cancel) {
+        return Err("Linux worker admission deadline or revocation".into());
     }
-    if !files.sizes_ok(stdout_cap, stderr_cap) {
-        return Err("worker output exceeded byte cap".into());
-    }
-    Ok(code)
+    Ok((directory, lease))
+}
+
+pub(super) fn recover(budget: &Budget, cancel: &AtomicBool) -> Result<(), String> {
+    let (directory, _lease) = acquire(budget, cancel)?;
+    let transport = Files::new(&[])?;
+    recover_pending(
+        &directory.join("pending"),
+        &transport.directory,
+        budget.remaining(),
+    )
 }

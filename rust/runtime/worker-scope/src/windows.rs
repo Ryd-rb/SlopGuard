@@ -404,18 +404,7 @@ pub(super) fn run_recoverable(
     budget: &Budget,
     cancel: &AtomicBool,
 ) -> Result<u32, String> {
-    let directory = recovery_directory()?;
-    let lease = open_record(&directory.join("admission.lock"), false)?;
-    while budget.active(cancel) {
-        match lease.try_lock() {
-            Ok(()) => break,
-            Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(POLL),
-            Err(error) => return Err(format!("worker admission lock: {error}")),
-        }
-    }
-    if !budget.active(cancel) {
-        return Err("Windows worker admission deadline/cancellation".into());
-    }
+    let (directory, _lease) = acquire(budget, cancel)?;
     let pending = directory.join("pending");
     recover_pending(&pending, budget.remaining())?;
     let mut entropy = [0u8; 16];
@@ -669,4 +658,25 @@ mod tests {
         assert_eq!(unsafe { WaitForSingleObject(child.0, 3000) }, WAIT_OBJECT_0);
         assert!(!path.exists());
     }
+}
+
+fn acquire(budget: &Budget, cancel: &AtomicBool) -> Result<(PathBuf, File), String> {
+    let directory = recovery_directory()?;
+    let lease = open_record(&directory.join("admission.lock"), false)?;
+    while budget.active(cancel) {
+        match lease.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(POLL),
+            Err(error) => return Err(format!("worker admission lock: {error}")),
+        }
+    }
+    if !budget.active(cancel) {
+        return Err("Windows worker admission deadline/cancellation".into());
+    }
+    Ok((directory, lease))
+}
+
+pub(super) fn recover(budget: &Budget, cancel: &AtomicBool) -> Result<(), String> {
+    let (directory, _lease) = acquire(budget, cancel)?;
+    recover_pending(&directory.join("pending"), budget.remaining())
 }
