@@ -84,7 +84,7 @@ internal static class ContractCheck
 
         async Task SearchAsync(int count, int seed)
         {
-            foreach (var batch in catalog.Generate(count, seed, remaining).Chunk(768))
+            foreach (var batch in catalog.Generate(count, seed, remaining, guideWithBoundaries: seed != 0).Chunk(768))
             {
                 var cases = batch.Where(item => remaining.Contains(item.Operation) &&
                     tested.Add((item.Operation, string.Join(',', item.Args)))).ToArray();

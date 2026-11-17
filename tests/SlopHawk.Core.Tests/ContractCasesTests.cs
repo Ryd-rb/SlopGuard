@@ -46,6 +46,20 @@ public sealed class ContractCasesTests
         Assert.All(catalog.Generate(25, 4), item => Assert.Equal("Guarded", item.Operation));
     }
 
+    [Fact]
+    public void GuidedSearchExercisesDeclaredDistantBoundaries()
+    {
+        var rule = new IntegerContract("Threshold", ["units"], "0 <= units && units <= 910",
+            "units >= 811 ? 2 : 1", "threshold.md");
+        var catalog = new ContractCases([rule], [Example("Threshold", [3], 1)]);
+        var cases = catalog.Generate(40, 1, guideWithBoundaries: true).ToArray();
+
+        Assert.Contains(cases, item => item.Args[0] == 910 && item.Expected.GetInt64() == 2);
+        Assert.Contains(cases, item => item.Args[0] == 810 && item.Expected.GetInt64() == 1);
+        Assert.Contains(cases, item => item.Args[0] == 811 && item.Expected.GetInt64() == 2);
+        Assert.All(cases, item => Assert.InRange(item.Args[0], 0, 910));
+    }
+
     private static ProbeExpectation Example(string operation, long[] args, long value) =>
         new(operation, args, JsonSerializer.SerializeToElement(value));
 }

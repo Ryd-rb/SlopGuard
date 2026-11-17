@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Numerics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace SlopHawk.Core;
 
@@ -53,7 +55,8 @@ public sealed class ContractCases
         rules = [.. rulesToRun];
     }
 
-    public IEnumerable<ProbeExpectation> Generate(int perOperation, int seed, ISet<string>? operations = null)
+    public IEnumerable<ProbeExpectation> Generate(int perOperation, int seed, ISet<string>? operations = null,
+        bool guideWithBoundaries = false)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(perOperation, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(perOperation, 8192);
@@ -66,22 +69,22 @@ public sealed class ContractCases
             var random = new Random(seed);
             var anchors = Math.Min(32, rule.Ordinary.Length);
             var legal = rule.Ordinary.Take(anchors).Select(example => example.Args).ToList();
-            var probes = ProbeReplay.Plan(rule.Ordinary.Select(example => new ProbeInput(example.Operation, example.Args)),
+            using var probes = ProbeReplay.Plan(rule.Ordinary.Select(example => new ProbeInput(example.Operation, example.Args)),
                 Math.Max(32, perOperation), seed).GetEnumerator();
-            using (probes)
+            using var boundaries = rule.BoundaryPoints().GetEnumerator();
+            for (var attempt = 0; attempt < perOperation * 48 && emitted < perOperation; attempt++)
             {
-                for (var attempt = 0; attempt < perOperation * 48 && emitted < perOperation; attempt++)
-                {
-                    var point = attempt % 3 == 0 && probes.MoveNext() ? probes.Current.Args : rule.Mutate(legal, random);
-                    if (!seen.Add(Key(point)) || !rule.TryExpected(point, out var value))
-                        continue;
-                    if (legal.Count < 64)
-                        legal.Add(point);
-                    else
-                        legal[random.Next(anchors, legal.Count)] = point;
-                    emitted++;
-                    yield return new(rule.Definition.Operation, point, JsonSerializer.SerializeToElement(value));
-                }
+                var point = guideWithBoundaries && attempt % 4 == 0 && boundaries.MoveNext() ? boundaries.Current
+                    : attempt % 3 == 0 && probes.MoveNext() ? probes.Current.Args
+                    : rule.Mutate(legal, random, guideWithBoundaries);
+                if (!seen.Add(Key(point)) || !rule.TryExpected(point, out var value))
+                    continue;
+                if (legal.Count < 64)
+                    legal.Add(point);
+                else
+                    legal[random.Next(anchors, legal.Count)] = point;
+                emitted++;
+                yield return new(rule.Definition.Operation, point, JsonSerializer.SerializeToElement(value));
             }
         }
     }
@@ -94,6 +97,8 @@ public sealed class ContractCases
         private readonly Func<BigInteger[], BigInteger> expected;
         private readonly Func<BigInteger[], BigInteger>[] locals;
         private readonly long[][] atoms;
+        private readonly long[][] landmarks;
+        private readonly long[][] guidedAtoms;
         public IntegerContract Definition { get; }
         public ProbeExpectation[] Ordinary { get; }
 
@@ -123,6 +128,11 @@ public sealed class ContractCases
             }
             locals = [.. compiled];
             expected = new ContractExpression(definition.Expected, names).Compile();
+            var expressions = string.Join('\n', new[] { definition.Domain, definition.Expected }
+                .Concat(definition.Let?.Values ?? Enumerable.Empty<string>()));
+            var bounds = LiteralBoundaries(expressions);
+            landmarks = parameters.Select(name => bounds[name].Concat(definition.Basis?.GetValueOrDefault(name) ?? [])
+                .SelectMany(value => new[] { value, Offset(value, -1), Offset(value, 1) }).Distinct().Take(64).ToArray()).ToArray();
             atoms = parameters.Select((name, index) =>
             {
                 long[] standard = [-1, 0, 1, 2, 3, 4, 5, 7, 8, 10, 15, 16, 20];
@@ -131,6 +141,19 @@ public sealed class ContractCases
                 return anchors.SelectMany(value => new[] { value, Offset(value, -1), Offset(value, 1) })
                     .Concat(standard).Distinct().ToArray();
             }).ToArray();
+            guidedAtoms = atoms.Select((values, index) => values.Concat(landmarks[index]).Distinct().ToArray()).ToArray();
+        }
+
+        public IEnumerable<long[]> BoundaryPoints()
+        {
+            foreach (var example in Ordinary)
+                for (var field = 0; field < landmarks.Length; field++)
+                    foreach (var value in landmarks[field])
+                    {
+                        var point = example.Args.ToArray();
+                        point[field] = value;
+                        yield return point;
+                    }
         }
 
         public bool TryExpected(long[] input, out long result)
@@ -154,9 +177,10 @@ public sealed class ContractCases
             }
         }
 
-        public long[] Mutate(IReadOnlyList<long[]> legal, Random random)
+        public long[] Mutate(IReadOnlyList<long[]> legal, Random random, bool guided)
         {
             var point = legal[random.Next(legal.Count)].ToArray();
+            var palette = guided ? guidedAtoms : atoms;
             var changes = random.Next(5) switch
             {
                 0 => 1, 1 => 2, 2 => Math.Min(3, point.Length), 3 => point.Length, _ => random.Next(1, point.Length + 1)
@@ -170,11 +194,24 @@ public sealed class ContractCases
                     0 => Offset(target, random.Next(-1, 2)),
                     1 => Offset(point[index], random.Next(-3, 4)),
                     2 => Offset(point[random.Next(point.Length)], random.Next(-1, 2)),
-                    _ => atoms[index][random.Next(atoms[index].Length)]
+                    _ => palette[index][random.Next(palette[index].Length)]
                 };
             }
             return point;
         }
+    }
+
+    private static ILookup<string, long> LiteralBoundaries(string expressions)
+    {
+        const string forward = @"\b(?<name>[A-Za-z_]\w*)\s*(?:<=|>=|==|!=|<|>)\s*(?<number>-?[0-9]+)\b";
+        const string reverse = @"(?<![\w.])(?<number>-?[0-9]+)\s*(?:<=|>=|==|!=|<|>)\s*(?<name>[A-Za-z_]\w*)\b";
+        return Regex.Matches(expressions, forward, RegexOptions.CultureInvariant)
+            .Concat(Regex.Matches(expressions, reverse, RegexOptions.CultureInvariant))
+            .Select(match => (Name: match.Groups["name"].Value,
+                Value: long.TryParse(match.Groups["number"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                    ? (long?)value : null))
+            .Where(item => item.Value.HasValue)
+            .ToLookup(item => item.Name, item => item.Value.GetValueOrDefault(), StringComparer.Ordinal);
     }
 
     private static long Offset(long value, int delta) => (long)Int128.Clamp((Int128)value + delta, long.MinValue, long.MaxValue);
