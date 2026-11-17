@@ -53,7 +53,8 @@ public sealed class ProjectEvaluator(Workspace workspace)
         }
     }
 
-    internal async Task<ProjectGraph> EvaluateAsync(WorkerLease? worker, CancellationToken cancellationToken)
+    internal async Task<ProjectGraph> EvaluateAsync(WorkerLease? worker, CancellationToken cancellationToken,
+        string? pinnedDotnet = null)
     {
         buildSnapshot = null;
         var rootIdentity = RootIdentity.Read(workspace.Root);
@@ -61,8 +62,8 @@ public sealed class ProjectEvaluator(Workspace workspace)
         deadline.CancelAfter(TimeSpan.FromSeconds(45));
         var token = deadline.Token;
         var issues = new List<ProjectEvaluationIssue>();
-        var dotnet = FindDotnet();
-        if (dotnet is null)
+        var dotnet = pinnedDotnet ?? FindDotnet();
+        if (dotnet is null || !Path.IsPathFullyQualified(dotnet) || InsideRoot(dotnet) || !File.Exists(dotnet))
             return new ProjectGraph([], [new ProjectEvaluationIssue(".", "dotnet_unavailable")]);
         var evaluated = new List<RawTarget>();
         var inputs = new SortedDictionary<string, string>(Workspace.PathComparer);

@@ -51,7 +51,9 @@ public static class Program
         {
             // The caller owns the outer OS scope for this read-only tool operation.
             var workspace = new Workspace(root);
-            var graph = await new ProjectEvaluator(workspace).EvaluateAsync(worker: null, CancellationToken.None);
+            // This mode runs through the caller's pinned `dotnet exec`, including under a user service.
+            var dotnet = Environment.ProcessPath ?? throw new IOException("The pinned dotnet host path is unavailable.");
+            var graph = await new ProjectEvaluator(workspace).EvaluateAsync(worker: null, CancellationToken.None, dotnet);
             using var output = Console.OpenStandardOutput();
             await JsonSerializer.SerializeAsync(output, graph, new JsonSerializerOptions(JsonSerializerDefaults.Web));
             return graph.Complete ? 0 : 1;

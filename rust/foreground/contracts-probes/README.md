@@ -23,19 +23,12 @@ field names, including `slophawk-contract-search-v1` qualification and summary,
 `probes methods` reads assemblies with the [Rust managed-method checker](../../checkers/managed-methods/README.md).
 The native public shell shares the contract qualification and passive probe commands.
 
-## Explicit C# peer, execution and authority
+## Scoped adapter execution and evidence
 
-For `check-contracts`, set `SLOPHAWK_CSHARP_CLI` to the path of the **published C#**
-`slophawk` executable (default command lookup `slophawk`). The Rust program calls
-its **public** `check <assembly.dll> <cases.json> <workspace> [run-verb [prepare-verb]]`
-command directly, without a shell, and admits only status 0 or 1 accompanied by a
-complete receipt. The passed workspace is a private *staging subdirectory* of the
-caller-supplied workspace's `.slophawk/contract-searches/<search>/`. C# owns the
-actual `dotnet exec` adapter, prepare verb, timeout and output limits.
-
-The Rust caller verifies the terminal run ID, expected staged paths, candidate
-assembly SHA-256, run/prepare verbs, ordered requests, exact raw observations,
-result counts and findings, `Expected` values, and report/receipt consistency.
+`check-contracts` uses the shared Rust foreground checker for ordered batches.
+The checker executes the supplied .NET adapter and optional preparation verb
+within the OS worker scope. It validates the candidate SHA-256 and ordered
+requests and captures bounded observations before publishing evidence.
 If the peer fails or evidence disagrees, the attempt staging tree is discarded.
 Across batches the candidate must remain byte-identical. Successful initial
 search receipts stay under contract-search evidence; a separate successful replay
@@ -44,14 +37,9 @@ there. A `ReplayChanges` element retains `Before` and `After` as unnormalized JS
 including `null`, newly appeared and vanished mismatches. Missing or unstable
 replay never authorizes publication of that witness.
 
-The C# command is **not** spawned during Rust qualification or probe planning.
-Calling `check-contracts` is explicit operator authorization to execute the
-published C# check; no JSON rule, candidate output, IL hint, or repository text
-can grant more authority. There is no new private execution transport: the
-existing public argv/file/receipt interface is used, so `slophawk.migration-job/1`
-is not silently substituted for shipped IPC or Roslyn frame-v1. Any future
-internal peer transport must use that versioned, capped frame protocol with
-full job/root/revision/authority identity and a verified terminal.
+`check-contracts` uses the explicit assembly supplied by the operator as the
+adapter. Contract qualification and passive probes read their inputs without
+starting a worker.
 
 ## IL-literal hints (documented *data* boundary)
 

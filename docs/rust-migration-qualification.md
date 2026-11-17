@@ -1,7 +1,8 @@
 # Rust migration: engine selection, state transfer and release qualification
 
 SG-MIG-14 provides explicit state transfer to the installed Rust peer and a
-rollback path. The peer can inspect and reconcile transferred state on request.
+rollback path. The Rust resident daemon serves the transferred workspace and
+the public MCP tool projection through authenticated local IPC.
 Default native promotion requires the compatible daemon and MCP surface, the
 full parity matrix, and matched performance evidence below.
 
@@ -14,8 +15,10 @@ silent fallback when an explicit native selection is unsupported.
 
 ```text
 slophawk engine transfer /absolute/outside/checkout/native-profile.json PROFILE_SHA256 --root <checkout>
+slophawk engine native /absolute/outside/checkout/native-profile.json PROFILE_SHA256 -- start --root <checkout>
 slophawk engine native /absolute/outside/checkout/native-profile.json PROFILE_SHA256 -- status --root <checkout>
 slophawk engine native /absolute/outside/checkout/native-profile.json PROFILE_SHA256 -- recheck --root <checkout>
+slophawk engine native /absolute/outside/checkout/native-profile.json PROFILE_SHA256 -- mcp --root <checkout>
 slophawk engine rollback /absolute/outside/checkout/native-profile.json PROFILE_SHA256 --root <checkout>
 ```
 
@@ -46,10 +49,11 @@ nor an unsigned receipt grants execution permissions. The daemon's existing
 
 ## Transition and rollback
 
-The managed daemon still owns `.slophawk/results.json` (schema v2), its private
-IPC (`DaemonWire` v1), MCP, and original foreground argument semantics. The new
-state transfer uses a **separate** worker protocol; no private wire version or
-public artifact is silently revised.
+The active daemon owns `.slophawk/results.json` (schema v2) and supplies the
+MCP workspace tools. The state transfer has its own framed worker protocol.
+During rollback the marker withdraws native authority, the resident daemon
+closes its endpoint and releases its writer lock, and the export waits for
+that lock before handing the snapshot back.
 
 1. Request the current **matching legacy** daemon to Stop, then acquire the
    existing named single-writer mutex. If Stop fails, the lock does not drain,
@@ -142,9 +146,13 @@ provider workflows or the release.
 
 ## Process-tree memory and latency gates
 
-The source-only sampler offers `sample <spec.json> <capture.json>`; the
+The sampler offers `sample <spec.json> <capture.json>`. The
 qualifier consumes all evidence as
 `qualify <evidence.json> <release-receipt.json> <analysis.json>`.
+`benchmark-resident <managed-executable> <native-executable> <new-scratch>`
+captures paired five-minute active idle and warm reconciliation measurements
+against a 100-source fixture. It retains per-process-scope evidence and the
+measured end-to-end recheck times for both binaries.
 Owner harnesses must prepare a stable checkout/rule/policy/toolchain/fixture
 closure and run matched cold, warm, **five-minute idle**, single edits,
 **100-file burst**, branch switches and native-to-managed rollback, on **both
@@ -163,10 +171,10 @@ The sampler never invents a latency event or declares a missing platform pass.
   reads block that capture.
 * **Linux**: sum `/proc/<pid>/smaps_rollup` **Pss** over the tracked scope, and
   separately record `/sys/fs/cgroup/<scope>/memory.peak`. Cgroup membership and
-  proven enroll-before-exec are required. A bare `Process.Start` sampler cannot
-  prove containment, so its Linux captures deliberately remain unqualified.
-  Use a supervised externally admitted cgroup v2 owner fixture with durable
-  scope identity, independent whole-tree drainage and verified membership.
+  proven enroll-before-exec are required. The sampler uses a transient user
+  service and validates the invocation and kernel cgroup through drainage.
+  Measurements involving workers in independent units need a scope that
+  includes those worker units.
   Missing delegation, inaccessible PSS, a changed scope or absence of
   `memory.peak` blocks qualification. Do not relabel RSS as PSS.
 

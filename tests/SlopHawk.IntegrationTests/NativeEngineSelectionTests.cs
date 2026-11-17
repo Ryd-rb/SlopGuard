@@ -172,6 +172,21 @@ public sealed class NativeEngineSelectionTests
                 await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_status","arguments":{}}}""");
                 var status = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
                 Assert.False(status["result"]!["isError"]!.GetValue<bool>());
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_checks","arguments":{}}}""");
+                var recheck = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                Assert.False(recheck["result"]!["isError"]!.GetValue<bool>());
+                var requested = recheck["result"]!["structuredContent"]!["result"]!["payload"]!["revision"]!.GetValue<long>();
+                while (true)
+                {
+                    var current = JsonNode.Parse(await Run("status"))!;
+                    if (current["state"]!.GetValue<string>() == "ready" && current["revision"]!.GetValue<long>() >= requested)
+                        break;
+                    await Task.Delay(35, deadline.Token);
+                }
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_findings","arguments":{}}}""");
+                var findings = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                Assert.False(findings["result"]!["isError"]!.GetValue<bool>());
+                Assert.Equal("SlopHawk", findings["result"]!["structuredContent"]!["result"]!["payload"]!["producer"]!.GetValue<string>());
                 mcp.StandardInput.Close();
                 await mcp.WaitForExitAsync(deadline.Token);
                 Assert.Equal(0, mcp.ExitCode);
@@ -181,6 +196,14 @@ public sealed class NativeEngineSelectionTests
                 await Task.Delay(35, reconciled.Token);
             var after = JsonNode.Parse(await Run("results"))!;
             Assert.True(after["committedRevision"]!.GetValue<long>() > revision);
+            Assert.True(JsonNode.Parse(await Run("stop"))!["stopping"]!.GetValue<bool>());
+            using var stopped = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            while (File.Exists(Path.Combine(home.Workspace.StateDirectory, "native-daemon.json")) ||
+                   File.Exists(Path.Combine(home.Workspace.Root, ".slophawk", "results.json")))
+                await Task.Delay(30, stopped.Token);
+            var restarted = JsonNode.Parse(await Run("start"))!;
+            Assert.Equal(after["committedRevision"]!.GetValue<long>(), restarted["committedRevision"]!.GetValue<long>());
+            Assert.NotEqual(after["epoch"]!.GetValue<string>(), restarted["epoch"]!.GetValue<string>());
         }
         finally
         {
@@ -242,9 +265,11 @@ public sealed class NativeEngineSelectionTests
         var output = child.StandardOutput.ReadToEndAsync(deadline.Token);
         var error = child.StandardError.ReadToEndAsync(deadline.Token);
         await child.WaitForExitAsync(deadline.Token);
-        Assert.True(child.ExitCode == 0, await error);
-        var graph = JsonNode.Parse(await output);
-        Assert.True(JsonNode.DeepEquals(JsonSerializer.SerializeToNode(expected, new JsonSerializerOptions(JsonSerializerDefaults.Web)), graph));
+        var actual = await output;
+        Assert.True(child.ExitCode == 0, $"Exit {child.ExitCode}\n{await error}\n{actual}");
+        var graph = JsonNode.Parse(actual);
+        var managed = JsonSerializer.SerializeToNode(expected, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.True(JsonNode.DeepEquals(managed, graph), $"Managed {managed}\nNative {graph}");
         Assert.Single(graph!["targets"]!.AsArray());
     }
 

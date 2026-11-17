@@ -41,14 +41,17 @@ than claiming native support. The shell runs Rust foreground checks and review
 for the `check`, `check-observe`, `check-retest` and `check-review` commands.
 `slophawk-native shadow --request <request.json>` runs the native C#, Python,
 Rust and FluxR checker against the explicitly enumerated inputs in a
-[shadow request](../../native-checks/README.md). `contracts qualify` and
-`probes plan|compare|methods` use the Rust checkers. Projects, `check-contracts`
-and path compatibility commands use the configured C# launcher.
+[shadow request](../../native-checks/README.md). Contract search and the probe
+commands run in Rust. `projects` uses the exact assembly and host pinned by
+`SLOPHAWK_PROJECT_WORKER` and `SLOPHAWK_NATIVE_DOTNET`. `paths` uses the
+assembly pinned by `SLOPHAWK_SCALAR_WORKER` and the scalar execution grant.
+Each tool path has a corresponding `_SHA256` setting.
 
 A `trusted_peer` launcher may be selected explicitly in the registry and must
 still present the **same** published handshake. The separate private
-`slophawk.migration-job/1` entry point implements explicit state transfer,
-inspection, reconciliation and rollback with the managed CLI. See the
+`slophawk.migration-job/1` entry point implements explicit state transfer and
+rollback with the managed CLI. After transfer, the resident Rust daemon serves
+the workspace and MCP and coordinates shutdown with rollback. See the
 [qualification guide](../../../docs/rust-migration-qualification.md) for the
 supported stateful commands and release gates.
 

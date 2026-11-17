@@ -41,8 +41,8 @@ grant or a way to bypass workspace authorization.
 - `slophawk engine native <external-profile.json> <PROFILE_SHA256> -- <public-command> [args]`
   selects the native path only when the physical profile, SHA-256, exact binary,
   OS and owner qualification receipt agree. No silent fallback to managed occurs.
-  `status` and `recheck` operate on transferred state and require the matching
-  writer marker.
+  `start`, `status`, `results`, `recheck`, `stop` and `mcp` use the native daemon
+  for transferred state and require the matching writer marker.
 - `slophawk engine transfer <external-profile.json> <PROFILE_SHA256> --root <checkout>`
   transfers inventory, pending causes and receipts to the qualified Rust peer.
 - `slophawk engine rollback <external-profile.json> <PROFILE_SHA256> --root <checkout>`
