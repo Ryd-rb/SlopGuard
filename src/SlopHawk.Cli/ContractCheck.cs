@@ -7,6 +7,8 @@ namespace SlopHawk.Cli;
 
 internal static class ContractCheck
 {
+    private const int BatchSize = 2048;
+
     internal static async Task<int> QualifyAsync(string[] args)
     {
         if (args is not ["contracts", "qualify", var rules, var published])
@@ -89,7 +91,7 @@ internal static class ContractCheck
         async Task SearchAsync(int count, int seed, IReadOnlyDictionary<string, long[]>? literals)
         {
             foreach (var batch in catalog.Generate(count, seed, remaining, guideWithBoundaries: seed != 0,
-                implementationLiterals: literals).Chunk(768))
+                implementationLiterals: literals).Chunk(BatchSize))
             {
                 var cases = batch.Where(item => remaining.Contains(item.Operation) &&
                     tested.Add((item.Operation, string.Join(',', item.Args)))).ToArray();
