@@ -1,0 +1,21 @@
+[package]
+name = "slophawk-test-control"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "Isolated versioned durable test intent scheduler and bounded migration peer"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+slophawk-test-impact = { path = "../../checkers/test-impact" }
+slophawk-verification = { path = "../../checkers/verification" }
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
