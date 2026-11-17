@@ -57,3 +57,27 @@ The assisted session used 211,359 fewer total tokens and 42,778 more uncached in
 | Without SlopHawk | `01a1e855-bdd9-7853-9a0b-3cfdc1ea2c21` |
 
 The local coordination bundle `continuity-pair-target-0a2596d011` retains the frozen plan, native session and timing records, preflight receipts, and adjudication.
+
+## Rerun after fixing Node script loading
+
+The previous unassisted worker's Node process failed when resolving the drive root. With default Node options, preflight reproduced that failure in both fresh sandboxes. Both worker launches set `NODE_OPTIONS="--preserve-symlinks-main --preserve-symlinks"` for the launcher and through `shell_environment_policy.set.NODE_OPTIONS`. Preflight then loaded a script and a sibling module and read all 158 public rules. Node and PowerShell still denied protected reads and opening candidate source for writing. Node still could not read drive-root metadata. The preflights passed the 316-case smoke suite.
+
+Two fresh Luna 6 Low sessions received the exact prompt above, the same public rules and candidate, and one turn with uncapped tool calls. The oracle, corrected build, and earlier answers stayed outside the workers' sandboxes. Candidate fingerprints matched before and after each run. Randomization put the unassisted worker first. This pair pinned main at `97d5672` with the same checker runtime as the earlier pairs.
+
+| Arm | Submitted | Verified of 132 | False positives | Wrong expected values | Total tokens | Uncached input | Shell calls | Wall time |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| With SlopHawk | 132 | 132 | 0 | 0 | 403,470 | 37,756 | 13 | 102.7 s |
+| Without SlopHawk | 9 | 5 | 0 | 4 | 2,341,358 | 82,273 | 43 | 308.3 s |
+
+The assisted worker ran 90,613 supported comparisons in 21.0 seconds. It separately retested all 132 findings, and the scoped review recorded zero missing operations and zero outstanding findings. Independent replay confirmed every submission.
+
+The unassisted worker used PowerShell and the candidate's batch runner. All nine reports targeted real discrepancies. Five gave exact actual and expected values. Four gave the correct observed result and the wrong expected result, so they failed the exact-reproduction criterion. No worker command invoked Node in the unassisted session. This pair shows how the workflows performed with Node available in both sandboxes.
+
+The assisted session used 1,937,888 fewer total tokens and 44,517 fewer uncached input tokens. The runtime recorded 363,008 cached input and 2,706 output tokens with SlopHawk, and 2,247,936 cached input and 11,149 output tokens without it.
+
+| Arm | Session |
+|---|---|
+| With SlopHawk | `01a1e85f-07c1-71c0-ab00-afa4a6a86069` |
+| Without SlopHawk | `01a1e85a-46ce-7741-b166-b68e19ca78bb` |
+
+The local coordination bundle `continuity-pair-node-cff269b458` retains the frozen plan, Node failure and success receipts, native session records, and adjudication.
