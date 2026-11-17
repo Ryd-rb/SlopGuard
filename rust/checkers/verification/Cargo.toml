@@ -1,0 +1,13 @@
+[package]
+name = "slophawk-verification"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "Pure, typed evaluator for SlopHawk's edited-branch verification rule v1"
+license = "MIT"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
