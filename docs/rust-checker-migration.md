@@ -54,3 +54,16 @@ On Windows, sample private working set across live processes and report private 
 Proposed promotion gates are at least **30% lower warm idle private resident memory on Windows or PSS on Linux** and **30% lower peak process-tree memory during equivalent checker work**, on each target OS. Keep the existing Windows daemon target of under **80 MiB private memory** on its documented metric and the **1 second** warm reconciliation p95 target. Allow at most **10% p95 latency regression** on matched checker runs. Freeze workloads and thresholds before measuring the Rust candidate. Publish separate end-to-end results for compiler- and runner-heavy workloads even when their memory dominates. For new providers, use explicit workload budgets established before promotion.
 
 Require deterministic result parity for the shipped C# checks after normalizing only run-specific metadata. Document and version any approved behavior changes. Verify incremental and cold-rebuild agreement, positive findings and near misses for each supported rule, explicit partial coverage, crash and cancellation recovery, stale-result rejection, execution grants and rollback of a live workspace with pending work. Enable a language only after its advertised capabilities pass their fixtures and resource limits on the release OSes.
+
+## Imported pilots
+
+The pretokenized clone index, edited-branch rule, foreground replay comparator, C# fact worker and Python, Rust and FluxR syntax providers are buildable components. The daemon still routes checker and test work through its existing entry points. The native provider contract, process supervision, project and runner support, remaining rule ports and default cutover are subsequent milestones.
+
+On Windows x64 with Rust 1.99.1 and .NET SDK 10.0.201, the C# and Rust clone harnesses produced the same 46-line trace after newline normalization. The trace exercises clone identity, ordering, scope limits, a replacement, a deletion and a cold rebuild. Each release benchmark repeated five upsert, cold query, warm query, replacement and deletion steps. The candidate cap was 10,000. The Windows process sampler requested a 1 ms interval and used private working set. The sampled peak includes fixture construction and runtime startup. The median warm-query time comes from the phase timers.
+
+| Synthetic input | C# peak private working set | Rust peak private working set | C# median warm query | Rust median warm query |
+| --- | ---: | ---: | ---: | ---: |
+| 30 documents, 64 tokens each | 5.84 MiB | 0.74 MiB | 96 µs | 65 µs |
+| 600 documents, 256 tokens each | 46.65 MiB | 12.27 MiB | 5,225 µs | 1,570 µs |
+
+The 30-document native run yielded eight OS samples. The 600-document runs yielded 242 C# and 106 Rust samples. These are single-host, engine-only observations using pretokenized documents. Whole-daemon idle, process-tree peaks with language workers, and the Linux comparison remain release gates. [Benchmark inputs and commands](../rust/checkers/clone-index/README.md#matched-synthetic-engine-only-measurements)
