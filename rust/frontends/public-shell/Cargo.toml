@@ -18,6 +18,8 @@ name = "slophawk-native"
 path = "src/main.rs"
 
 [dependencies]
+slophawk-foreground-checks = { path = "../../foreground/checks" }
+slophawk-native-checks = { path = "../../native-checks" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 sha2 = "=0.10.9"

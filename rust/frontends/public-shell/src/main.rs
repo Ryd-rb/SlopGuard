@@ -14,7 +14,8 @@ const HELP: &str = "SlopHawk native compatibility shell (wire 1, report schema 2
 Lifecycle     slophawk-native start|status|results|recheck|stop [--root <checkout>]\n\
 MCP           slophawk-native mcp [--root <checkout>]\n\
 Foreground    slophawk-native projects|check|check-contracts|check-observe|check-retest|check-review|contracts|probes|paths ...\n\
-Requires an owner-pinned legacy C# launcher for foreground families, daemon start and unsupported native platforms.";
+Shadow        slophawk-native shadow --request <request.json>\n\
+Requires an owner-pinned legacy C# launcher for projects, contract/probe and path fallback, daemon start and unsupported native platforms.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,8 +31,19 @@ fn run(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     let verb = args[0].as_str();
-    if matches!(verb, "check" | "check-contracts" | "check-observe" | "check-retest" |
-        "check-review" | "contracts" | "probes" | "paths" | "projects" | "serve") {
+    if verb == "shadow" {
+        return match args {
+            [_, flag, path] if flag == "--request" =>
+                slophawk_native_checks::write_shadow_report(Path::new(path), std::io::stdout().lock())
+                    .map_err(|error| failure("shadow_failed", error)),
+            _ => Err(failure("invalid_arguments", "Expected shadow --request <request.json>.")),
+        };
+    }
+    if matches!(verb, "check" | "check-observe" | "check-retest" | "check-review") {
+        return slophawk_foreground_checks::run(args)
+            .map(i32::from).map_err(|error| failure("foreground_check_failed", error));
+    }
+    if matches!(verb, "check-contracts" | "contracts" | "probes" | "paths" | "projects" | "serve") {
         let registry = Registry::load(Some(&std::env::current_dir().map_err(|e| failure("invalid_root", e))?))?;
         return registry.legacy()?.forward(args, None);
     }

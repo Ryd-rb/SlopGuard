@@ -160,3 +160,25 @@ pub fn bounded_report(mut report: Report) -> Result<Vec<u8>, String> {
         }
     }
 }
+
+/// Read an explicit, bounded shadow request and emit the shared report format.
+pub fn write_shadow_report(
+    path: &std::path::Path,
+    mut writer: impl std::io::Write,
+) -> Result<i32, String> {
+    use std::io::Read;
+    let started = std::time::Instant::now();
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot open explicit request: {e}"))?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > contract::MAX_REQUEST_BYTES { return Err("request file exceeds 4MiB".into()); }
+    let mut raw = Vec::new();
+    file.take(contract::MAX_REQUEST_BYTES+1).read_to_end(&mut raw).map_err(|e| e.to_string())?;
+    if raw.len() as u64 > contract::MAX_REQUEST_BYTES { return Err("request exceeded 4MiB while reading".into()); }
+    let req: contract::ScopeRequest = serde_json::from_slice(&raw).map_err(|e| format!("invalid typed request: {e}"))?;
+    let mut report = shadow(req, &AtomicBool::new(false))?;
+    report.elapsed_ms = started.elapsed().as_millis();
+    let failed = report.status == contract::Status::Failed;
+    let output = bounded_report(report)?;
+    writer.write_all(&output).map_err(|e| format!("could not emit report: {e}"))?;
+    writer.write_all(b"\n").map_err(|e| e.to_string())?;
+    Ok(if failed { 1 } else { 0 })
+}

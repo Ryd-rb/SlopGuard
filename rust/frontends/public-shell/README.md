@@ -38,10 +38,12 @@ addressing is not a published native transport contract. This CLI therefore
 **fails closed** for direct native IPC and delegates lifecycle/MCP to a
 verified, owner-pinned C# CLI process; MCP uses the published C# SDK bridge.
 Without a trusted launcher it fails with a concrete capability gap rather
-than claiming native support. Windows foreground command families (`projects`,
-`check`, `check-contracts`, `check-observe`, `check-retest`, `check-review`,
-`contracts`, `probes`, `paths`) also forward to the *real* C# executable with
-unchanged argument ordering and inherited exit code, not ported placeholders.
+than claiming native support. The shell runs Rust foreground checks and review
+for the `check`, `check-observe`, `check-retest` and `check-review` commands.
+`slophawk-native shadow --request <request.json>` runs the native C#, Python,
+Rust and FluxR checker against the explicitly enumerated inputs in a
+[shadow request](../../native-checks/README.md). Projects, contract/probe and
+path compatibility commands use the configured C# launcher.
 
 A `trusted_peer` launcher may be selected explicitly in the registry and must
 still present the **same** published handshake. No dependency on SG-MIG-03 or
@@ -51,7 +53,7 @@ transport**: it uses only existing local IPC and MCP stdio.
 
 ## Owner-managed executable and argv registry
 
-A launcher registry is required to start a daemon, use a foreground command,
+A launcher registry is required to start a daemon, use a forwarded command,
 or delegate to the C# SDK on an unsupported OS. Store it **outside the
 checkout**, normally at `%LOCALAPPDATA%\SlopHawk\launchers.json` on Windows or
 `$XDG_CONFIG_HOME/slophawk/launchers.json` on Unix (falling back to
