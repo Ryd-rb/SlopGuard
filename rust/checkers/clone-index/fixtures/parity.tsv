@@ -1,0 +1,64 @@
+# Shared fixture consumed by both pinned C# and Rust. Tab-separated; token syntax Kind:Text.
+# Kind = O Other, L LocalIdentifier, B BoundIdentifier, T Literal.
+SETTINGS	4	12	3
+LIMITS	100	100	10000
+UPSERT	beta	v1	false	false
+BLOCK	body	10	22	L:counter	O:=	T:1	O:;	L:counter	B:Console
+END
+UPSERT	gamma	v1	false	false
+BLOCK	body	20	32	L:value	O:=	T:1	O:;	L:value	B:Console
+END
+UPSERT	alpha	v4	false	false
+BLOCK	body	0	12	L:counter	O:=	T:1	O:;	L:counter	B:Console
+END
+UPSERT	near	v1	false	false
+BLOCK	body	40	52	L:counter	O:=	T:2	O:;	L:counter	B:Console
+END
+UPSERT	generated	v1	true	false
+BLOCK	body	0	12	L:counter	O:=	T:1	O:;	L:counter	B:Console
+END
+UPSERT	excluded	v1	false	true
+BLOCK	body	0	12	L:counter	O:=	T:1	O:;	L:counter	B:Console
+END
+UPSERT	small	v1	false	false
+BLOCK	body	0	2	L:x
+END
+UPSERT	oversized	v1	false	false
+BLOCK	body	0	26	O:a	O:b	O:c	O:d	O:e	O:f	O:g	O:h	O:i	O:j	O:k	O:l	O:m
+END
+UPSERT		1	false	false
+BLOCK	Ω	2	14	L:é	O:+	L:é	O:;	L:é	T:🌙
+END
+UPSERT	𐐀	1	false	false
+BLOCK	𐐀	4	16	L:é	O:+	L:é	O:;	L:é	T:🌙
+END
+QUERY	initial
+UPSERT	delta	v1	false	false
+BLOCK	body	50	62	L:counter	O:=	T:1	O:;	L:counter	B:Console
+END
+UPSERT	epsilon	v1	false	false
+BLOCK	body	60	72	L:counter	O:=	T:1	O:;	L:counter	B:Console
+END
+QUERY	posting_cap
+DELETE	delta
+DELETE	epsilon
+QUERY	postings_restored
+LIMITS	1	100	10000
+QUERY	candidate_cap
+LIMITS	100	1	10000
+QUERY	output_cap
+LIMITS	100	100	11
+QUERY	compared_cap
+LIMITS	100	100	10000
+UPSERT	beta	v2	false	false
+BLOCK	body	30	42	L:renamed	O:=	T:9	O:;	L:renamed	B:Console
+END
+QUERY	replaced
+UPSERT	beta	v2	false	false
+BLOCK	body	30	42	L:counter	O:=	T:1	O:;	L:counter	B:Console
+END
+QUERY	repeated_version
+DELETE	alpha
+QUERY	deleted
+REBUILD
+QUERY	cold

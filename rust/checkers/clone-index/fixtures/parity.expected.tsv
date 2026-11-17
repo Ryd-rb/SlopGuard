@@ -1,0 +1,46 @@
+Q	initial	10	6	1	1	1	1	4	48	4	12	3	100	100	10000	sg10.token-clones.v1	true	4
+P	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	Exact	sg10.token-clones.v1	𐐀	1	𐐀	4	16	6		1	Ω	2	14	6	6	6	1.0
+P	sg10.token-clones.v1:5:alpha4:body/4:beta4:body	Exact	sg10.token-clones.v1	alpha	v4	body	0	12	6	beta	v1	body	10	22	6	6	6	1.0
+P	sg10.token-clones.v1:4:beta4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	beta	v1	body	10	22	6	gamma	v1	body	20	32	6	4	6	1.0
+P	sg10.token-clones.v1:5:alpha4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	alpha	v4	body	0	12	6	gamma	v1	body	20	32	6	4	6	1.0
+G	OversizedBlock	9:oversized4:body	13
+Q	posting_cap	12	8	1	1	1	1	1	12	4	12	3	100	100	10000	sg10.token-clones.v1	true	1
+P	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	Exact	sg10.token-clones.v1	𐐀	1	𐐀	4	16	6		1	Ω	2	14	6	6	6	1.0
+G	OversizedBlock	9:oversized4:body	13
+G	BoilerplatePostingLimit	exact:F983DAD086CBA7F3319DEC5EC942294C9DF3E236A242C545B1FC4F8AAA2D28E6	6
+G	BoilerplatePostingLimit	normalized:77D8E86E342A4405BB827F0B8D4A4685EA7D4BC48172DC9322CC5CA04D6C1EF8	10
+Q	postings_restored	10	6	1	1	1	1	4	48	4	12	3	100	100	10000	sg10.token-clones.v1	true	4
+P	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	Exact	sg10.token-clones.v1	𐐀	1	𐐀	4	16	6		1	Ω	2	14	6	6	6	1.0
+P	sg10.token-clones.v1:5:alpha4:body/4:beta4:body	Exact	sg10.token-clones.v1	alpha	v4	body	0	12	6	beta	v1	body	10	22	6	6	6	1.0
+P	sg10.token-clones.v1:4:beta4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	beta	v1	body	10	22	6	gamma	v1	body	20	32	6	4	6	1.0
+P	sg10.token-clones.v1:5:alpha4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	alpha	v4	body	0	12	6	gamma	v1	body	20	32	6	4	6	1.0
+G	OversizedBlock	9:oversized4:body	13
+Q	candidate_cap	10	6	1	1	1	1	1	12	4	12	3	1	100	10000	sg10.token-clones.v1	true	1
+P	sg10.token-clones.v1:5:alpha4:body/4:beta4:body	Exact	sg10.token-clones.v1	alpha	v4	body	0	12	6	beta	v1	body	10	22	6	6	6	1.0
+G	OversizedBlock	9:oversized4:body	13
+G	CandidatePairLimit	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	1
+Q	output_cap	10	6	1	1	1	1	2	24	4	12	3	100	1	10000	sg10.token-clones.v1	true	1
+P	sg10.token-clones.v1:5:alpha4:body/4:beta4:body	Exact	sg10.token-clones.v1	alpha	v4	body	0	12	6	beta	v1	body	10	22	6	6	6	1.0
+G	OversizedBlock	9:oversized4:body	13
+G	OutputPairLimit	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	1
+Q	compared_cap	10	6	1	1	1	1	0	0	4	12	3	100	100	11	sg10.token-clones.v1	true	0
+G	OversizedBlock	9:oversized4:body	13
+G	ComparedTokenLimit	sg10.token-clones.v1:5:alpha4:body/4:beta4:body	12
+Q	replaced	10	6	1	1	1	1	2	24	4	12	3	100	100	10000	sg10.token-clones.v1	true	2
+P	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	Exact	sg10.token-clones.v1	𐐀	1	𐐀	4	16	6		1	Ω	2	14	6	6	6	1.0
+P	sg10.token-clones.v1:5:alpha4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	alpha	v4	body	0	12	6	gamma	v1	body	20	32	6	4	6	1.0
+G	OversizedBlock	9:oversized4:body	13
+Q	repeated_version	10	6	1	1	1	1	4	48	4	12	3	100	100	10000	sg10.token-clones.v1	true	4
+P	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	Exact	sg10.token-clones.v1	𐐀	1	𐐀	4	16	6		1	Ω	2	14	6	6	6	1.0
+P	sg10.token-clones.v1:5:alpha4:body/4:beta4:body	Exact	sg10.token-clones.v1	alpha	v4	body	0	12	6	beta	v2	body	30	42	6	6	6	1.0
+P	sg10.token-clones.v1:4:beta4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	beta	v2	body	30	42	6	gamma	v1	body	20	32	6	4	6	1.0
+P	sg10.token-clones.v1:5:alpha4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	alpha	v4	body	0	12	6	gamma	v1	body	20	32	6	4	6	1.0
+G	OversizedBlock	9:oversized4:body	13
+Q	deleted	9	5	1	1	1	1	2	24	4	12	3	100	100	10000	sg10.token-clones.v1	true	2
+P	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	Exact	sg10.token-clones.v1	𐐀	1	𐐀	4	16	6		1	Ω	2	14	6	6	6	1.0
+P	sg10.token-clones.v1:4:beta4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	beta	v2	body	30	42	6	gamma	v1	body	20	32	6	4	6	1.0
+G	OversizedBlock	9:oversized4:body	13
+Q	cold	9	5	1	1	1	1	2	24	4	12	3	100	100	10000	sg10.token-clones.v1	true	2
+P	sg10.token-clones.v1:2:𐐀2:𐐀/1:1:Ω	Exact	sg10.token-clones.v1	𐐀	1	𐐀	4	16	6		1	Ω	2	14	6	6	6	1.0
+P	sg10.token-clones.v1:4:beta4:body/5:gamma4:body	RenamedLocalIdentifiers	sg10.token-clones.v1	beta	v2	body	30	42	6	gamma	v1	body	20	32	6	4	6	1.0
+G	OversizedBlock	9:oversized4:body	13

@@ -1,0 +1,21 @@
+[package]
+name = "slophawk-clone-index"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Ryd-rb/SlopHawk"
+description = "Pretokenized whole-block Type-1/Type-2 clone index (SG-10 pilot)"
+
+[lib]
+name = "slophawk_clone_index"
+path = "src/lib.rs"
+
+[[bin]]
+name = "clone-parity"
+path = "src/bin/parity.rs"
+
+[[bin]]
+name = "clone-bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
