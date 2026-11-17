@@ -1,9 +1,15 @@
+using System.Text.Json;
+using SlopHawk.Daemon;
+
 namespace SlopHawk.Providers.CSharp.Worker;
 
 public static class Program
 {
-    public static int Main()
+    public static int Main(string[] args)
     {
+        if (args is ["--project-graph-v1", "--root", var root])
+            return WriteProjectGraph(root).GetAwaiter().GetResult();
+        if (args.Length != 0) return 2;
         using var input = Console.OpenStandardInput();
         using var output = Console.OpenStandardOutput();
         var frames = new FrameProtocol.Output(output, 0);
@@ -36,6 +42,24 @@ public static class Program
             catch (Exception) { /* Broken stdout/encoder: exit nonzero; never fake success. */ }
             Console.Error.WriteLine("Roslyn fact worker failed: " + code);
             return 1;
+        }
+    }
+
+    private static async Task<int> WriteProjectGraph(string root)
+    {
+        try
+        {
+            // The caller owns the outer OS scope for this read-only tool operation.
+            var workspace = new Workspace(root);
+            var graph = await new ProjectEvaluator(workspace).EvaluateAsync(worker: null, CancellationToken.None);
+            using var output = Console.OpenStandardOutput();
+            await JsonSerializer.SerializeAsync(output, graph, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return graph.Complete ? 0 : 1;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Console.Error.WriteLine(error.Message);
+            return 2;
         }
     }
 }

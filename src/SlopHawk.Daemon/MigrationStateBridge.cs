@@ -58,6 +58,12 @@ public static class MigrationStateBridge
     public static void RequireNativeWriter(Workspace workspace, string nativeSha256, string profileSha256)
         => _ = ReadNativeWriter(workspace, nativeSha256, profileSha256);
 
+    public static string ReadNativeStateDirectory(Workspace workspace, string nativeSha256, string profileSha256)
+    {
+        RequireNativeWriter(workspace, nativeSha256, profileSha256);
+        return workspace.StateDirectory;
+    }
+
     private static WriterMarker ReadNativeWriter(Workspace workspace, string nativeSha256, string profileSha256)
     {
         if (PathEntryExists(MarkerPath(workspace) + ".pending"))

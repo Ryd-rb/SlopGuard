@@ -13,6 +13,9 @@ const FRAME: usize = 128 * 1024;
 const CHUNK: usize = 72 * 1024;
 const CAP: usize = 16 * 1024 * 1024;
 
+#[path = "resident_store.rs"]
+pub mod resident_store;
+
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Identity {
@@ -62,7 +65,7 @@ struct Marker {
     backup_sha256: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Snapshot {
     format: u32,
@@ -73,7 +76,7 @@ struct Snapshot {
     tables: Vec<Table>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Table {
     name: String,
@@ -81,7 +84,7 @@ struct Table {
     rows: Vec<Vec<Cell>>,
 }
 
-#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Cell {
     #[serde(rename = "type")]
@@ -331,7 +334,7 @@ fn snapshot(data: &[u8], identity: &Identity) -> io::Result<Snapshot> {
     Ok(value)
 }
 
-fn create_bound(path: &Path, data: &[u8]) -> io::Result<()> {
+pub(crate) fn create_bound(path: &Path, data: &[u8]) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -569,6 +572,32 @@ fn read_marker(directory: &Path) -> io::Result<Marker> {
         .map_err(io::Error::other)
 }
 
+fn writer_lock(directory: &Path, epoch: &str, budget: Duration) -> io::Result<File> {
+    let path = directory.join(format!("native-{epoch}.lock"));
+    if fs::symlink_metadata(&path).is_ok_and(|value| !value.is_file() || linked(&value)) {
+        return Err(invalid("migration writer lock is linked"));
+    }
+    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline =>
+                std::thread::sleep(Duration::from_millis(30)),
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn store_snapshot(state: &Path, data: &[u8], job: &str) -> io::Result<()> {
+    let next = state.with_extension(format!("{job}.pending"));
+    create_bound(&next, data)?;
+    fs::rename(&next, state)?;
+    #[cfg(unix)]
+    File::open(state.parent().ok_or_else(|| invalid("migration state directory missing"))?)?.sync_all()?;
+    Ok(())
+}
+
 fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
     let root = directory(&identity.root)?;
     let directory = directory(&identity.state_directory)?;
@@ -593,17 +622,8 @@ fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
         return Err(invalid("migration marker does not bind this writer"));
     }
     slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
-    let lock_path = directory.join(format!("native-{}.lock", identity.epoch));
-    if fs::symlink_metadata(&lock_path).is_ok_and(|value| !value.is_file() || linked(&value)) {
-        return Err(invalid("migration writer lock is linked"));
-    }
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    lock.try_lock()?;
+    let wait = if identity.operation == "export_and_stop_v1" { Duration::from_secs(8) } else { Duration::ZERO };
+    let _lock = writer_lock(&directory, &identity.epoch, wait)?;
     if read_marker(&directory)? != marker || physical_root(&root)? != identity.root_identity {
         return Err(invalid("migration writer changed while taking its lease"));
     }
@@ -652,11 +672,7 @@ fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
                         "native reconciliation lost its writer or snapshot budget",
                     ));
                 }
-                let next = state.with_extension(format!("{}.pending", identity.job));
-                create_bound(&next, &data)?;
-                fs::rename(&next, &state)?;
-                #[cfg(unix)]
-                File::open(&directory)?.sync_all()?;
+                store_snapshot(&state, &data, &identity.job)?;
             }
             Ok((summarize(&value, identity)?, true))
         }

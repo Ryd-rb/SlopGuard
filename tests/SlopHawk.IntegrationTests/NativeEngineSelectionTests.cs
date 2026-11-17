@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
+using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using SlopHawk.Cli;
 using SlopHawk.Daemon;
@@ -133,6 +134,84 @@ public sealed class NativeEngineSelectionTests
         Assert.Equal("interrupted", Text(restored, "SELECT state FROM test_attempt"));
         Assert.Equal("lease-11", Text(restored, "SELECT lease_id FROM test_attempt"));
         Assert.Equal("receipt-7", Text(restored, "SELECT reason_code FROM test_run_receipt"));
+    }
+
+    [Fact]
+    public async Task RustResidentServesWorkspaceAndMcpThenReleasesItsWriterOnRollback()
+    {
+        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
+        if (string.IsNullOrWhiteSpace(binary)) return;
+        using var home = new TempWorkspace();
+        Seed(home);
+        var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binary)));
+        var profile = new string('D', 64);
+        var source = Path.Combine(home.Workspace.Root, "Source.cs");
+        File.WriteAllText(source, "class Before {}\n");
+        MigrationStateBridge.TransferToNative(home.Workspace, binary, digest, profile, "native-resident-test");
+        try
+        {
+            var started = JsonNode.Parse(await Run("start"))!;
+            Assert.Equal(2, started["reportSchemaVersion"]!.GetValue<int>());
+            var before = JsonNode.Parse(await Run("results"))!;
+            Assert.Equal("SlopHawk", before["producer"]!.GetValue<string>());
+            var revision = before["committedRevision"]!.GetValue<long>();
+
+            await File.WriteAllTextAsync(source, "class After {}\n");
+            await Run("recheck");
+            using (var mcp = Launch("mcp", input: true))
+            {
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"resident-test","version":"1"}}}""");
+                var ready = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                Assert.Equal("2025-11-25", ready["result"]!["protocolVersion"]!.GetValue<string>());
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}""");
+                var tools = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                Assert.Contains(tools["result"]!["tools"]!.AsArray(), tool => tool!["name"]!.GetValue<string>() == "get_findings");
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_status","arguments":{}}}""");
+                var status = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                Assert.False(status["result"]!["isError"]!.GetValue<bool>());
+                mcp.StandardInput.Close();
+                await mcp.WaitForExitAsync(deadline.Token);
+                Assert.Equal(0, mcp.ExitCode);
+            }
+            using var reconciled = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            while (JsonNode.Parse(await Run("status"))!["state"]!.GetValue<string>() != "ready")
+                await Task.Delay(35, reconciled.Token);
+            var after = JsonNode.Parse(await Run("results"))!;
+            Assert.True(after["committedRevision"]!.GetValue<long>() > revision);
+        }
+        finally
+        {
+            MigrationStateBridge.RollbackToLegacy(home.Workspace, binary, digest, profile, "native-resident-test");
+        }
+        MigrationStateBridge.RequireLegacyWriter(home.Workspace);
+        Assert.False(File.Exists(Path.Combine(home.Workspace.Root, ".slophawk", "results.json")));
+        using var restored = Open(home.Workspace);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))), Text(restored, "SELECT digest FROM source"));
+
+        Process Launch(string verb, bool input = false)
+        {
+            var info = new ProcessStartInfo(binary)
+            {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = input,
+                RedirectStandardError = true, RedirectStandardOutput = true,
+            };
+            foreach (var arg in new[] { "--native-workspace-v1", home.Workspace.Root, home.Workspace.StateDirectory, profile, verb })
+                info.ArgumentList.Add(arg);
+            return Process.Start(info)!;
+        }
+
+        async Task<string> Run(string verb)
+        {
+            using var child = Launch(verb);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var output = child.StandardOutput.ReadToEndAsync(deadline.Token);
+            var error = child.StandardError.ReadToEndAsync(deadline.Token);
+            await child.WaitForExitAsync(deadline.Token);
+            Assert.True(child.ExitCode == 0, await error);
+            return await output;
+        }
     }
 
     [Fact]

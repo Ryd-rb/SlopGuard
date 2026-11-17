@@ -163,6 +163,17 @@ impl CheckedFile {
     }
 }
 
+/// Tool-specific owner pins are independent of the legacy launcher registry.
+pub fn configured_tool(name: &str, root: &Path) -> Result<PathBuf> {
+    let path = std::env::var_os(name).map(PathBuf::from)
+        .ok_or_else(|| failure("missing_tool", format!("Set {name} to the installed external tool.")))?;
+    let sha256 = std::env::var(format!("{name}_SHA256"))
+        .map_err(|_| failure("missing_tool", format!("Set {name}_SHA256 to the exact installed tool digest.")))?;
+    let pin = CheckedFile { path, sha256 };
+    pin.verify(Some(root))?;
+    Ok(pin.path)
+}
+
 fn within(path: &Path, root: &Path) -> bool {
     let Ok(root) = std::path::absolute(root) else { return true; };
     #[cfg(windows)]

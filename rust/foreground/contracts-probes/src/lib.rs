@@ -4,6 +4,7 @@
 //! are untrusted *search hints*, never sources of expected results.
 
 pub mod passive;
+pub mod command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, value::RawValue};

@@ -9,6 +9,7 @@
       <_Parameter2>$(NETCoreSdkVersion)</_Parameter2>
     </AssemblyAttribute>
     <ProjectReference Include="../SlopHawk.Providers.CSharp/SlopHawk.Providers.CSharp.csproj" />
+    <ProjectReference Include="../SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
     <Reference Include="Microsoft.CodeAnalysis">
       <HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.dll</HintPath>
       <Private>true</Private>

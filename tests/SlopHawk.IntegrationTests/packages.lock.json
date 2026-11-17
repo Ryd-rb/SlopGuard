@@ -195,6 +195,7 @@
       "slophawk.providers.csharp.worker": {
         "type": "Project",
         "dependencies": {
+          "SlopHawk.Daemon": "[1.0.0, )",
           "SlopHawk.Providers.CSharp": "[1.0.0, )"
         }
       },

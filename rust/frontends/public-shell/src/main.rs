@@ -10,13 +10,16 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 mod migration;
+mod resident;
+mod tools;
+mod detached;
 
 const HELP: &str = "SlopHawk native compatibility shell (wire 1, report schema 2)\n\
 Lifecycle     slophawk-native start|status|results|recheck|stop [--root <checkout>]\n\
 MCP           slophawk-native mcp [--root <checkout>]\n\
 Foreground    slophawk-native projects|check|check-contracts|check-observe|check-retest|check-review|contracts|probes|paths ...\n\
 Shadow        slophawk-native shadow --request <request.json>\n\
-Requires an owner-pinned legacy C# launcher for projects, check-contracts, paths, daemon start and unsupported native platforms.";
+Requires owner-pinned language tools for projects and paths and a managed launcher for compatibility daemon mode.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +37,14 @@ fn main() {
 }
 
 fn run(args: &[String]) -> Result<i32> {
+    match args {
+        [flag, root, state, profile] if flag == "--native-resident-v1" =>
+            return resident::serve(Path::new(root), Path::new(state), profile).map(|()| 0)
+                .map_err(|error| failure("native_daemon_failed", error)),
+        [flag, root, state, profile, verb] if flag == "--native-workspace-v1" =>
+            return resident::cli(Path::new(root), Path::new(state), profile, verb),
+        _ => (),
+    }
     if args.is_empty() || matches!(args, [h] if h == "--help" || h == "-h") {
         println!("{HELP}");
         return Ok(0);
@@ -51,24 +62,20 @@ fn run(args: &[String]) -> Result<i32> {
         return slophawk_foreground_checks::run(args)
             .map(i32::from).map_err(|error| failure("foreground_check_failed", error));
     }
-    if matches!(verb, "contracts" | "probes") {
-        let (output, code) = slophawk_contracts_probes::passive::run(args)
-            .map_err(|error| failure("foreground_check_failed", error))?;
-        println!("{output}");
-        return Ok(i32::from(code));
+    if matches!(verb, "contracts" | "probes" | "check-contracts") {
+        return slophawk_contracts_probes::command::run(args).map(i32::from)
+            .map_err(|error| failure("foreground_check_failed", error));
     }
-    if matches!(verb, "check-contracts" | "paths" | "projects" | "serve") {
+    if verb == "paths" { return tools::paths(args); }
+    if verb == "projects" { return tools::projects(&workspace_argument(args)?); }
+    if verb == "serve" {
         let registry = Registry::load(Some(&std::env::current_dir().map_err(|e| failure("invalid_root", e))?))?;
         return registry.legacy()?.forward(args, None);
     }
     if !matches!(verb, "start" | "status" | "results" | "recheck" | "stop" | "mcp") {
         return Err(failure("invalid_arguments", "Unknown command. Run slophawk-native --help."));
     }
-    let root = match args {
-        [_] => std::env::current_dir().map_err(|e| failure("invalid_root", e))?,
-        [_, option, path] if option == "--root" => Path::new(path).to_path_buf(),
-        _ => return Err(failure("invalid_arguments", "Expected [--root <checkout>] only.")),
-    };
+    let root = workspace_argument(args)?;
 
     // The .NET Unix pipe socket name is not a supported public contract. Use
     // the same verified C# CLI/SDK (including MCP stdio) on unsupported OSes.
@@ -105,6 +112,14 @@ fn run(args: &[String]) -> Result<i32> {
             Ok(0)
         }
         _ => unreachable!(),
+    }
+}
+
+fn workspace_argument(args: &[String]) -> Result<std::path::PathBuf> {
+    match args {
+        [_] => std::env::current_dir().map_err(|e| failure("invalid_root", e)),
+        [_, option, path] if option == "--root" => std::path::absolute(path).map_err(|e| failure("invalid_root", e)),
+        _ => Err(failure("invalid_arguments", "Expected [--root <checkout>] only.")),
     }
 }
 

@@ -22,6 +22,7 @@ path = "src/main.rs"
 slophawk-contracts = { path = "../../checkers/contracts" }
 slophawk-probe-replay = { path = "../../checkers/probe-replay" }
 slophawk-managed-methods = { path = "../../checkers/managed-methods" }
+slophawk-foreground-checks = { path = "../checks" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["preserve_order", "raw_value"] }
 sha2 = "=0.10.9"

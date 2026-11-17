@@ -89,17 +89,16 @@ public static class NativeEngine
         var command = commandArgs[0];
         if (!receipt.QualifiedCommands.Contains(command, StringComparer.Ordinal))
             throw new IOException($"The owner did not qualify native command '{command}'. No legacy fallback was used.");
-        if (command is "status" or "recheck")
+        if (command is "start" or "status" or "results" or "recheck" or "stop" or "mcp")
         {
             if (commandArgs.Length is not (1 or 3) || commandArgs.Length == 3 && commandArgs[1] != "--root")
                 throw new ArgumentException("Native workspace commands require [--root <checkout>].");
             var workspace = new Workspace(commandArgs.Length == 3 ? commandArgs[2] : Environment.CurrentDirectory);
             RequireExternalWorkspaceFiles(workspace, args[2], profile.ReceiptPath, binary);
-            Console.WriteLine(MigrationStateBridge.ReadNativeState(workspace, binary,
-                profile.BinarySha256, profileDigest, profile.GrantReference, reconcile: command == "recheck"));
-            return 0;
+            var state = MigrationStateBridge.ReadNativeStateDirectory(workspace, profile.BinarySha256, profileDigest);
+            return await ForwardAsync(binary, ["--native-workspace-v1", workspace.Root, state, profileDigest, command]);
         }
-        if (command is not ("check" or "check-observe" or "check-retest" or "check-review" or "shadow" or "contracts" or "probes"))
+        if (command is not ("check" or "check-contracts" or "check-observe" or "check-retest" or "check-review" or "shadow" or "contracts" or "probes" or "paths" or "projects"))
             throw new IOException($"Native command '{command}' has no Rust-owned entry point in this release.");
         return await ForwardAsync(binary, commandArgs);
     }

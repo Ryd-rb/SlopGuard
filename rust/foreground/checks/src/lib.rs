@@ -14,6 +14,18 @@ mod review;
 use slophawk_probe_replay::{inputs_for_check, parse_expectations, parse_inputs};
 use std::{fs, path::Path};
 
+/// Run an ordered contract batch through the same scoped adapter as `check`.
+pub fn contract_batch(
+    assembly: &Path, workspace: &Path, output: &Path, candidate: &str,
+    run_verb: Option<&str>, prepare_verb: Option<&str>, cases: &[slophawk_probe_replay::ProbeExpectation],
+) -> Result<(String, std::path::PathBuf, Vec<slophawk_probe_replay::JsonValue>), String> {
+    let inputs = inputs_for_check(cases).map_err(|error| error.to_string())?;
+    let serialized = io::serialize(&inputs.iter().map(model::Input::from).collect::<Vec<_>>())?;
+    let result = evidence::execute(assembly, workspace, run_verb, prepare_verb, &inputs,
+        Some(cases), &io::hash(&serialized), None, output, Some(candidate))?;
+    Ok((result.run, result.artifacts, result.observed))
+}
+
 /// Parse the shipped argv and print the shipped JSON receipt/summary to stdout.
 /// Returns 0 for complete or progress, 1 for unsupported/finding/incomplete.
 /// Input and execution faults return an error for the caller to print to stderr.

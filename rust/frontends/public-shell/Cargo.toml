@@ -19,11 +19,17 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "=0.22.1"
+getrandom = "=0.4.3"
+hmac = "=0.12.1"
 slophawk-worker-scope = { path = '../../runtime/worker-scope' }
 slophawk-native-coordinator = { path = "../../native-coordinator" }
 slophawk-foreground-checks = { path = "../../foreground/checks" }
+slophawk-scalar-foreground = { path = "../../foreground/paths" }
 slophawk-contracts-probes = { path = "../../foreground/contracts-probes" }
 slophawk-native-checks = { path = "../../native-checks" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 sha2 = "=0.10.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
