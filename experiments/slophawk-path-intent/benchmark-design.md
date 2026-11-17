@@ -2,6 +2,8 @@
 
 This is a proposed test protocol for the [checker](../../docs/path-intent-checker.md). The main question is whether adding path exploration to current SlopHawk gives a fresh reviewer more reproducible, contract-grounded defects with the same information. The experiment also measures where extra prompts, confusing reports, or incorrect rules introduce false positives or extra cost.
 
+The [scalar pilot result](scalar-pilot-result.md) records the first deterministic graph-on/off run.
+
 ## Proving the checker works
 
 Test the mechanics through the public CLI and the declared adapter before running any agent pair. These small cases are development tests. Use different source and defect variants for the blinded holdout. The scalar gate uses the existing numeric adapter and compatible exact comparisons. The stateful holdout also requires the typed adapter checks below.
