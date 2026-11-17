@@ -1,0 +1,17 @@
+[package]
+name = "slophawk-scalar-paths"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+
+[lib]
+name = "slophawk_scalar_paths"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scalar-paths"
+path = "src/main.rs"
+
+[dependencies]
