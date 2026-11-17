@@ -29,3 +29,31 @@ The assisted session used 309,141 more total tokens and 33,948 more uncached inp
 | Without SlopHawk | `01a1e849-fc05-7360-92f6-9f0e86121638` |
 
 The benchmark pinned main at `7fcac90545c5ce9c5809ea6b482514fcc8f3958f` and used the same runtime code as `157f108`. The candidate assembly SHA-256 was `6094EEB443F1CD4E98FBD3287E6BB6DB1F5887CB8995DEFCF31B43B5DC508FE3`. The shared executable rules SHA-256 was `AFFB5F36BA3AAA993AE5B9C8EC76CA5EDFFFAE8B6769FDD76F0941935329B7DB`. The local coordination bundle `continuity-pair-0a21371ad` retains the frozen payload, session transcripts, isolation receipts, and adjudication.
+
+## Rerun with a target of 132
+
+Two new Luna 6 Low sessions used the same candidate, executable public rules, permissions, and scoring. The prompt gave both workers the defect count and asked them to continue within the single turn until all 132 were reproduced. Calls were uncapped. The randomized order put the assisted worker first. The sandbox preflights again passed the 316-case smoke suite and denied access to the oracle, corrected assembly, other worker, and both prior answer files. The candidate fingerprints matched before and after both sessions. Main was pinned at `68289fe` with the same checker runtime as the first pair.
+
+> Review the solution listed in `workspace.json`. It contains 132 distinct behavioral defects. Continue in this single turn until you have found and reproduced all 132. Tool calls are uncapped. Leave the solution unchanged.
+>
+> Use the public rules to derive expected results and generate new inputs beyond the published examples. Run any checker listed in `workspace.json` and retest its findings. For each distinct defect, execute a valid input that demonstrates the discrepancy and verify the expected result against the public rules. Count each defect once.
+>
+> Save `out/answer.json` with a `Findings` array containing `Operation`, `Args`, `Actual`, `Expected`, and `Cause` for each verified defect.
+
+| Arm | Submitted findings | Verified of 132 | Submitted false positives | Total tokens | Uncached input | Shell calls | Wall time |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| With SlopHawk | 132 | 132 | 0 | 338,389 | 82,770 | 11 | 81.5 s |
+| Without SlopHawk | No submission | 0 | 0 | 549,748 | 39,992 | 16 | 98.1 s |
+
+The assisted worker used SlopHawk to run 90,613 supported comparisons in 20.8 seconds. It retested all 132 findings in a separate batch and recorded zero outstanding findings and zero missing operations. Host replay confirmed all 132 results against the distributed candidate, the corrected assembly, and the public rules.
+
+The unassisted worker replayed all 158 published cases successfully. Its attempt to run a new harness with Node failed when Node tried to resolve the drive root under the sandbox. It ended the turn without additional verified inputs or an answer file. In its final message it also claimed the documented smoke command failed. Its command supplied the normalized `public-examples.json` file. The documented smoke command supplies `standard.json` and passed in both preflights. The prose claim is recorded separately from submitted behavioral findings.
+
+The assisted session used 211,359 fewer total tokens and 42,778 more uncached input tokens. Its input included 253,824 cached tokens and it generated 1,795 output tokens. The unassisted session used 506,624 cached input and 3,132 output tokens. This measures the two workflows as exercised in the bounded Windows environment.
+
+| Arm | Session |
+|---|---|
+| With SlopHawk | `01a1e854-4ac3-7613-bc90-4d0621fda91a` |
+| Without SlopHawk | `01a1e855-bdd9-7853-9a0b-3cfdc1ea2c21` |
+
+The local coordination bundle `continuity-pair-target-0a2596d011` retains the frozen plan, native session and timing records, preflight receipts, and adjudication.
