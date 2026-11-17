@@ -1,0 +1,182 @@
+using System.Text.Json;
+
+var cases = new Case[]
+{
+    new("DueVolume", "available needed reserve",
+        "available >= 0 && needed >= 0 && reserve >= 0 && reserve <= available",
+        "max(0, min(available - reserve, needed))",
+        "Math.Min(available - reserve, needed)", "Math.Max(0, Math.Min(available, needed) - reserve)",
+        [80, 99, 12], [80, 44, 12]),
+    new("AlarmLevel", "value threshold hysteresis armed",
+        "value >= 0 && threshold >= 0 && hysteresis >= 0 && hysteresis <= threshold && (armed == 0 || armed == 1)",
+        "armed == 1 ? value >= threshold - hysteresis : value >= threshold",
+        "armed == 1 ? Flag(value >= threshold - hysteresis) : Flag(value >= threshold)",
+        "armed == 1 ? Flag(value > threshold - hysteresis) : Flag(value >= threshold)",
+        [14, 20, 3, 1], [17, 20, 3, 1]),
+    new("WeightedHazard", "baseline ppm multiplier",
+        "0 <= baseline && baseline <= 100000 && 0 <= ppm && ppm <= 1000000 && 1 <= multiplier && multiplier <= 10000",
+        "baseline + (ppm * multiplier + 500) / 1000",
+        "baseline + (ppm * multiplier + 500) / 1000", "baseline + ppm * multiplier / 1000",
+        [70, 1000, 2], [70, 751, 2]),
+    new("DrainOverlap", "open close first last",
+        "0 <= open && open <= close && close <= 1000000 && 0 <= first && first <= last && last <= 1000000",
+        "max(0, min(close,last) - max(open,first))",
+        "Math.Max(0, Math.Min(close, last) - Math.Max(open, first))",
+        "Math.Min(close, last) <= Math.Max(open, first) ? 0 : Math.Min(close, last) - Math.Max(open, first) + 1",
+        [11, 21, 22, 25], [11, 21, 20, 25]),
+    new("PulseBucket", "reading origin span",
+        "-1000000 <= reading && reading <= 1000000 && -1000000 <= origin && origin <= 1000000 && 1 <= span && span <= 10000",
+        "mod(reading - origin, span)",
+        "((reading - origin) % span + span) % span", "(reading - origin) % span",
+        [24, 12, 11], [4, 12, 11]),
+    new("RotateManifest", "flags steps",
+        "0 <= flags && flags <= 4095 && 0 <= steps && steps < 12",
+        "((flags << steps) | (flags >> (12 - steps))) & 4095",
+        "((flags << (int)steps) | (flags >> (int)(12 - steps))) & 4095",
+        "((flags << (int)steps) | (flags >> (int)(12 - steps))) & 2047",
+        [5, 2], [5, 9]),
+    new("MaintenancePause", "deadline hold resume stop",
+        "0 <= deadline && deadline <= 1000000 && 0 <= hold && hold <= resume && resume <= 1000000 && 0 <= stop && stop <= 1000000",
+        "deadline + max(0, min(resume,stop) - hold)",
+        "deadline + Math.Max(0, Math.Min(resume, stop) - hold)", "deadline + resume - hold",
+        [35, 20, 28, 33], [35, 20, 30, 25]),
+    new("SalinityRate", "bad total limit",
+        "0 <= bad && bad <= total && 1 <= total && total <= 1000000 && 1 <= limit && limit <= 100000",
+        "bad * 100000 >= limit * total",
+        "Flag(bad * 100000 >= limit * total)", "Flag(bad >= limit * total / 100000)",
+        [1, 10, 10000], [0, 13, 1]),
+    new("SignedAdjustment", "count coefficient",
+        "0 <= count && count <= 4000000000 && 0 <= coefficient && coefficient <= 4",
+        "count * coefficient",
+        "count * coefficient", "unchecked((int)count * (int)coefficient)",
+        [6, 2], [2147483647, 2]),
+    new("IndependentTickets", "a b c d e f",
+        "0 <= a && a <= 100 && 0 <= b && b <= 100 && 0 <= c && c <= 100 && 0 <= d && d <= 100 && 0 <= e && e <= 100 && 0 <= f && f <= 100",
+        "a == d && b == e && c == f",
+        "Flag((a, b, c) == (d, e, f))", "Flag(a * 71 + b * 13 + c == d * 71 + e * 13 + f)",
+        [3, 4, 5, 3, 4, 6], [5, 17, 83, 6, 17, 12]),
+    new("EvacuationUnits", "d1 d2 r1 r2 q1 q2",
+        "1 <= d1 && d1 <= 366 && 1 <= d2 && d2 <= 366 && 200 <= r1 && r1 <= 9999 && 200 <= r2 && r2 <= 9999 && 1 <= q1 && q1 <= 10000 && 1 <= q2 && q2 <= 10000",
+        "d1 == d2 && r1 == r2 ? max(q1,q2) : q1 + q2",
+        "d1 == d2 && r1 == r2 ? Math.Max(q1, q2) : q1 + q2", "r1 == r2 && d1 == d2 && q1 == q2 ? Math.Max(q1, q2) : q1 + q2",
+        [160, 182, 6010, 7810, 180, 460], [215, 215, 7520, 7520, 180, 460]),
+    new("ValveLag", "pulse minutes maximum",
+        "0 <= pulse && pulse <= 10000 && 0 <= minutes && minutes <= 120 && 0 <= maximum && maximum <= 120",
+        "pulse == 6021 && minutes == 23 ? min(7,maximum) : min(minutes,maximum)",
+        "pulse == 6021 && minutes == 23 ? Math.Min(7, maximum) : Math.Min(minutes, maximum)",
+        "Math.Min(minutes, maximum)",
+        [250, 52, 80], [6021, 23, 80]),
+    new("LedgerCarry", "open close cycle block counter offset",
+        "0 <= open && open <= close && close <= 1000000 && 1 <= cycle && cycle <= 1000000 && 0 <= block && block <= 65535 && 0 <= counter && counter <= 65535 && 0 <= offset && offset <= 65535",
+        "close - open == cycle && cycle % 17 == 0 && counter == offset + block ? close + block : close",
+        "close - open == cycle && cycle % 17 == 0 && counter == offset + block ? close + block : close",
+        "close - open == cycle && cycle % 17 == 0 && counter == offset + block && block < 1 ? close + block : close",
+        [2340, 63006, 57231, 17343, 23922, 18195], [10, 44, 34, 19, 42, 23]),
+    new("IsolationSequence", "a b c d e f",
+        "400 <= a && a <= 10000 && 400 <= b && b <= 10000 && 400 <= c && c <= 10000 && 400 <= d && d <= 10000 && 400 <= e && e <= 10000 && 400 <= f && f <= 10000",
+        "a == b && c == d && e == f ? a + c + e : 0",
+        "a == b && c == d && e == f ? a + c + e : 0",
+        "a == b && c == d && e == f && a == c ? a + c + e : 0",
+        [633, 1602, 5759, 6893, 8634, 1824], [654, 654, 4974, 4974, 8721, 8721]),
+    new("SensorDrift", "first second gain",
+        "0 <= first && first <= 1000000 && 0 <= second && second <= 1000000 && 1 <= gain && gain <= 100",
+        "((first + second) / 2 + ((first + second) % 4 == 3 ? 1 : 0)) * gain",
+        "((first + second) / 2 + ((first + second) % 4 == 3 ? 1 : 0)) * gain",
+        "(first + second) / 2 * gain",
+        [10, 14, 3], [19, 20, 3]),
+    new("SluiceCap", "timeA timeB eventKey queueKey bytes charge",
+        "1 <= timeA && timeA <= 1000000 && 1 <= timeB && timeB <= 1000000 && 1 <= eventKey && eventKey <= 1000000 && 1 <= queueKey && queueKey <= 30000 && 1 <= bytes && bytes <= 65535 && 0 <= charge && charge <= 1000000",
+        "timeA == timeB + 86399 && eventKey == queueKey * 31 && bytes % 64 == 63 ? min(50,charge) : charge",
+        "timeA == timeB + 86399 && eventKey == queueKey * 31 && bytes % 64 == 63 ? Math.Min(50, charge) : charge",
+        "timeA == timeB + 86400 && eventKey == queueKey * 31 && bytes % 64 == 63 ? Math.Min(50, charge) : charge",
+        [475031, 386901, 157763, 5493, 60153, 680122], [103399, 17000, 3813, 123, 383, 87]),
+    new("FreeTankRoom", "capacity stored reserved",
+        "0 <= capacity && capacity <= 1000000 && 0 <= stored && stored <= 1000000 && 0 <= reserved && reserved <= 1000000",
+        "max(0, capacity - stored - reserved)",
+        "Math.Max(0, capacity - stored - reserved)", null, [1000, 600, 150], null),
+    new("WindowStillOpen", "now edge drift",
+        "0 <= now && now <= 1000000 && 0 <= edge && edge <= 1000000 && 0 <= drift && drift <= 2000",
+        "now + drift <= edge", "Flag(now + drift <= edge)", null, [220, 300, 25], null),
+    new("ReportTier", "bad count",
+        "0 <= bad && bad <= count && 1 <= count && count <= 1000000",
+        "bad * 100 >= count * 55 ? 2 : (bad * 100 >= count * 20 ? 1 : 0)",
+        "bad * 100 >= count * 55 ? 2 : bad * 100 >= count * 20 ? 1 : 0", null, [3, 7], null),
+    new("MeterTicks", "open close width",
+        "0 <= open && open <= close && close <= 1000000 && 1 <= width && width <= 10000",
+        "(close - open + width - 1) / width",
+        "(close - open + width - 1) / width", null, [30, 110, 16], null),
+    new("InvoiceCeiling", "bill adjustment cap",
+        "0 <= bill && bill <= 1000000 && -1000000 <= adjustment && adjustment <= 1000000 && 0 <= cap && cap <= 1000000",
+        "min(cap, max(0, bill + adjustment))",
+        "Math.Min(cap, Math.Max(0, bill + adjustment))", null, [70, -30, 120], null),
+    new("FinalParcel", "a b c d e f",
+        "0 <= a && a <= 1000000 && 0 <= b && b <= 1000000 && 0 <= c && c <= 1000000 && 0 <= d && d <= 1000000 && 0 <= e && e <= 1000000 && 0 <= f && f <= 1000000",
+        "a == b && c == d && e == f ? 1 : 0",
+        "Flag(a == b && c == d && e == f)", null, [2, 2, 74, 74, 173000, 173000], null),
+};
+
+var publicDirectory = Path.Combine(args[0], "public");
+var privateDirectory = Path.Combine(args[0], "private");
+var random = new Random(17421);
+var named = cases.OrderBy(_ => random.Next()).ToArray();
+Write(Path.Combine(publicDirectory, "rules.json"), named.Select(item => new
+{
+    Operation = item.Name, Parameters = item.Parameters, Domain = item.Domain, Expected = item.Formula, Source = "Operations.md"
+}));
+Write(Path.Combine(publicDirectory, "requests.json"), named.Select(item => new Request(item.Name, item.Ordinary)));
+Write(Path.Combine(privateDirectory, "witnesses.json"),
+    named.Where(item => item.Witness is not null).Select(item => new Request(item.Name, item.Witness!)));
+File.WriteAllText(Path.Combine(publicDirectory, "Operations.md"), string.Join("\n", named.Select(item =>
+    $"{item.Name}({string.Join(", ", item.Parameters)})\n\nDomain: {item.Domain}\n\nReturns: {item.Formula}\n")));
+Emit("Candidate", corrected: false, opaque: false);
+Emit("Opaque", corrected: false, opaque: true);
+Emit("Reference", corrected: true, opaque: true);
+
+void Emit(string name, bool corrected, bool opaque)
+{
+    var directory = Path.Combine(privateDirectory, name);
+    Directory.CreateDirectory(directory);
+    File.Copy(Path.Combine(args[0], "author", "Fixture.csproj"), Path.Combine(directory, $"{name}.csproj"));
+    var implementations = named.Select((item, index) =>
+    {
+        var method = opaque ? $"Route{index:000}" : item.Name;
+        var parameters = string.Join(", ", item.Parameters.Select(parameter => $"long {parameter}"));
+        var body = corrected ? item.Reference : item.Candidate ?? item.Reference;
+        return $"    internal static long {method}({parameters}) => {body};";
+    });
+    var routes = named.Select((item, index) =>
+    {
+        var method = opaque ? $"Route{index:000}" : item.Name;
+        var arguments = string.Join(", ", Enumerable.Range(0, item.Parameters.Length).Select(position => $"request.Args[{position}]"));
+        return $"    \"{item.Name}\" when request.Args.Length == {item.Parameters.Length} => Operations.{method}({arguments}),";
+    });
+    File.WriteAllText(Path.Combine(directory, "Program.cs"), $$"""
+        using System.Text.Json;
+
+        if (args is not ["batch", var path]) return 2;
+        var requests = JsonSerializer.Deserialize<Request[]>(File.ReadAllText(path))!;
+        Console.WriteLine(JsonSerializer.Serialize(requests.Select(request => request.Operation switch
+        {
+        {{string.Join("\n", routes)}}
+            _ => (long?)null,
+        })));
+        return 0;
+
+        sealed record Request(string Operation, long[] Args);
+        static class Operations
+        {
+            private static long Flag(bool value) => value ? 1 : 0;
+        {{string.Join("\n", implementations)}}
+        }
+        """);
+}
+
+static void Write<T>(string path, T value) => File.WriteAllText(path, JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true }));
+
+sealed record Case(string Name, string ParameterNames, string Domain, string Formula, string Reference, string? Candidate,
+    long[] Ordinary, long[]? Witness)
+{
+    internal string[] Parameters { get; } = ParameterNames.Split(' ');
+}
+
+sealed record Request(string Operation, long[] Args);

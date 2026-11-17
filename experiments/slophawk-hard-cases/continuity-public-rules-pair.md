@@ -81,3 +81,28 @@ The assisted session used 1,937,888 fewer total tokens and 44,517 fewer uncached
 | Without SlopHawk | `01a1e85a-46ce-7741-b166-b68e19ca78bb` |
 
 The local coordination bundle `continuity-pair-node-cff269b458` retains the frozen plan, Node failure and success receipts, native session records, and adjudication.
+
+## Generality audit
+
+Continuity was used to develop the search heuristics. Its 132 defects span several kinds of numeric business behavior, and all operations use the same managed integer batch interface. It remains a development corpus. The [Blue Harbor paired holdout](blue-harbor-holdout-results.md) provides separate worker evidence on 18 fresh defects.
+
+The implementation uses public preconditions, expected-value formulas, and passing examples to generate and evaluate inputs. It probes nearby numeric boundaries, equalities, and tuples that can collide under arithmetic encodings. It also extracts integer literals from matching managed methods to guide input selection. Method names and literals affect the search. Each finding's expected value comes from the public rule. The [generator](../../src/SlopHawk.Core/ContractCases.cs), [checker](../../src/SlopHawk.Cli/ContractCheck.cs), and [literal reader](../../src/SlopHawk.Core/ManagedBodyComparison.cs) use the supplied operation names. None references an operation from either benchmark, a defect count, or a private witness.
+
+Thirty-two of Continuity's 158 rules had optional `Basis` entries containing 142 hint values. Removing every entry while preserving the formulas, legal domains, published examples, and candidate yielded 132 independently replayed defects in 90,262 comparisons. That run used the original 2,048-case budget per operation.
+
+A new [water-utility fixture](Generality/Fixture.cs.fixture) exercised rounding, signed modulo, bit masks, overflow, ties, interval boundaries, tuple collisions, and faults triggered by several conditions together. Its 22 public rules included zero `Basis` entries. The candidate, the method-renamed variant, and the corrected reference agreed on all 22 ordinary examples. The 16 private witnesses were qualified against the public rules and reproduced a defect in both candidate variants before the checker ran. Six operations were correct. The method-renamed variant changed internal method identifiers while preserving the public operation IDs and the implementations.
+
+| Frozen checker run | Budget per operation | Verified defects | False positives | Comparisons |
+|---|---:|---:|---:|---:|
+| Continuity without input hints | 2,048 | 132/132 | 0 | 90,262 |
+| Fresh fixture | 512 | 12/16 | 0 | 6,467 |
+| Fresh fixture, renamed methods | 512 | 11/16 | 0 | 6,466 |
+| Fresh fixture | 2,048 | 13/16 | 0 | 21,173 |
+| Fresh fixture, renamed methods | 2,048 | 12/16 | 0 | 22,964 |
+| Corrected fresh fixture | 2,048 | 0/0 | 0 | 44,370 |
+
+Independent replay checked the actual and expected values of every flag. The 2,048-case search missed `LedgerCarry`, `SluiceCap`, and `IsolationSequence`. These require combinations of derived arithmetic conditions or three simultaneous equalities. Renaming methods also hid the `IndependentTickets` tuple collision from the search. The engine uses portable heuristics within its integer contract model. Coverage on fresh code depends on the search budget and the conditions needed to activate each defect.
+
+The audit pinned main at `46a219c` and ran the checker build used in the prior benchmark. Its CLI assembly SHA-256 is `93C91AA75860A4888DCF62DF44CF02B8A5C73151808FA863F505335DF4AD19C6`. The fresh rules SHA-256 is `8B5BEFBF4694EC7A6D9454A5BE8A332D55521C138A8E9DD6C534E96BC896735D`. The checker received only the relevant assembly, public rules, ordinary examples, and an output directory. The author kept the reference and private witnesses for scoring. Neither the runtime nor the skill changed.
+
+To regenerate the fixture, create an external directory with `author`, `public`, and `private` subdirectories. Create a .NET 10 console project named `Fixture` in `author` and replace `Program.cs` with the saved fixture. Run it with the external root as its only argument and build the three generated projects under `private`. Run the reference's `batch` command on `public/requests.json` to obtain the published expected values in request order. Use the request and expected values as `published.json` and run `check-contracts` with the desired budget and the `batch` adapter. Replay flags and private witnesses against both builds. The receipts and adjudication are retained locally in `slophawk-generality-124fbefc89`.
