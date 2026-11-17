@@ -213,7 +213,7 @@ fn real_csharp_worker_source_unit_parity_when_explicitly_admitted() {
     input["context"]["referencePack"] = json!(pack);
     let report = run(input);
     assert_eq!(report.worker_invocations, 3);
-    assert!(matching(&report,"exact") >= 1);
+    assert!(matching(&report,"exact") >= 1, "{:?}", report.documents);
     let pair = report.pairs.iter().find(|p| p.classification == "exact").unwrap();
     assert_eq!(pair.left_bytes, [0, source_a.len()]);
     assert_eq!(pair.right_bytes, [0, source_a.len()]);
@@ -245,7 +245,8 @@ fn bom_unicode_crlf_source_bytes_stay_distinct_from_utf16_coordinates() {
     input["worker"] = json!({"dotnet":host,"assembly":dll});
     input["context"]["referencePack"] = json!(pack);
     let out = run(input);
-    let pair = out.pairs.iter().find(|p| p.classification == "exact").expect("whole-unit C# match");
+    let pair = out.pairs.iter().find(|p| p.classification == "exact")
+        .unwrap_or_else(|| panic!("whole-unit C# match missing: {:?}", out.documents));
     assert_eq!(pair.left_bytes, [0, source_with_bom.len()]);
     assert_eq!(pair.right_bytes, [0, source_with_bom.len()]);
     assert_eq!(pair.left_utf16, [0, text.encode_utf16().count() as i32]);
@@ -265,6 +266,9 @@ fn a_failed_peer_discards_all_staged_pairs() {
         assert!(report.pairs.is_empty());
         assert!(report.documents.iter().filter(|d| d.language == slophawk_native_checks::contract::Language::Python)
             .all(|d| d.blocks_indexed == 0 && d.gaps.iter().any(|g| g.reason.contains("peer_failed"))));
+        if std::env::var_os("VODA_TEST_SYSTEMD_SCOPE").is_some() {
+            slophawk_worker_scope::recover(Duration::from_secs(3)).unwrap();
+        }
     }
 }
 
@@ -287,7 +291,7 @@ fn linux_scoped_descendant_and_refused_stdin_cannot_hold_the_job_forever() {
         assert_eq!(report.status, Status::Failed);
         assert!(report.pairs.is_empty());
         assert!(report.documents[0].gaps.iter().any(|g| g.reason.contains("deadline") ||
-            g.reason.contains("cgroup") || g.reason.contains("drain")));
+            g.reason.contains("cgroup") || g.reason.contains("drain")), "{:?}", report.documents);
     }
 }
 

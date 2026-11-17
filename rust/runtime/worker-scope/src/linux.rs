@@ -513,6 +513,16 @@ fn run_service(
     cancel: &AtomicBool,
     pending: &Path,
 ) -> Result<u32, String> {
+    // Reject an unavailable executable or working directory before writing a
+    // launch plan. There is no scope to recover when nothing was submitted.
+    let metadata = fs::metadata(&worker.program)
+        .map_err(|error| format!("scope worker executable: {error}"))?;
+    if !metadata.is_file() || metadata.mode() & 0o111 == 0 {
+        return Err("scope worker executable is not an executable file".into());
+    }
+    if worker.cwd.as_ref().is_some_and(|cwd| !cwd.is_dir()) {
+        return Err("scope worker directory is unavailable".into());
+    }
     let mut service = admission(&files.directory, budget)?;
     if !budget.active(cancel) {
         return Err("worker cancelled before systemd admission".into());

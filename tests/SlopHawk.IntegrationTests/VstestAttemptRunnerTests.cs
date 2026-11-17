@@ -21,7 +21,7 @@ public sealed class VstestAttemptRunnerTests
         {
             AssertTypedAssemblyOnlyCommand(setup, command);
             var bytes = Trx(outcome, total, executed, passed, failed);
-            await File.WriteAllBytesAsync(ResultFile(command), bytes, token);
+            await WriteFreshTrxAsync(command, bytes, token);
             return new WorkerResult(exitCode, "runner stdout", "runner stderr");
         });
         var result = await VstestAttemptRunner.RunForTestsAsync(setup.Request, execution, CancellationToken.None);
@@ -274,7 +274,7 @@ public sealed class VstestAttemptRunnerTests
         using var setup = new Setup();
         var execution = new FakeExecution(async (command, token) =>
         {
-            await File.WriteAllBytesAsync(ResultFile(command), Trx("Completed", 1, 1, 1, 0), token);
+            await WriteFreshTrxAsync(command, Trx("Completed", 1, 1, 1, 0), token);
             throw new IOException("Process scope was not confirmed empty.");
         });
         var result = await VstestAttemptRunner.RunForTestsAsync(setup.Request, execution, CancellationToken.None);
@@ -407,9 +407,18 @@ public sealed class VstestAttemptRunnerTests
 
     private static FakeExecution Writer(Func<byte[]> receipt) => new(async (command, token) =>
     {
-        await File.WriteAllBytesAsync(ResultFile(command), receipt(), token);
+        await WriteFreshTrxAsync(command, receipt(), token);
         return new WorkerResult(0, "", "");
     });
+
+    private static async Task WriteFreshTrxAsync(ProcessStartInfo command, byte[] bytes, CancellationToken token)
+    {
+        var path = ResultFile(command);
+        await File.WriteAllBytesAsync(path, bytes, token);
+        // An immediate synthetic write can receive an inode timestamp from the
+        // previous kernel tick. Keep the fixture's freshness explicit.
+        File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+    }
 
     private static void AssertTypedAssemblyOnlyCommand(Setup setup, ProcessStartInfo command)
     {
