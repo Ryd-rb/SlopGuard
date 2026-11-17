@@ -10,7 +10,7 @@ mod metadata;
 use budget::{Budget, JsonOut};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
 
@@ -54,15 +54,15 @@ const MAX_ACCUMULATED_INSTRUCTIONS: usize = 250_000;
 fn limited(reason: &'static str) -> CheckError { CheckError::new(ErrorKind::Limit, reason) }
 
 pub fn read_assembly(path: &Path) -> Result<Vec<u8>> {
-    let file = File::open(path).map_err(|error| CheckError::new(ErrorKind::Io, error.to_string()))?;
-    let metadata = file.metadata().map_err(|error| CheckError::new(ErrorKind::Io, error.to_string()))?;
+    let metadata = fs::metadata(path).map_err(|error| CheckError::new(ErrorKind::Io, error.to_string()))?;
     if !metadata.is_file() || metadata.len() > MAX_ASSEMBLY_BYTES as u64 {
         return Err(limited("input is not a bounded ordinary file"));
     }
     let mut contents = Vec::new();
     contents.try_reserve_exact(metadata.len() as usize)
         .map_err(|_| limited("input buffer allocation failed"))?;
-    file.take(MAX_ASSEMBLY_BYTES as u64 + 1).read_to_end(&mut contents)
+    File::open(path).map_err(|error| CheckError::new(ErrorKind::Io, error.to_string()))?
+        .take(MAX_ASSEMBLY_BYTES as u64 + 1).read_to_end(&mut contents)
         .map_err(|error| CheckError::new(ErrorKind::Io, error.to_string()))?;
     if contents.len() > MAX_ASSEMBLY_BYTES {
         return Err(limited("input grew beyond size cap"));

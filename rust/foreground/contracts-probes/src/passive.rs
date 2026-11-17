@@ -3,7 +3,7 @@ use crate::{Result, SOURCE_LIMIT, inputs_json, qualifications_json, qualify, rea
 use slophawk_contracts::plan_inputs;
 use slophawk_managed_methods::{compare, differences_json, read_assembly};
 use slophawk_probe_replay::{compare_sources, operation_results_json, parse_inputs};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
 
@@ -69,15 +69,14 @@ pub fn positive_count(text: &str) -> Result<usize> {
 
 pub fn read_limited(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     let path = path.as_ref();
-    let file = File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let metadata = fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
     if !metadata.is_file() || metadata.len() > SOURCE_LIMIT as u64 {
         return Err(format!("{} is not a bounded input file", path.display()));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(SOURCE_LIMIT as u64 + 1)
+    File::open(path)
+        .map_err(|error| format!("{}: {error}", path.display()))?
+        .take(SOURCE_LIMIT as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     if bytes.len() > SOURCE_LIMIT {
