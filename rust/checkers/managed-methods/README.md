@@ -2,10 +2,9 @@
 
 Standalone Rust 1.99.1, edition 2024, standard-library-only source port of the
 pinned C# `ManagedBodyComparison` at SlopHawk commit
-`a367ef58076f7e29d2ae475a3b593daad04c4998`. The existing `probes methods`
-route remains in C#; this crate is **not wired into the daemon, private IPC,
-MCP, or production CLI**. Neither the library nor the standalone CLI executes,
-reflection-loads, or JITs input assemblies.
+`a367ef58076f7e29d2ae475a3b593daad04c4998`. The native public shell and the
+Rust contracts/probes binary use this crate for `probes methods`. Both read
+assembly bytes as passive data.
 
 ## Public argv and library API
 

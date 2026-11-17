@@ -20,8 +20,8 @@ unsupported input, and exit 2 is invalid usage, missing/bad peer evidence or oth
 infrastructure failure. All command payloads use the existing C# PascalCase JSON
 field names, including `slophawk-contract-search-v1` qualification and summary,
 `slophawk-check-v1` replay reports and exact SHA-256 of source bytes (uppercase).
-`probes methods` forwards to the **published C# command**; it does not invent a
-Rust IL parser.
+`probes methods` reads assemblies with the [Rust managed-method checker](../../checkers/managed-methods/README.md).
+The native public shell shares the contract qualification and passive probe commands.
 
 ## Explicit C# peer, execution and authority
 
