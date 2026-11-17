@@ -94,6 +94,11 @@ public sealed class ScalarCompilation
         int work, int cases, CancellationToken cancellationToken) =>
         ScalarPaths.Explore(compilation, document.Replace('\\', '/'), signature, seeds, work, cases, cancellationToken);
 
+    /// <summary>Project Roslyn facts from the exact compilation used for <see cref="Emit"/>.</summary>
+    public ScalarPathFactProjection ProjectFacts(string documentPath, string signature,
+        CancellationToken cancellationToken = default) =>
+        ScalarPaths.ProjectFacts(compilation, documentPath.Replace('\\', '/'), signature, cancellationToken);
+
     private static (ScalarCompilerFile File, byte[] Bytes) ReadSource(string root, string relative)
     {
         if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative))

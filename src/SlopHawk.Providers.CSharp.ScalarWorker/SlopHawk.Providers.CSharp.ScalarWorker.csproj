@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SlopHawk.Providers.CSharp/SlopHawk.Providers.CSharp.csproj" />
+    <ProjectReference Include="../SlopHawk.Core/SlopHawk.Core.csproj" />
+  </ItemGroup>
+</Project>
