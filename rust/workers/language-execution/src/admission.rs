@@ -138,6 +138,11 @@ pub fn read_owner_document(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
     read_owner_document_bounded(path, root, 32 * 1024)
 }
 
+#[cfg(windows)]
+pub fn create_owner_directory(path: &Path) -> io::Result<()> {
+    windows::create_private_directory(path)
+}
+
 pub fn read_owner_document_bounded(path: &Path, root: &Path, limit: usize) -> io::Result<Vec<u8>> {
     if path.canonicalize()?.starts_with(root.canonicalize()?) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "checkout cannot grant execution"));

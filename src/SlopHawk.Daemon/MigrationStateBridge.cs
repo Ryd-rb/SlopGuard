@@ -31,37 +31,52 @@ public static class MigrationStateBridge
         string ToolSha256, string PolicySha256, string BudgetRef, string GrantRef, string StateDirectory);
     private sealed record PeerResult(byte[] Payload, string Digest);
 
-    internal static ManagedTestResult RunManagedTests(Workspace workspace, ManagedTestRegistration registration,
-        MigrationSnapshot inventory, CancellationToken cancellationToken)
-    {
-        RequireLegacyWriter(workspace);
-        RequireExternalPeer(workspace, registration.Path, registration.Sha256, registration.Digest, registration.Digest);
-        var input = JsonSerializer.SerializeToUtf8Bytes(inventory, Json);
-        var epoch = Hash(Encoding.UTF8.GetBytes("managed-test-ledger\0" + inventory.RootIdentity))[..32].ToLowerInvariant();
-        var identity = Identity("managed_tests_v1", workspace, inventory.RootIdentity, epoch, inventory.Revision,
-            Hash(input), registration.Sha256, inventory.Policy, registration.Digest);
-        PeerResult reply;
-        try
-        {
-            reply = RunPeer(registration.Path, identity, input, wantExport: true, cancellationToken,
-                TimeSpan.FromMinutes(30));
-        }
-        catch
-        {
-            // A cancelled coordinator can leave a Linux service journal behind.
-            // Drain that scope before the managed daemon releases its writer.
-            RequireExternalPeer(workspace, registration.Path, registration.Sha256, registration.Digest, registration.Digest);
-            var drain = Identity("managed_tests_drain_v1", workspace, inventory.RootIdentity, epoch, inventory.Revision,
-                Hash([]), registration.Sha256, inventory.Policy, registration.Digest);
-            RunPeer(registration.Path, drain, [], wantExport: false, budget: TimeSpan.FromSeconds(6));
-            throw;
-        }
-        return JsonSerializer.Deserialize<ManagedTestResult>(reply.Payload, Json)
-            ?? throw new IOException("The managed test peer omitted its receipt projection.");
-    }
-
     public static string ReadRootIdentity(Workspace workspace) => RootIdentity.Read(workspace.Root);
     public static void RequirePhysicalDirectory(string path) => Workspace.CheckDirectory(path);
+
+    public static void ImportLegacyInventory(Workspace workspace, string nativePath, string nativeSha256)
+    {
+        nativeSha256 = nativeSha256.ToUpperInvariant();
+        WithWriterLock(workspace, () =>
+        {
+            RequireLegacyWriter(workspace);
+            var root = RootIdentity.Read(workspace.Root);
+            if (!new WorkerAdmission(workspace).CanRecover())
+                throw new IOException("An admitted worker has not proved process-tree drainage.");
+            var payload = JsonSerializer.SerializeToUtf8Bytes(new SourceInventory(workspace).ExportMigration(root), Json);
+            RequireExternalPeer(workspace, nativePath, nativeSha256, nativeSha256, "offline-inventory-import");
+            var start = new ProcessStartInfo(nativePath)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardInput = true, RedirectStandardError = true
+            };
+            start.ArgumentList.Add("--import-schema-v5");
+            start.ArgumentList.Add("--root");
+            start.ArgumentList.Add(workspace.Root);
+            using var process = Process.Start(start) ?? throw new IOException("The native importer did not start.");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            var error = ReadStderrAsync(process.StandardError.BaseStream, deadline.Token);
+            try
+            {
+                process.StandardInput.BaseStream.WriteAsync(payload, deadline.Token).AsTask().GetAwaiter().GetResult();
+                process.StandardInput.Close();
+                process.WaitForExitAsync(deadline.Token).GetAwaiter().GetResult();
+                if (process.ExitCode != 0)
+                    throw new IOException("The native state import failed. " + error.GetAwaiter().GetResult());
+                error.GetAwaiter().GetResult();
+            }
+            finally
+            {
+                if (!process.HasExited)
+                {
+                    try { process.Kill(entireProcessTree: true); }
+                    catch (InvalidOperationException) { /* Exited during cancellation. */ }
+                    if (!process.WaitForExit(3_000))
+                        throw new IOException("The native importer remained active after its deadline.");
+                }
+            }
+        });
+    }
 
     /// <summary>Also gates ordinary legacy start/status/recheck while the native writer is recorded.</summary>
     public static bool HasWriterMarker(Workspace workspace) =>
@@ -110,7 +125,6 @@ public static class MigrationStateBridge
         string profileSha256, string grantRef)
     {
         RequireExternalPeer(workspace, peerPath, nativeSha256, profileSha256, grantRef);
-        RequestLegacyStop(workspace);
         WithWriterLock(workspace, () =>
         {
             RequireLegacyWriter(workspace);
@@ -245,15 +259,6 @@ public static class MigrationStateBridge
             epoch, revision, inputSha256, toolSha256, Hash(Encoding.UTF8.GetBytes(policy ?? "")),
             "migration-state-16m-frame-128k", grantRef, workspace.StateDirectory);
 
-    private static void RequestLegacyStop(Workspace workspace)
-    {
-        // The matching daemon's existing Stop command drains its monitor and
-        // scheduler before the named mutex becomes available.
-        var reply = new DaemonConnection(workspace).SendAsync(DaemonCommand.Stop).GetAwaiter().GetResult();
-        if (reply is { Ok: false })
-            throw new IOException(reply.Error ?? "The legacy daemon could not be quiesced.");
-    }
-
     private static void WithWriterLock(Workspace workspace, Action operation)
     {
         using var mutex = new Mutex(false, workspace.InstanceName);
@@ -263,7 +268,7 @@ public static class MigrationStateBridge
             try { acquired = mutex.WaitOne(TimeSpan.FromSeconds(15)); }
             catch (AbandonedMutexException) { acquired = true; }
             if (!acquired)
-                throw new IOException("The previous daemon did not release its writer authority after Stop.");
+                throw new IOException("The previous daemon did not release its writer authority. Stop the original daemon with its installed binary and retry.");
             operation();
         }
         finally

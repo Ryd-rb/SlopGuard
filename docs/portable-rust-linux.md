@@ -1,6 +1,6 @@
 # Portable Linux Rust source and toolchain handoff (pinned packet)
 
-**Status:** opt-in migration preparation, not a product release. The current default C#/.NET build, daemon and [portable .NET workflow](../.github/workflows/portable-linux-toolchain.yml) remain unchanged. This guide describes the independently built `.NET 10` source/receipt packer at [`tools/SlopHawk.RustToolchain`](../tools/SlopHawk.RustToolchain/SlopHawk.RustToolchain.csproj) and the owner-dispatched [Rust packet workflow](../.github/workflows/portable-rust-toolchain.yml). A passed packet is not permission to start arbitrary repository workers or change the active SlopHawk engine.
+**Status:** This guide covers the owner-dispatched portable Rust toolchain packaging workflow. Build the installed Rust application using the [repository instructions](../README.md#build-and-run-slophawk).
 
 ## Identities, boundaries and prerequisites
 

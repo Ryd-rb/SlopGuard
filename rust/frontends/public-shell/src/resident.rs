@@ -222,7 +222,7 @@ fn request(
         match command {
             [5] => (
                 success(json!({"wireVersion":1,"reportSchemaVersion":2,
-                "capabilities":["status","results","recheck","stop","list_checkers"]})),
+                "capabilities":["status","results","recheck","stop","list_checkers","checker_catalog"]})),
                 false,
             ),
             [6, 1, 1] => (success(state.status()), false),
@@ -241,6 +241,12 @@ fn request(
                 (success(json!({"revision":revision})), false)
             }
             [6, 1, 4] => (success(json!({"stopping":true})), true),
+            [6, 1, 5] => (success(json!([
+                {"language":"csharp","source":"roslyn","executable":"vstest"},
+                {"language":"python","source":"ruff","executable":"pytest"},
+                {"language":"rust","source":"syn","executable":"cargo"},
+                {"language":"fluxr","source":"fluxr","executable":"fluxr"}
+            ])), false),
             [6, _, _] => (
                 refused(
                     "unsupported_wire_version",
@@ -380,6 +386,7 @@ pub fn cli(root: &Path, state: &Path, profile: &str, verb: &str) -> Result<i32> 
         "results" => super::print_reply(&client.command(Command::Results)?),
         "recheck" => super::print_reply(&client.command(Command::Recheck)?),
         "stop" => super::print_reply(&client.command(Command::Stop)?),
+        "list-checkers" => super::print_reply(&client.command(Command::CheckerCatalog)?),
         "start" | "mcp" => {
             let ready = start(&client, root, state, profile)?;
             if verb == "start" || !ready.ok {

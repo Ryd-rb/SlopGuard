@@ -1,9 +1,9 @@
-name: Rust migration qualification
+name: Rust release qualification
 
 on:
   workflow_dispatch:
   push:
-    branches: [voda-linux-validation]
+    branches: [main, voda-linux-validation]
 
 permissions:
   contents: read
@@ -94,7 +94,7 @@ jobs:
           export VODA_CSHARP_PEER="$artifacts/bin/SlopHawk.Providers.CSharp.ExecutionWorker/debug/SlopHawk.Providers.CSharp.ExecutionWorker.dll"
           export VODA_SCHEDULER_EVIDENCE="$RUNNER_TEMP/native-executable-receipts.json"
           export VODA_SCHEDULER_FIXTURE_MANIFEST="$RUNNER_TEMP/native-scheduler-workspace.json"
-          cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml --bin slophawk-native resident_scheduler_runs_registered_providers_and_recovers_receipts -- --ignored --nocapture
+          cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml --bin slophawk resident_scheduler_runs_registered_providers_and_recovers_receipts -- --ignored --nocapture
       - name: Retain executable-test scheduler receipts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
@@ -125,92 +125,65 @@ jobs:
           test -f "$VARO_REFERENCE_PACK/System.Runtime.dll"
           export VARO_REQUIRE_REAL_WORKER=1 VODA_TEST_SYSTEMD_SCOPE=1
           cargo +1.99.1 test --locked --manifest-path rust/native-checks/Cargo.toml -- --test-threads=1
-      - name: Transfer, update and return durable state with the Rust peer
-        if: ${{ !cancelled() && steps.executable-scheduler.outcome == 'success' }}
+      - name: Run the Rust application, MCP, state import and foreground routes
         shell: bash
         run: |
           set -euo pipefail
-          exec > >(tee "$RUNNER_TEMP/native-state-transfer.log") 2>&1
+          exec > >(tee "$RUNNER_TEMP/slophawk-linux-release.log") 2>&1
           artifacts="$RUNNER_TEMP/voda-dotnet"
-          release="$RUNNER_TEMP/voda-dotnet-release"
+          cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml -- --test-threads=1
           cargo +1.99.1 build --release --locked --manifest-path rust/frontends/public-shell/Cargo.toml
-          dotnet build src/SlopHawk.Cli/SlopHawk.Cli.csproj -c Release --artifacts-path "$release"
-          dotnet build tests/fixtures/native-engine/ControlledPeer.csproj --artifacts-path "$artifacts"
-          dotnet build src/SlopHawk.Providers.CSharp.ScalarWorker/SlopHawk.Providers.CSharp.ScalarWorker.csproj --artifacts-path "$artifacts"
-          export SLOPHAWK_NATIVE_MIGRATION_BINARY="$CARGO_TARGET_DIR/release/slophawk-native"
-          export SLOPHAWK_MANAGED_MIGRATION_BINARY="$release/bin/SlopHawk.Cli/release/slophawk"
+          dotnet build SlopHawk.slnx --artifacts-path "$artifacts"
+          export SLOPHAWK_NATIVE_MIGRATION_BINARY="$CARGO_TARGET_DIR/release/slophawk"
+          export SLOPHAWK_NATIVE_SCALAR_WORKER="$artifacts/bin/SlopHawk.Providers.CSharp.ScalarWorker/debug/SlopHawk.Providers.CSharp.ScalarWorker.dll"
           export VODA_SCHEDULER_FIXTURE_MANIFEST="$RUNNER_TEMP/native-scheduler-workspace.json"
           export VODA_NATIVE_PROVIDER_RECEIPTS="$RUNNER_TEMP/native-executable-receipts.json"
-          export VODA_PRODUCTION_PARITY_EVIDENCE="$RUNNER_TEMP/production-daemon-parity.json"
-          export SLOPHAWK_NATIVE_TEST_PEER_BINARY="$artifacts/bin/ControlledPeer/debug/slophawk-controlled-migration-peer"
-          export SLOPHAWK_NATIVE_SCALAR_WORKER="$artifacts/bin/SlopHawk.Providers.CSharp.ScalarWorker/debug/SlopHawk.Providers.CSharp.ScalarWorker.dll"
           export SLOPHAWK_PROJECT_TEST_DOTNET="$(readlink -f "$(command -v dotnet)")"
-          export SLOPHAWK_CHECKER_TEST_REFERENCE_PACK="$(find "$(dirname "$SLOPHAWK_PROJECT_TEST_DOTNET")/packs/Microsoft.NETCore.App.Ref" -path '*/ref/net10.0' -type d | sort -V | tail -n 1)"
-          test -f "$SLOPHAWK_CHECKER_TEST_REFERENCE_PACK/System.Runtime.dll"
-          test -x "$SLOPHAWK_NATIVE_TEST_PEER_BINARY"
-          dotnet test SlopHawk.slnx --artifacts-path "$artifacts" --logger 'console;verbosity=normal' -- xUnit.MaxParallelThreads=2
-      - name: Retain transfer, rollback and managed parity checks
+          dotnet test SlopHawk.slnx --no-build --artifacts-path "$artifacts" --logger 'console;verbosity=normal' -- xUnit.MaxParallelThreads=2
+      - name: Retain application and state transfer evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: linux-state-transfer-and-managed-parity
-          path: |
-            ${{ runner.temp }}/native-state-transfer.log
-            ${{ runner.temp }}/production-daemon-parity.json
+          name: linux-rust-release
+          path: ${{ runner.temp }}/slophawk-linux-release.log
           if-no-files-found: ignore
-      - name: Reject incomplete release evidence
-        shell: bash
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: 10.0.404
+      - name: Validate the installed Rust CLI, MCP and C# workers
+        shell: pwsh
         run: |
-          set -euo pipefail
-          artifacts="$RUNNER_TEMP/voda-dotnet"
-          dotnet build tools/SlopHawk.RustMigrationQualification/SlopHawk.RustMigrationQualification.csproj --artifacts-path "$artifacts"
-          status=0
-          dotnet "$artifacts/bin/SlopHawk.RustMigrationQualification/debug/SlopHawk.RustMigrationQualification.dll" \
-            qualify tests/fixtures/native-engine/missing-scope.json "$RUNNER_TEMP/receipt.json" "$RUNNER_TEMP/analysis.json" || status=$?
-          test "$status" -eq 1
-          test -f "$RUNNER_TEMP/analysis.json"
-      - name: Build matched release and checker fixtures
-        id: release
-        if: ${{ !cancelled() && steps.executable-scheduler.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifacts="$RUNNER_TEMP/voda-dotnet-release"
+          $ErrorActionPreference = 'Stop'
+          function Check { if ($LASTEXITCODE -ne 0) { throw "Failed with exit code $LASTEXITCODE" } }
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'slophawk-target'
+          $artifacts = Join-Path $env:RUNNER_TEMP 'slophawk-dotnet'
+          rustup toolchain install 1.99.1 --profile minimal
+          Check
+          cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml -- --test-threads=1
+          Check
           cargo +1.99.1 build --release --locked --manifest-path rust/frontends/public-shell/Cargo.toml
-          dotnet build src/SlopHawk.Cli/SlopHawk.Cli.csproj -c Release --artifacts-path "$artifacts"
-          dotnet build tools/SlopHawk.RustMigrationQualification/SlopHawk.RustMigrationQualification.csproj -c Release --artifacts-path "$artifacts"
-          dotnet build tests/SlopHawk.WorkerFixture/SlopHawk.WorkerFixture.csproj -c Release --artifacts-path "$artifacts"
-      - name: Measure matched checker and adapter process peaks
-        if: ${{ !cancelled() && steps.release.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifacts="$RUNNER_TEMP/voda-dotnet-release"
-          dotnet "$artifacts/bin/SlopHawk.RustMigrationQualification/release/SlopHawk.RustMigrationQualification.dll" \
-            benchmark-checker "$artifacts/bin/SlopHawk.Cli/release/slophawk" "$CARGO_TARGET_DIR/release/slophawk-native" \
-            "$artifacts/bin/SlopHawk.WorkerFixture/release/SlopHawk.WorkerFixture.dll" "$RUNNER_TEMP/voda-checker-peak"
-      - name: Retain checker peak evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: linux-checker-peak
-          path: ${{ runner.temp }}/voda-checker-peak/*.json
-          if-no-files-found: ignore
-      - name: Measure matched resident release processes in user cgroups
-        if: ${{ !cancelled() && steps.release.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifacts="$RUNNER_TEMP/voda-dotnet-release"
-          status=0
-          dotnet "$artifacts/bin/SlopHawk.RustMigrationQualification/release/SlopHawk.RustMigrationQualification.dll" \
-            benchmark-resident "$artifacts/bin/SlopHawk.Cli/release/slophawk" "$CARGO_TARGET_DIR/release/slophawk-native" "$RUNNER_TEMP/voda-resident" || status=$?
-          if test -f "$RUNNER_TEMP/voda-resident/resident-summary.json"; then cat "$RUNNER_TEMP/voda-resident/resident-summary.json"; fi
-          exit "$status"
-      - name: Retain resident scope evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: linux-resident-measurements
-          path: ${{ runner.temp }}/voda-resident/*.json
-          if-no-files-found: ignore
+          Check
+          dotnet build SlopHawk.slnx --artifacts-path $artifacts
+          Check
+          $env:SLOPHAWK_NATIVE_MIGRATION_BINARY = Join-Path $env:CARGO_TARGET_DIR 'release/slophawk.exe'
+          $env:SLOPHAWK_NATIVE_SCALAR_WORKER = Join-Path $artifacts 'bin/SlopHawk.Providers.CSharp.ScalarWorker/debug/SlopHawk.Providers.CSharp.ScalarWorker.dll'
+          $env:VARO_DOTNET = (Get-Command dotnet).Source
+          $env:VARO_WORKER_DLL = Join-Path $artifacts 'bin/SlopHawk.Providers.CSharp.Worker/debug/SlopHawk.Providers.CSharp.Worker.dll'
+          $ref = Get-ChildItem (Join-Path (Split-Path $env:VARO_DOTNET) 'packs/Microsoft.NETCore.App.Ref') -Directory |
+              Where-Object { $_.Name -like '10.*' } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          $env:VARO_REFERENCE_PACK = Join-Path $ref.FullName 'ref/net10.0'
+          $env:VARO_REQUIRE_REAL_WORKER = '1'
+          cargo +1.99.1 test --locked --manifest-path rust/native-checks/Cargo.toml -- --test-threads=1
+          Check
+          cargo +1.99.1 test --locked --manifest-path rust/runtime/worker-scope/Cargo.toml -- --test-threads=1
+          Check
+          dotnet test SlopHawk.slnx --no-build --artifacts-path $artifacts --logger 'console;verbosity=normal' -- xUnit.MaxParallelThreads=2
+          Check

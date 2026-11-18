@@ -112,30 +112,6 @@ internal sealed partial class SourceInventory
         }
     }
 
-    internal PendingIntents? CommitManagedTests(MigrationSnapshot basis, MigrationTable[] tables,
-        ScheduleFence fence, Func<bool> isCurrent)
-    {
-        string[] names = ["test_intent", "intent_fallback", "test_attempt", "test_evidence", "test_run_receipt"];
-        if (basis.Revision != fence.Revision || !tables.Select(table => table.Name).SequenceEqual(names))
-            throw new IOException("The test peer returned an incompatible receipt projection.");
-        var replacements = tables.ToDictionary(table => table.Name, StringComparer.Ordinal);
-        ValidateMigration(basis with { Tables = basis.Tables.Select(table =>
-            replacements.GetValueOrDefault(table.Name, table)).ToArray() }, fence.RootIdentity);
-        lock (writer)
-        {
-            using var connection = Open(initialize: false);
-            using var transaction = connection.BeginTransaction();
-            if (!MatchesFence(connection, transaction, fence) || !isCurrent())
-                return null;
-            ReplaceMigrationTables(connection, transaction, tables);
-            var pending = ReadPending(connection, transaction);
-            if (!isCurrent())
-                return null;
-            transaction.Commit();
-            return pending;
-        }
-    }
-
     private static void ReplaceMigrationTables(SqliteConnection connection, SqliteTransaction transaction,
         MigrationTable[] tables)
     {

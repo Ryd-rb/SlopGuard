@@ -1,6 +1,6 @@
 # SlopHawk
 
-SlopHawk is a local C# verification daemon for coding agents. An agent skill starts it in the checkout the agent is editing. The daemon watches that checkout and serves verification results and controls over the Model Context Protocol (MCP). MSBuild owns compiler and build-time analyzer checks. SlopHawk 0.2 focuses on test impact, coverage gaps and checks beyond the configured build.
+SlopHawk is a local verification daemon written in Rust for C#, Python, Rust and FluxR. It watches the checkout an agent is editing and provides verification results and controls over the Model Context Protocol (MCP). The language toolchain owns compiler and build-time analyzer checks.
 
 After an edit, the agent can ask these questions.
 
@@ -18,7 +18,7 @@ After an edit, the agent can ask these questions.
 | Shared index | Reuse semantic and test evidence across checkers, with a bounded memory budget and an incremental disk cache. |
 | Current reports | Publish current findings from all checkers in `.slophawk/results.json` with file and commit attribution. Withdraw reports when branch or input context changes. |
 | Agent controls | Request or cancel checks, inspect results and coverage, change checker settings, and maintain a scoped spelling whitelist. |
-| Compatibility | Run the daemon on .NET 10. Validate project-aware analysis first on SDK-style projects. Add older SDKs and .NET Framework configurations through verified toolchain fixtures. |
+| Compatibility | Run on Windows and Linux. Use pinned .NET 10 workers for SDK-style C# projects. |
 
 ## Design
 
@@ -37,22 +37,23 @@ After an edit, the agent can ask these questions.
 - [Version 0.2 design](docs/version-0.2.md) specifies project-aware analysis, related tests and agent result control for the next release.
 - [Source reconciliation](docs/source-reconciliation.md) defines how a verified C# edit creates durable test work across saves, branch transitions and restart.
 
-## Use the 0.2 development build
+## Build and run SlopHawk
 
-Build with the .NET 10 SDK. The [portable Linux toolchain](docs/portable-linux.md) provides the SDK and locked NuGet dependencies for restricted VMs. Git workspaces require Git on `PATH`. Stop earlier daemons for this checkout with their matching CLI before starting this build. This build initializes inventory in the SlopHawk state directory.
+Install the Rust CLI with the pinned toolchain. Git workspaces require Git on `PATH`.
 
 ```sh
-dotnet build SlopHawk.slnx
-dotnet run --no-build --project src/SlopHawk.Cli -- start
-dotnet run --no-build --project src/SlopHawk.Cli -- status
-dotnet run --no-build --project src/SlopHawk.Cli -- results
-dotnet run --no-build --project src/SlopHawk.Cli -- projects
-dotnet run --no-build --project src/SlopHawk.Cli -- stop
+rustup toolchain install 1.99.1 --profile minimal
+cargo +1.99.1 install --locked --path rust/frontends/public-shell
+slophawk start --root .
+slophawk status --root .
+slophawk results --root .
+slophawk list-checkers --root .
+slophawk stop --root .
 ```
 
-The preview publishes a source inventory report with Git attribution. It fingerprints C# source and stores pending test intents in SQLite. The CLI and MCP status expose `committedRevision`, `pendingTestIntents`, `recordingError` and `testScheduler`. Use the project's configured build for compiler and analyzer diagnostics.
+Start MCP with `slophawk mcp --root <checkout>`. The CLI and MCP share the workspace daemon, including the committed source revision, pending test intents and scheduler state. The results include findings from the current admitted source checks.
 
-Use `slophawk projects --root <checkout>` to explicitly evaluate a checkout and print per-target C# membership, linked items, reference mappings and any unresolved scope. This command uses the installed .NET 10 SDK for evaluation and requests no build targets. On Windows it uses the shared worker slot and a Job Object. The daemon can schedule C#, Python, Cargo and FluxR tests with the owner’s private executable-test registration. Without a registration it reports `awaiting_adapter`. [Executable-test configuration](docs/rust-migration-qualification.md#scheduled-executable-tests)
+Build `SlopHawk.slnx` with the .NET 10 SDK to install the C# Roslyn, scalar and VSTest workers in a trusted location outside analyzed checkouts. `slophawk projects --root <checkout>` evaluates SDK-style projects through the pinned Roslyn/MSBuild worker. The daemon schedules C#, Python, Cargo and FluxR tests with the owner’s private registration. [Worker configuration and schema-v5 import](docs/rust-migration-qualification.md)
 
 ### Workspace execution profiles
 

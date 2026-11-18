@@ -1,16 +1,16 @@
 # Repository layout
 
-The .NET 10 solution builds three production projects, a C# integration test project and a worker fixture executable.
+The Rust CLI builds from `rust/frontends/public-shell/Cargo.toml`. The .NET 10 solution builds the C# tool adapters, offline state importer, tests and test fixture.
 
 | Path | Ownership |
 | --- | --- |
 | `src/SlopHawk.Core` | Language-neutral workspace and revision identity, source spans, provider contracts, evidence, findings, job requests and result schemas. |
-| `src/SlopHawk.Daemon` | Watcher and Git integration, indexing, scheduling, resource metering, persistence, and the current-report exporter. |
-| `src/SlopHawk.Cli` | Executable composition root, workspace lifecycle commands and the MCP stdio bridge. |
+| `src/SlopHawk.Daemon` | C# worker support, test evidence and schema-v5 conversion. |
+| `rust/frontends/public-shell` | Rust CLI, daemon, resident scheduling and MCP. |
 | `skills/slophawk` | Single agent skill delivered with the CLI. |
 | `docs` | Design decisions and implementation acceptance criteria. |
 
-The daemon depends on Core and hosts the preview membership adapter. The CLI composes the daemon and MCP bridge. Introduce the C# provider when adding Roslyn symbol analysis. Keep the Core project free of compiler, test runner, storage and transport dependencies. Introduce separate persistence, protocol or worker projects when an implemented component needs its own dependencies, process or release boundary.
+Rust owns the CLI, daemon and MCP bridge. The C# adapters use Roslyn and MSBuild for project and source facts and VSTest for test execution. The offline importer reads the previous SQLite inventory.
 
 Put test projects under `tests/`. Name unit-test projects after their assemblies, such as `tests/SlopHawk.Core.Tests`, and put daemon lifecycle tests in `tests/SlopHawk.IntegrationTests`. Keep reusable synthetic test workspaces under `tests/fixtures/<provider>/`, with shared Git and filesystem cases in a workspace folder. Keep independently versioned configuration or protocol schemas under `schemas/` when clients begin consuming them.
 

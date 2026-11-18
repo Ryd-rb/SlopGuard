@@ -36,7 +36,7 @@ impl Workspace {
             }
         }
         let marker = read_marker(&state_dir)?;
-        if marker.version != 1
+        if !matches!(marker.version, 1 | 2)
             || marker.state != "native"
             || marker.revision < 0
             || marker.root.canonicalize()? != root
@@ -44,7 +44,7 @@ impl Workspace {
             || marker.profile_sha256 != profile
             || !hex(profile, 64)
             || !hex(&marker.epoch, 32)
-            || file_hash(&std::env::current_exe()?)? != marker.native_sha256
+            || marker.version == 1 && file_hash(&std::env::current_exe()?)? != marker.native_sha256
         {
             return Err(invalid(
                 "resident daemon does not own the committed migration epoch",
@@ -54,33 +54,7 @@ impl Workspace {
         slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
         let scheduler = Scheduler::open(&state_dir, &marker.epoch)?;
         let tests = super::scheduled_tests::Scheduler::open(&state_dir, &root, &marker.epoch)?;
-        let state = state_dir.join(format!("native-{}.json", marker.epoch));
-        let backup = bytes(
-            &state_dir.join(format!("migration-backup-{}.json", marker.epoch)),
-            CAP,
-        )?;
-        if hash(&backup) != marker.backup_sha256 {
-            return Err(invalid(
-                "resident migration backup no longer matches the marker",
-            ));
-        }
-        let policy: Snapshot = serde_json::from_slice(&backup).map_err(io::Error::other)?;
-        let identity = Identity {
-            protocol: PROTOCOL.into(),
-            operation: "resident".into(),
-            job: nonce()?,
-            root: marker.root.clone(),
-            root_identity: marker.root_identity.clone(),
-            epoch: marker.epoch.clone(),
-            committed_revision: marker.revision,
-            input_sha256: hash(&[]),
-            tool_sha256: marker.native_sha256.clone(),
-            policy_sha256: hash(policy.policy.as_deref().unwrap_or_default().as_bytes()),
-            budget_ref: "migration-state-16m-frame-128k".into(),
-            grant_ref: profile.into(),
-            state_directory: state_dir,
-        };
-        let snapshot = snapshot(&bytes(&state, CAP)?, &identity)?;
+        let (state, identity, snapshot) = read_workspace_snapshot(&state_dir, &marker)?;
         #[cfg(target_os = "linux")]
         let observed_head = slophawk_native_coordinator::read_head_for_poll(&root)
             .ok()
@@ -304,9 +278,14 @@ impl Workspace {
         self.refresh();
         let expected = self.report.as_ref()?;
         let actual = bytes(&self.root.join(".slophawk/results.json"), 8 * 1024 * 1024).ok()?;
-        (actual == *expected)
-            .then(|| serde_json::from_slice(expected).ok())
-            .flatten()
+        if actual != *expected {
+            return None;
+        }
+        let mut report: Value = serde_json::from_slice(expected).ok()?;
+        if let Some(checks) = self.scheduler.current_report(&self.root, &self.marker.root_identity, self.snapshot.revision) {
+            report["checkerReport"] = checks.clone();
+        }
+        Some(report)
     }
 
     fn publish(&mut self, data: Vec<u8>) -> io::Result<()> {
@@ -355,6 +334,25 @@ impl Workspace {
             let _ = fs::remove_file(target);
         }
     }
+}
+
+pub(super) fn read_workspace_snapshot(state_dir: &Path, marker: &Marker) -> io::Result<(PathBuf, Identity, Snapshot)> {
+    let state = state_dir.join(format!("native-{}.json", marker.epoch));
+    let backup = bytes(&state_dir.join(format!("migration-backup-{}.json", marker.epoch)), CAP)?;
+    if hash(&backup) != marker.backup_sha256 {
+        return Err(invalid("resident migration backup no longer matches the marker"));
+    }
+    let policy: Snapshot = serde_json::from_slice(&backup).map_err(io::Error::other)?;
+    let identity = Identity {
+        protocol: PROTOCOL.into(), operation: "resident".into(), job: nonce()?,
+        root: marker.root.clone(), root_identity: marker.root_identity.clone(), epoch: marker.epoch.clone(),
+        committed_revision: marker.revision, input_sha256: hash(&[]), tool_sha256: marker.native_sha256.clone(),
+        policy_sha256: hash(policy.policy.as_deref().unwrap_or_default().as_bytes()),
+        budget_ref: "migration-state-16m-frame-128k".into(), grant_ref: marker.profile_sha256.clone(),
+        state_directory: state_dir.to_owned(),
+    };
+    let data = snapshot(&bytes(&state, CAP)?, &identity)?;
+    Ok((state, identity, data))
 }
 
 impl Drop for Workspace {

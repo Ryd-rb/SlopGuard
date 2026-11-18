@@ -1,6 +1,5 @@
 //! MCP 2025-11-25 stdio JSON-RPC adapter. Public messages are newline-separated
 //! UTF-8 JSON, NEVER private daemon frames. All stdout writes happen here.
-//! The published C# SDK bridge remains the verified fallback on Unix.
 use crate::protocol::{Command, DaemonClient, DaemonReply, Handshake, Transport};
 use crate::{Result, failure};
 use serde_json::{Value, json};
@@ -157,7 +156,13 @@ fn call<T: Transport, W: Write>(session: &mut Session, daemon: &DaemonClient<T>,
         "workspace_status" => from_daemon(daemon.command(Command::Status)),
         "get_findings" => from_daemon(daemon.command(Command::Results)),
         "run_checks" => from_daemon(daemon.command(Command::Recheck)),
-        "list_checkers" => json!([]), // Published wire 1 has no checker listing command.
+        "list_checkers" => {
+            match daemon.command(Command::CheckerCatalog) {
+                Ok(reply) if reply.ok => reply.payload.unwrap_or(Value::Null),
+                Err(error) if error.code == "unsupported_feature" => json!([]),
+                reply => from_daemon(reply),
+            }
+        }
         _ => unreachable!(),
     };
     let text = serde_json::to_string(&payload).map_err(|e| failure("serialization", e))?;
@@ -235,7 +240,7 @@ mod tests {
     fn publishes_only_capable_tools_and_an_empty_baseline_checker_list() {
         let wire = Wire(RefCell::new(VecDeque::from(vec![
             hello(&["status","list_checkers"]), hello(&["status","list_checkers"]),
-            hello(&["status","list_checkers"]),
+            hello(&["status","list_checkers"]), hello(&["status","list_checkers"]),
         ])));
         let client = DaemonClient::new(wire, "C:\\work".into());
         let input = concat!(

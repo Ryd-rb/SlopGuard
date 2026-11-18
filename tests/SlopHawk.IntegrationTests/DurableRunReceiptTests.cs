@@ -1,11 +1,72 @@
 using Microsoft.Data.Sqlite;
 using SlopHawk.Daemon;
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Xunit;
 
 namespace SlopHawk.IntegrationTests;
 
 public sealed partial class WorkspaceTests
 {
+    [NativeCliFact]
+    public async Task RustImportRetainsPendingIntentsAndReceiptsWithoutChangingSqlite()
+    {
+        await using var fixture = new Fixture(useDefaultState: true);
+        var (store, attempt, work, selection) = PrepareReceiptAttempt(fixture);
+        store.Finish(attempt, TestOutcome.Passed, work, selection, DateTimeOffset.UtcNow,
+            () => false, Receipt(attempt));
+        var previous = Snapshot(fixture.Workspace, includeVersion: true);
+        var unavailable = await Native("start");
+        Assert.NotEqual(0, unavailable.Code);
+        Assert.Contains("offline state importer", unavailable.Error);
+
+        var executable = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY")!;
+        var digest = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(executable)));
+        MigrationStateBridge.ImportLegacyInventory(fixture.Workspace, executable, digest);
+        Assert.Equal(previous, Snapshot(fixture.Workspace, includeVersion: true));
+        var markerPath = Path.Combine(fixture.Workspace.StateDirectory, "migration-engine.json");
+        using var marker = JsonDocument.Parse(await File.ReadAllBytesAsync(markerPath));
+        Assert.Equal(2, marker.RootElement.GetProperty("version").GetInt32());
+        var epoch = marker.RootElement.GetProperty("epoch").GetString();
+        var backupPath = Path.Combine(fixture.Workspace.StateDirectory, $"migration-backup-{epoch}.json");
+        using var backup = JsonDocument.Parse(await File.ReadAllBytesAsync(backupPath));
+        var tables = backup.RootElement.GetProperty("tables").EnumerateArray()
+            .ToDictionary(table => table.GetProperty("name").GetString()!, table => table.GetProperty("rows"));
+        Assert.Equal("6", Assert.Single(tables["test_intent"].EnumerateArray())[0].GetProperty("value").GetString());
+        Assert.Equal("11", Assert.Single(tables["test_run_receipt"].EnumerateArray())[0].GetProperty("value").GetString());
+        Assert.Throws<IOException>(() => MigrationStateBridge.ImportLegacyInventory(fixture.Workspace, executable, digest));
+
+        try
+        {
+            var started = await Native("start");
+            Assert.True(started.Code == 0, started.Error);
+            using var published = JsonDocument.Parse(started.Output);
+            Assert.True(published.RootElement.GetProperty("committedRevision").GetInt64() >= 7);
+            Assert.Equal(1, published.RootElement.GetProperty("pendingTestIntents").GetProperty("detailedCount").GetInt32());
+        }
+        finally
+        {
+            await Native("stop");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (File.Exists(Path.Combine(fixture.Workspace.StateDirectory, "native-daemon.json")))
+                await Task.Delay(30, deadline.Token);
+        }
+        Assert.Equal(previous, Snapshot(fixture.Workspace, includeVersion: true));
+
+        async Task<(int Code, string Output, string Error)> Native(string verb)
+        {
+            var command = NativeCliFactAttribute.Command(verb, "--root", fixture.Root);
+            command.RedirectStandardOutput = true;
+            command.RedirectStandardError = true;
+            using var process = Process.Start(command)!;
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            return (process.ExitCode, await output, await error);
+        }
+    }
+
     [Fact]
     public async Task DetailedAttemptCommitsWithResolvedIntentAndSurvivesReopen()
     {

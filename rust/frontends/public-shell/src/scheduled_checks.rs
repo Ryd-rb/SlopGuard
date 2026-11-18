@@ -378,6 +378,19 @@ impl Scheduler {
         })
     }
 
+    pub(super) fn current_report(&self, root: &Path, identity: &str, revision: i64) -> Option<&Value> {
+        let record = self.latest.as_ref()?;
+        let report = record.report.as_ref()?;
+        if !matches!(record.outcome, Outcome::Complete | Outcome::Partial) {
+            return None;
+        }
+        let observed = self.inspect(root, identity, revision).ok()??;
+        if observed.scope != record.scope_sha256 || observed.verify_worker(root).is_err() {
+            return None;
+        }
+        Some(report)
+    }
+
     pub(super) fn failed(&mut self, error: io::Error) {
         self.error = Some(error.to_string());
     }

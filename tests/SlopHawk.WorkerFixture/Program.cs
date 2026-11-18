@@ -24,9 +24,6 @@ internal static class Program
                     _ => request.Args[0]
                 })));
                 return 0;
-            case ["owner", var workspace, var state, var output]:
-                DaemonHost.Run(new Workspace(workspace, state), new ProcessFixtureAdapter(output), CancellationToken.None);
-                return 0;
             case ["tree", var directory]:
                 using (var child = Process.Start(Commands.Create("child", Path.Combine(directory, "child.json"))))
                 {
@@ -150,20 +147,5 @@ internal static class Commands
         foreach (var argument in args)
             command.ArgumentList.Add(argument);
         return command;
-    }
-}
-
-internal sealed class ProcessFixtureAdapter(string output) : ITestAdapter
-{
-    public Task<TestSelection> SelectAsync(TestSelectionInput input, CancellationToken cancellationToken) =>
-        Task.FromResult(new TestSelection(true,
-            [new SelectedTarget("supervised-fixture", "fixture", input.Causes.Select(cause => cause.Id).ToArray())]));
-
-    public WorkerRequirements Requirements(SelectedTarget target) => new(ExecutionOperation.Test, true, [output]);
-
-    public async Task<TestOutcome> RunAsync(TestAttempt attempt, WorkerLease worker, CancellationToken cancellationToken)
-    {
-        var result = await worker.RunAsync(Commands.Create("tree", output), 4096, cancellationToken);
-        return result.ExitCode == 0 ? TestOutcome.Passed : TestOutcome.RetryableFailure;
     }
 }

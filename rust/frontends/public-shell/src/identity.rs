@@ -1,4 +1,4 @@
-//! Match `Workspace` in pinned `src/SlopHawk.Daemon/Workspace.cs`.
+//! Workspace and state identity shared with the C# tool adapters.
 use crate::{Result, failure};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -20,24 +20,39 @@ impl WorkspaceIdentity {
         for part in absolute.components() { root.push(part.as_os_str()); }
         require_physical(&root, true)?;
         let user = current_user()?;
-        // .NET's invariant Unicode casing is not guaranteed to match Rust's
-        // Unicode table across releases. Defer exotic identities to the
-        // verified C# client instead of hashing a possibly different pipe.
-        #[cfg(windows)]
-        if !user.is_ascii() || !root.to_string_lossy().is_ascii() {
-            return Err(failure("identity_unsupported",
-                "Non-ASCII workspace identity requires the verified C# fallback."));
-        }
+        let text = root.to_str().ok_or_else(|| failure("invalid_root", "Workspace paths must be Unicode."))?;
         let mut key = user.into_bytes();
         key.push(0);
         #[cfg(windows)]
-        let normalized = root.to_string_lossy().to_uppercase();
+        let normalized: String = text.chars().map(|ch| {
+            let mut upper = ch.to_uppercase();
+            let mapped = upper.next().unwrap_or(ch);
+            if upper.next().is_some() { ch } else { mapped }
+        }).collect();
         #[cfg(not(windows))]
-        let normalized = root.to_string_lossy().into_owned();
+        let normalized = text;
         key.extend_from_slice(normalized.as_bytes());
         let digest = Sha256::digest(key);
         let name = format!("SlopHawk-{}", uppercase_hex(&digest[..16]));
         Ok(Self { root, instance_name: name })
+    }
+
+    pub fn state_directory(&self) -> Result<PathBuf> {
+        #[cfg(windows)]
+        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        #[cfg(target_os = "linux")]
+        let local = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let local: Option<PathBuf> = None;
+        let path = local.filter(|path| path.is_absolute())
+            .ok_or_else(|| failure("state_unavailable", "The per-user application data directory is unavailable."))?
+            .join("SlopHawk").join("state").join(&self.instance_name);
+        if path.starts_with(&self.root) {
+            return Err(failure("invalid_state", "The application state directory must be outside the checkout."));
+        }
+        Ok(path)
     }
 }
 
@@ -62,8 +77,8 @@ pub fn require_physical(path: &Path, leaf_is_dir: bool) -> Result<()> {
     let mut prefix = PathBuf::new();
     for component in path.components() {
         prefix.push(component.as_os_str());
-        if !prefix.has_root() {
-            continue; // Windows drive prefix before the root separator.
+        if matches!(component, Component::Prefix(_)) || !prefix.has_root() {
+            continue;
         }
         let meta = fs::symlink_metadata(&prefix)
             .map_err(|e| failure("invalid_path", format!("{}: {e}", prefix.display())))?;
@@ -105,11 +120,26 @@ fn current_user() -> Result<String> {
         .to_string_lossy().into_owned())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn current_user() -> Result<String> {
-    // The legacy Unix socket location is .NET-runtime-specific, not part of the
-    // published wire contract. Do not guess a platform identity or socket path.
-    Err(failure("unsupported_os", "Native daemon IPC is only available on Windows; use a verified legacy C# launcher."))
+    use std::{ffi::CStr, mem::MaybeUninit, ptr};
+    let mut entry = MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut result = ptr::null_mut();
+    // SAFETY: The result and all strings point into the supplied live buffers.
+    let code = unsafe { libc::getpwuid_r(libc::geteuid(), entry.as_mut_ptr(),
+        buffer.as_mut_ptr().cast(), buffer.len(), &mut result) };
+    if code != 0 || result.is_null() {
+        return Err(failure("identity_unavailable", "Unable to resolve the current Linux account."));
+    }
+    // SAFETY: A successful passwd result has a terminated name in `buffer`.
+    unsafe { CStr::from_ptr((*result).pw_name) }.to_str().map(str::to_owned)
+        .map_err(|error| failure("identity_unavailable", error))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn current_user() -> Result<String> {
+    Err(failure("unsupported_os", "SlopHawk supports Windows and Linux."))
 }
 
 #[cfg(test)]

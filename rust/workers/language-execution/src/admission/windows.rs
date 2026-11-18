@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
@@ -7,15 +8,16 @@ use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::{
     GENERIC_ALL, GENERIC_WRITE, LocalFree,
 };
-use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+use windows_sys::Win32::Security::Authorization::{ConvertSidToStringSidW,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT};
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, EqualSid, GetAce,
     GetTokenInformation, INHERIT_ONLY_ACE, IsValidAcl, IsValidSid, IsWellKnownSid,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     WinBuiltinAdministratorsSid, WinCreatorOwnerRightsSid, WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+    CreateDirectoryW, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
     FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
@@ -53,7 +55,7 @@ fn trusted_sid(sid: PSID, user: PSID, private: bool) -> bool {
     }
 }
 
-fn owner_and_dacl(file: &File, private: bool) -> io::Result<()> {
+fn current_user() -> io::Result<Vec<usize>> {
     let mut token = null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(io::Error::last_os_error());
@@ -70,6 +72,40 @@ fn owner_and_dacl(file: &File, private: bool) -> io::Result<()> {
         buffer.as_mut_ptr().cast(), needed, &mut needed) } == 0 {
         return Err(io::Error::last_os_error());
     }
+    Ok(buffer)
+}
+
+pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
+    let buffer = current_user()?;
+    // The token SID points into the live, aligned token-information buffer.
+    let user = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut sid_text = null_mut();
+    if unsafe { ConvertSidToStringSidW(user, &mut sid_text) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut length = 0;
+    while unsafe { *sid_text.add(length) } != 0 { length += 1; }
+    let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, length) });
+    unsafe { LocalFree(sid_text.cast()); }
+    let sid = sid.map_err(io::Error::other)?;
+    let sddl: Vec<u16> = format!("O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+        .encode_utf16().chain([0]).collect();
+    let mut descriptor = Descriptor(null_mut());
+    if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(),
+        SDDL_REVISION_1, &mut descriptor.0, null_mut()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let attributes = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0, bInheritHandle: 0 };
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn owner_and_dacl(file: &File, private: bool) -> io::Result<()> {
+    let buffer = current_user()?;
     let user = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
     let mut security = Descriptor(null_mut());
     let mut acl: *mut ACL = null_mut();

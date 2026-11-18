@@ -1,18 +1,10 @@
-//! Compatibility shell for the *published* SlopHawk daemon (wire 1, schema 2).
-//!
-//! This crate deliberately has no dependency on the unpublished native daemon.
-//! It does not interpret repository files as permission to launch executables.
-//! The existing foreground command families and unsupported OS-native IPC are
-//! routed only through an owner-supplied, digest-checked C# launcher.
+//! CLI and MCP projections for the native SlopHawk daemon.
 
 pub mod cli;
 pub mod identity;
 pub mod mcp;
 pub mod protocol;
 pub mod registry;
-pub mod transport;
-#[cfg(windows)]
-mod windows_pipe;
 
 use std::fmt;
 

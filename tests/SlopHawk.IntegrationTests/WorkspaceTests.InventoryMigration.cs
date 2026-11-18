@@ -62,27 +62,6 @@ public sealed partial class WorkspaceTests
     }
 
     [Fact]
-    public async Task HistoricalPendingWorkSurvivesDaemonRestartAfterMigration()
-    {
-        await using var fixture = new Fixture();
-        await fixture.WriteBaselineAsync();
-        SeedHistoricalInventory(fixture.Workspace, 1);
-
-        fixture.Start();
-        var first = await fixture.WaitForReportAsync(report => FileCount(report) == 1);
-        Assert.True(CommittedRevision(first) > 7);
-        Assert.Equal("old-fingerprint", Assert.Single(fixture.ReadIntents()).OldDigest);
-        await fixture.StopAsync();
-
-        fixture.Start();
-        await fixture.WaitForReportAsync(report => FileCount(report) == 1);
-        Assert.Equal("old-fingerprint", Assert.Single(fixture.ReadIntents()).OldDigest);
-        Assert.Equal(3L, ReadNumber(fixture.Workspace, "SELECT first_revision FROM intent_fallback"));
-        Assert.Equal(7L, ReadNumber(fixture.Workspace, "SELECT last_revision FROM intent_fallback"));
-        await fixture.StopAsync();
-    }
-
-    [Fact]
     public async Task FailedLateMigrationStatementRollsBackEarlierAlterAndCanBeRetried()
     {
         await using var fixture = new Fixture();
@@ -359,5 +338,20 @@ public sealed partial class WorkspaceTests
         if (malformed)
             builder.Append("columns=").Append(string.Join(',', ReadColumns(connection, "test_intent"))).Append('\n');
         return builder.ToString();
+    }
+    private sealed class Fixture(bool useDefaultState = false) : IAsyncDisposable
+    {
+        private readonly DirectoryInfo container = Directory.CreateTempSubdirectory("slophawk-inventory-");
+        internal string Root => Directory.CreateDirectory(Path.Combine(container.FullName, "workspace")).FullName;
+        internal Workspace Workspace => useDefaultState ? new(Root) : new(Root, Path.Combine(container.FullName, "state"));
+        internal Task WriteBaselineAsync() => File.WriteAllTextAsync(Path.Combine(Root, "Source.cs"), "class Source {}");
+
+        public ValueTask DisposeAsync()
+        {
+            if (useDefaultState && Directory.Exists(Workspace.StateDirectory))
+                Directory.Delete(Workspace.StateDirectory, recursive: true);
+            container.Delete(recursive: true);
+            return ValueTask.CompletedTask;
+        }
     }
 }

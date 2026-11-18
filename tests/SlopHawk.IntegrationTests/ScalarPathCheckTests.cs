@@ -8,12 +8,9 @@ namespace SlopHawk.IntegrationTests;
 
 public sealed class ScalarPathCheckTests
 {
-    [Fact]
+    [NativeCliFact(scalarWorker: true)]
     public async Task NativeForegroundRoutesBuildPlanCheckAndReviewThroughTheScalarWorker()
     {
-        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
-        var worker = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_SCALAR_WORKER");
-        if (string.IsNullOrWhiteSpace(binary) || string.IsNullOrWhiteSpace(worker)) return;
         using var fixture = new Fixture();
         var output = await Native("build", fixture.Spec, fixture.Scratch);
         Assert.Equal(new[] { "Build", "Candidate" }, output.Json.EnumerateObject().Select(property => property.Name));
@@ -55,22 +52,12 @@ public sealed class ScalarPathCheckTests
 
         async Task<(int Exit, JsonElement Json, string Error)> NativeTool(string command, params string[] args)
         {
-            var start = new ProcessStartInfo(binary) { UseShellExecute = false, CreateNoWindow = true };
-            start.ArgumentList.Add(command);
-            foreach (var arg in args) start.ArgumentList.Add(arg);
-            start.Environment["SLOPHAWK_SCALAR_WORKER"] = worker;
-            start.Environment["SLOPHAWK_SCALAR_WORKER_SHA256"] = Convert.ToHexString(
-                System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(worker)));
-            start.Environment["SLOPHAWK_PATHS_GRANT"] = "native-qualification-fixture";
-            start.Environment["SLOPHAWK_PATHS_EPOCH"] = "scalar-fixture";
-            start.Environment["SLOPHAWK_PATHS_REVISION"] = "1";
-            start.Environment["SLOPHAWK_PATHS_BUDGET"] = "fixture-budget";
-            start.Environment["SLOPHAWK_PATHS_SEAL_KEY"] = fixture.Scratch.PadRight(32, '#');
+            var start = PathCommand(command, args);
             return await Run(start);
         }
     }
 
-    [Fact]
+    [NativeCliFact(scalarWorker: true)]
     public async Task GraphPlanReplaysTheSameCandidateAndExposesLedgerAndStructuralFallback()
     {
         using var fixture = new Fixture();
@@ -101,7 +88,7 @@ public sealed class ScalarPathCheckTests
         Assert.Equal(1, (await Run("check", fallbackPath)).Exit);
     }
 
-    [Fact]
+    [NativeCliFact(scalarWorker: true)]
     public async Task ATargetWithoutRunnableCasesKeepsTheCheckAndReviewIncomplete()
     {
         using var fixture = new Fixture(missingTarget: true);
@@ -124,7 +111,7 @@ public sealed class ScalarPathCheckTests
         Assert.Equal(0, targets[1].GetProperty("PlannedCases").GetInt32());
     }
 
-    [Fact]
+    [NativeCliFact(scalarWorker: true)]
     public async Task ChangedSourceAndAnIncompleteSealBlockExecution()
     {
         using var fixture = new Fixture();
@@ -136,13 +123,14 @@ public sealed class ScalarPathCheckTests
         File.AppendAllText(Path.Combine(Path.GetDirectoryName(fixture.Spec)!, "Rates.cs"), "\n// new source revision\n");
         var stale = await Run("check", first);
         Assert.Equal(1, stale.Exit);
-        Assert.Contains("changed", stale.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.StartsWith("path_check_failed:", stale.Error);
+        Assert.Equal(JsonValueKind.Undefined, stale.Json.ValueKind);
         var plan = await Run("plan", fixture.Spec, fixture.Scratch, build, "graph-on");
         Assert.Equal(1, plan.Exit);
         Assert.Equal(0, plan.Json.GetProperty("Cases").GetInt32());
     }
 
-    [Fact]
+    [NativeCliFact(scalarWorker: true)]
     public async Task ReorderedAdapterResponsesDoNotBecomeStableFindings()
     {
         using var fixture = new Fixture(reorder: true);
@@ -161,12 +149,26 @@ public sealed class ScalarPathCheckTests
         return result.Json.GetProperty(property).GetString()!;
     }
 
-    private static async Task<(int Exit, JsonElement Json, string Error)> Run(params string[] args)
+    private static Task<(int Exit, JsonElement Json, string Error)> Run(params string[] args) =>
+        Run(PathCommand("paths", args));
+
+    private static ProcessStartInfo PathCommand(string verb, string[] args)
     {
-        var start = Commands.Create(["paths", .. args]);
-        start.ArgumentList[0] = Path.Combine(AppContext.BaseDirectory, "slophawk.dll");
-        return await Run(start);
+        var start = NativeCliFactAttribute.Command([verb, .. args]);
+        var worker = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_SCALAR_WORKER")!;
+        start.Environment["SLOPHAWK_SCALAR_WORKER"] = worker;
+        start.Environment["SLOPHAWK_SCALAR_WORKER_SHA256"] = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(worker)));
+        start.Environment["SLOPHAWK_PATHS_GRANT"] = "native-qualification-fixture";
+        start.Environment["SLOPHAWK_PATHS_EPOCH"] = "scalar-fixture";
+        start.Environment["SLOPHAWK_PATHS_REVISION"] = "1";
+        start.Environment["SLOPHAWK_PATHS_BUDGET"] = "fixture-budget";
+        start.Environment["SLOPHAWK_PATHS_SEAL_KEY"] = SealKey;
+        return start;
     }
+
+    private static readonly string SealKey = Convert.ToHexString(
+        System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
 
     private static async Task<(int Exit, JsonElement Json, string Error)> Run(ProcessStartInfo start)
     {

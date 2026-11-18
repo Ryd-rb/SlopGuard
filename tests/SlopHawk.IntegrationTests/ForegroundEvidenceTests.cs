@@ -9,7 +9,7 @@ namespace SlopHawk.IntegrationTests;
 
 public sealed class ForegroundEvidenceTests
 {
-    [Fact]
+    [NativeCliFact]
     public async Task ContractSearchSeparatesChangingReplayResultsFromStableFindings()
     {
         using var workspace = new TestWorkspace();
@@ -34,7 +34,7 @@ public sealed class ForegroundEvidenceTests
         Assert.True(File.Exists(summary.GetProperty("ReplayReport").GetString()));
     }
 
-    [Fact]
+    [NativeCliFact]
     public async Task ProgressPublishesScopedWorklistBeforeAnyChecksRun()
     {
         using var workspace = new TestWorkspace();
@@ -59,7 +59,7 @@ public sealed class ForegroundEvidenceTests
         Assert.Equal("sample", Assert.Single(report.GetProperty("MissingCoverage").EnumerateArray()).GetString());
     }
 
-    [Fact]
+    [NativeCliFact]
     public async Task UnsupportedComparisonKeepsReviewIncompleteAlongsidePassingComparisons()
     {
         using var workspace = new TestWorkspace();
@@ -81,7 +81,7 @@ public sealed class ForegroundEvidenceTests
         Assert.Equal(0, review.Json.GetProperty("UnstableInputs").GetInt32());
     }
 
-    [Fact]
+    [NativeCliFact]
     public async Task SelectedRunValidatesOnlyItsOwnAdapterEvidence()
     {
         using var workspace = new TestWorkspace();
@@ -105,7 +105,7 @@ public sealed class ForegroundEvidenceTests
         Assert.Contains("observed.json", damaged.Error, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [NativeCliFact]
     public async Task ReviewDoesNotCombineCoverageFromSeparateAdapterRuns()
     {
         using var workspace = new TestWorkspace();
@@ -131,7 +131,7 @@ public sealed class ForegroundEvidenceTests
         Assert.Equal("second", Assert.Single(review.GetProperty("MissingCoverage").EnumerateArray()).GetString());
     }
 
-    [Fact]
+    [NativeCliFact]
     public async Task ReviewRejectsResultsInconsistentWithSavedObservations()
     {
         using var workspace = new TestWorkspace();
@@ -148,7 +148,7 @@ public sealed class ForegroundEvidenceTests
         Assert.Contains("disagrees with the saved inputs and observations", review.Error, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [NativeCliFact]
     public async Task ReviewFlagsConflictingObservationsEvenWhenBothChecksMatchTheirExpectations()
     {
         using var workspace = new TestWorkspace();
@@ -167,7 +167,7 @@ public sealed class ForegroundEvidenceTests
         Assert.False(review.Json.GetProperty("Complete").GetBoolean());
     }
 
-    [Fact]
+    [NativeCliFact]
     public async Task ChangedRetestStaysOutsideTheReviewEvidenceAndDoesNotAcknowledgeTheFinding()
     {
         using var workspace = new TestWorkspace();
@@ -193,8 +193,7 @@ public sealed class ForegroundEvidenceTests
 
     private static async Task<(int ExitCode, JsonElement Json, string Error)> Run(params string[] args)
     {
-        var start = Commands.Create(args);
-        start.ArgumentList[0] = Path.Combine(AppContext.BaseDirectory, "slophawk.dll");
+        var start = NativeCliFactAttribute.Command(args);
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;
         using var process = Process.Start(start)!;

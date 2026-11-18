@@ -1,6 +1,4 @@
-//! Published one-request daemon pipe protocol, not MCP and not migration-job/1.
-//! `DaemonConnection.cs` and `DaemonWire.cs` at the VODA pinned base are the
-//! interoperability contract. No private command is invented here.
+//! Versioned one-request daemon command and reply envelopes.
 use crate::{Result, ShellError, failure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,7 +12,7 @@ pub const MAX_REPLY_BYTES: usize = 8 * 1024 * 1024 + 4096;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub enum Command { Status = 1, Results = 2, Recheck = 3, Stop = 4 }
+pub enum Command { Status = 1, Results = 2, Recheck = 3, Stop = 4, CheckerCatalog = 5 }
 
 impl Command {
     pub fn capability(self) -> &'static str {
@@ -23,6 +21,7 @@ impl Command {
             Self::Results => "results",
             Self::Recheck => "recheck",
             Self::Stop => "stop",
+            Self::CheckerCatalog => "checker_catalog",
         }
     }
 }

@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.99.1"
 license = "MIT"
 publish = false
-description = "Native compatibility entry point for the published SlopHawk daemon and MCP tools"
+description = "SlopHawk command-line application, daemon and MCP tools"
 
 [workspace]
 
@@ -14,7 +14,7 @@ name = "slophawk_public_shell"
 path = "src/lib.rs"
 
 [[bin]]
-name = "slophawk-native"
+name = "slophawk"
 path = "src/main.rs"
 
 [dependencies]
@@ -36,3 +36,6 @@ sha2 = "=0.10.9"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "=0.2.191"

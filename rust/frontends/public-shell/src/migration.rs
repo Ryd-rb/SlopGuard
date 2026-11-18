@@ -16,6 +16,8 @@ const CAP: usize = 16 * 1024 * 1024;
 
 #[path = "resident_store.rs"]
 pub mod resident_store;
+#[path = "native_start.rs"]
+pub mod native_start;
 #[path = "scheduled_checks.rs"]
 mod scheduled_checks;
 #[path = "scheduled_tests.rs"]
@@ -60,7 +62,7 @@ enum Packet {
     },
 }
 
-#[derive(Deserialize, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Marker {
     version: u32,
@@ -280,11 +282,16 @@ fn bytes(path: &Path, cap: usize) -> io::Result<Vec<u8>> {
 
 fn snapshot(data: &[u8], identity: &Identity) -> io::Result<Snapshot> {
     let value: Snapshot = serde_json::from_slice(data).map_err(io::Error::other)?;
+    validate_snapshot(&value, &identity.root_identity, identity.committed_revision, &identity.policy_sha256)?;
+    Ok(value)
+}
+
+fn validate_snapshot(value: &Snapshot, root: &str, minimum_revision: i64, policy: &str) -> io::Result<()> {
     if value.format != 1
         || value.inventory_schema != 5
-        || value.root_identity != identity.root_identity
-        || value.revision < identity.committed_revision
-        || hash(value.policy.as_deref().unwrap_or("").as_bytes()) != identity.policy_sha256
+        || value.root_identity != root
+        || value.revision < minimum_revision
+        || hash(value.policy.as_deref().unwrap_or("").as_bytes()) != policy
         || value.tables.len() != TABLES.len()
     {
         return Err(invalid(
@@ -326,7 +333,7 @@ fn snapshot(data: &[u8], identity: &Identity) -> io::Result<Snapshot> {
             .as_deref()
             .and_then(|v| v.parse::<i64>().ok())
             != Some(value.revision)
-        || workspace[2].value.as_deref() != Some(identity.root_identity.as_str())
+        || workspace[2].value.as_deref() != Some(root)
         || workspace[3].value != value.policy
         || value.tables[5]
             .rows
@@ -334,14 +341,14 @@ fn snapshot(data: &[u8], identity: &Identity) -> io::Result<Snapshot> {
             .any(|r| r[8].value.as_deref() == Some("running"))
         || value.tables[8].rows.iter().any(|r| {
             r[1].value.as_deref() != Some("1")
-                || r[6].value.as_deref() != Some(identity.root_identity.as_str())
+                || r[6].value.as_deref() != Some(root)
         })
     {
         return Err(invalid(
             "migration snapshot contains a conflicting workspace or receipt",
         ));
     }
-    Ok(value)
+    Ok(())
 }
 
 pub(crate) fn create_bound(path: &Path, data: &[u8]) -> io::Result<()> {
