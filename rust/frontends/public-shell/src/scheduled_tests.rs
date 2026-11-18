@@ -105,6 +105,7 @@ pub(super) struct Scheduler {
     latest: Option<Record>,
     error: Option<String>,
     enabled: bool,
+    managed_grant: Option<String>,
 }
 
 struct Observation {
@@ -120,7 +121,7 @@ fn json_bytes(value: &impl Serialize) -> io::Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(io::Error::other)
 }
 
-fn inspect(profile: &Path, root: &Path, identity: &str, revision: i64) -> io::Result<Observation> {
+fn inspect(profile: &Path, root: &Path, identity: &str, revision: Option<i64>) -> io::Result<Observation> {
     let raw = worker::read_owner_document(profile, root)?;
     let execution = profile.with_file_name("execution.json");
     let profile: Profile = serde_json::from_slice(&raw).map_err(io::Error::other)?;
@@ -205,6 +206,7 @@ impl Scheduler {
             latest,
             error: None,
             enabled: false,
+            managed_grant: None,
         };
         if let Some(record) = schedule
             .latest
@@ -218,6 +220,23 @@ impl Scheduler {
             })?;
         }
         Ok(schedule)
+    }
+
+    pub(super) fn for_managed(mut self, grant: &str) -> Self {
+        self.managed_grant = Some(grant.to_owned());
+        self
+    }
+
+    fn observe(&self, root: &Path, identity: &str, revision: i64) -> io::Result<Observation> {
+        // Managed reconciliation advances the inventory revision even on an
+        // unchanged restart. Reuse the original receipt only under the same
+        // physical source, Git and scheduler grant observation.
+        let mut observed = inspect(&self.profile, root, identity,
+            self.managed_grant.is_none().then_some(revision))?;
+        if let Some(grant) = &self.managed_grant {
+            observed.scope = sha256(format!("{}\0{grant}", observed.scope).as_bytes());
+        }
+        Ok(observed)
     }
 
     fn save(&mut self, record: Record) -> io::Result<()> {
@@ -252,7 +271,7 @@ impl Scheduler {
         self.error = None;
         let result = (|| {
             self.enabled = true;
-            let observed = match inspect(&self.profile, root, identity, revision) {
+            let observed = match self.observe(root, identity, revision) {
                 Ok(observed) => observed,
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     self.enabled = false;
@@ -317,7 +336,7 @@ impl Scheduler {
     fn projectable_batch(&self, revision: i64) -> Option<&Record> {
         self.latest.as_ref().filter(|record| {
             record.planned_causes.is_some()
-                && record.revision == revision
+                && (record.revision == revision || self.managed_grant.is_some() && record.revision < revision)
                 && matches!(record.state.as_str(), "completed" | "blocked")
                 && record.receipts.iter().any(|batch| {
                     batch["receipts"]
@@ -347,16 +366,21 @@ impl Scheduler {
         if !super::test_handoff::needs_projection(state, &record.epoch, record.id)? {
             return Ok(false);
         }
-        let current = inspect(&self.profile, root, &state.root_identity, state.revision);
+        let current = self.observe(root, &state.root_identity, state.revision);
         if !current.is_ok_and(|value| value.scope == record.scope_sha256) {
+            return Ok(false);
+        }
+        let planned = record.planned_causes.as_deref().unwrap_or_default();
+        if self.managed_grant.is_some() && planned != super::test_handoff::causes(state)? {
             return Ok(false);
         }
         let projected = super::test_handoff::project(
             state,
             &record.epoch,
             record.id,
+            record.revision,
             &record.scope_sha256,
-            record.planned_causes.as_deref().unwrap_or_default(),
+            planned,
             &record.receipts,
         )?;
         if projected {
@@ -386,7 +410,7 @@ impl Scheduler {
         else {
             return Err(invalid("test attempt no longer owns its fence"));
         };
-        let current = inspect(&self.profile, root, identity, revision);
+        let current = self.observe(root, identity, revision);
         let (state, receipts, error) = if current
             .as_ref()
             .is_ok_and(|value| value.scope == record.scope_sha256)
@@ -1413,6 +1437,7 @@ mod tests {
                 &mut subset,
                 &epoch,
                 incomplete.id,
+                incomplete.revision,
                 &incomplete.scope_sha256,
                 incomplete.planned_causes.as_ref().unwrap(),
                 &incomplete.receipts

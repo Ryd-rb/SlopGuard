@@ -617,6 +617,15 @@ fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
             "migration writer or state location differs from the pinned identity",
         ));
     }
+    if identity.operation == "managed_tests_drain_v1" && data.is_empty()
+        && identity.epoch == managed_test_epoch(&identity.root_identity) {
+        let _lock = writer_lock(&directory, &identity.epoch, Duration::from_secs(2))?;
+        slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
+        return Ok((Vec::new(), false));
+    }
+    if identity.operation == "managed_tests_v1" {
+        return managed_tests(identity, &root, &directory, data).map(|result| (result, false));
+    }
     let marker = read_marker(&directory)?;
     if marker.version != 1
         || marker.root.canonicalize()? != root
@@ -706,6 +715,68 @@ fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
             "migration operation is unsupported for this writer phase",
         )),
     }
+}
+
+fn managed_test_epoch(root: &str) -> String {
+    hash(format!("managed-test-ledger\0{root}").as_bytes())[..32].to_ascii_lowercase()
+}
+
+fn managed_tests(identity: &Identity, root: &Path, state: &Path, data: &[u8]) -> io::Result<Vec<u8>> {
+    let binding = state.join("managed-test-peer.json");
+    let current = || {
+        ["migration-engine.json", "migration-engine.json.pending"]
+            .iter()
+            .all(|name| fs::symlink_metadata(state.join(name)).is_err_and(|error| {
+                error.kind() == io::ErrorKind::NotFound
+            }))
+            && physical_root(root).is_ok_and(|value| value == identity.root_identity)
+            && slophawk_language_execution::read_owner_document(&binding, root)
+                .is_ok_and(|value| hash(&value) == identity.grant_ref)
+    };
+    if identity.epoch != managed_test_epoch(&identity.root_identity) || !current() {
+        return Err(invalid("the managed test peer lost its owner binding"));
+    }
+    let _lock = writer_lock(state, &identity.epoch, Duration::ZERO)?;
+    slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
+    let mut snapshot = snapshot(data, identity)?;
+    if snapshot.revision != identity.committed_revision || !current() {
+        return Err(invalid("the managed test peer received a stale inventory"));
+    }
+
+    let mut tests = scheduled_tests::Scheduler::open(state, root, &identity.epoch)?
+        .for_managed(&identity.grant_ref);
+    let mut projected = tests.project(root, &mut snapshot)?;
+    if !projected {
+        let causes = if tests.configured() { test_handoff::causes(&snapshot)? } else { Vec::new() };
+        if let Some(mut attempt) = tests.start_with_causes(root, &identity.root_identity,
+            &identity.epoch, snapshot.revision, causes) {
+            loop {
+                if !current() {
+                    return Err(invalid("the managed test peer lost its owner binding"));
+                }
+                if let Some(finished) = attempt.completed() {
+                    tests.finish(root, &identity.root_identity, snapshot.revision, finished?)?;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            projected = tests.project(root, &mut snapshot)?;
+        }
+    }
+    let tables = projected.then(|| {
+        snapshot.tables.into_iter().filter(|table| matches!(table.name.as_str(),
+            "test_intent" | "intent_fallback" | "test_attempt" | "test_evidence" | "test_run_receipt"))
+            .collect::<Vec<_>>()
+    });
+    if !current() {
+        return Err(invalid("the managed test peer lost its owner binding"));
+    }
+    let payload = serde_json::to_vec(&serde_json::json!({"status":tests.status(),"tables":tables}))
+        .map_err(io::Error::other)?;
+    if payload.len() > CAP {
+        return Err(invalid("managed test results exceed the interchange budget"));
+    }
+    Ok(payload)
 }
 
 pub fn run_stdio() -> io::Result<()> {

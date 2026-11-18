@@ -52,7 +52,7 @@ dotnet run --no-build --project src/SlopHawk.Cli -- stop
 
 The preview publishes a source inventory report with Git attribution. It fingerprints C# source and stores pending test intents in SQLite. The CLI and MCP status expose `committedRevision`, `pendingTestIntents`, `recordingError` and `testScheduler`. Use the project's configured build for compiler and analyzer diagnostics.
 
-Use `slophawk projects --root <checkout>` to explicitly evaluate a checkout and print per-target C# membership, linked items, reference mappings and any unresolved scope. This command uses the installed .NET 10 SDK for evaluation and requests no build targets. On Windows it uses the shared worker slot and a Job Object. The integration suite exercises supervised scheduling with a fake runner. The preview daemon reports `awaiting_adapter` until a real test runner is available. [Current implementation](docs/source-reconciliation.md#current-implementation), [Next implementation stages](docs/delivery.md#next-implementation-stages)
+Use `slophawk projects --root <checkout>` to explicitly evaluate a checkout and print per-target C# membership, linked items, reference mappings and any unresolved scope. This command uses the installed .NET 10 SDK for evaluation and requests no build targets. On Windows it uses the shared worker slot and a Job Object. The daemon can schedule C#, Python, Cargo and FluxR tests with the owner’s private executable-test registration. Without a registration it reports `awaiting_adapter`. [Executable-test configuration](docs/rust-migration-qualification.md#scheduled-executable-tests)
 
 ### Workspace execution profiles
 

@@ -97,23 +97,7 @@ internal sealed partial class SourceInventory
             }
             // Deletions and insertions are a single SQLite transaction, preserving all represented
             // causes, graph predecessors, attempts, receipt provenance and recovery identities.
-            foreach (var shape in MigrationTables.Reverse())
-                Execute(connection, transaction, $"DELETE FROM {shape.Name}");
-            for (var tableIndex = 0; tableIndex < MigrationTables.Length; tableIndex++)
-            {
-                var shape = MigrationTables[tableIndex];
-                var table = snapshot.Tables[tableIndex];
-                var parameterNames = Enumerable.Range(0, table.Columns.Length).Select(i => $"$v{i}").ToArray();
-                using var insert = Command(connection, transaction,
-                    $"INSERT INTO {shape.Name} ({shape.Columns}) VALUES ({string.Join(",", parameterNames)})");
-                foreach (var values in table.Rows)
-                {
-                    for (var i = 0; i < values.Length; i++)
-                        insert.Parameters.AddWithValue(parameterNames[i], DecodeValue(values[i]));
-                    insert.ExecuteNonQuery();
-                    insert.Parameters.Clear();
-                }
-            }
+            ReplaceMigrationTables(connection, transaction, snapshot.Tables);
             // Reject any silently altered workspace row, or missing pending/receipt table.
             using (var check = Command(connection, transaction,
                 "SELECT revision, root_identity, policy FROM workspace WHERE id = 1"))
@@ -125,6 +109,50 @@ internal sealed partial class SourceInventory
             }
             EnsureMigrationRoot(rootIdentity);
             transaction.Commit();
+        }
+    }
+
+    internal PendingIntents? CommitManagedTests(MigrationSnapshot basis, MigrationTable[] tables,
+        ScheduleFence fence, Func<bool> isCurrent)
+    {
+        string[] names = ["test_intent", "intent_fallback", "test_attempt", "test_evidence", "test_run_receipt"];
+        if (basis.Revision != fence.Revision || !tables.Select(table => table.Name).SequenceEqual(names))
+            throw new IOException("The test peer returned an incompatible receipt projection.");
+        var replacements = tables.ToDictionary(table => table.Name, StringComparer.Ordinal);
+        ValidateMigration(basis with { Tables = basis.Tables.Select(table =>
+            replacements.GetValueOrDefault(table.Name, table)).ToArray() }, fence.RootIdentity);
+        lock (writer)
+        {
+            using var connection = Open(initialize: false);
+            using var transaction = connection.BeginTransaction();
+            if (!MatchesFence(connection, transaction, fence) || !isCurrent())
+                return null;
+            ReplaceMigrationTables(connection, transaction, tables);
+            var pending = ReadPending(connection, transaction);
+            if (!isCurrent())
+                return null;
+            transaction.Commit();
+            return pending;
+        }
+    }
+
+    private static void ReplaceMigrationTables(SqliteConnection connection, SqliteTransaction transaction,
+        MigrationTable[] tables)
+    {
+        foreach (var table in tables.Reverse())
+            Execute(connection, transaction, $"DELETE FROM {table.Name}");
+        foreach (var table in tables)
+        {
+            var parameters = Enumerable.Range(0, table.Columns.Length).Select(i => $"$v{i}").ToArray();
+            using var insert = Command(connection, transaction,
+                $"INSERT INTO {table.Name} ({string.Join(",", table.Columns)}) VALUES ({string.Join(",", parameters)})");
+            foreach (var values in table.Rows)
+            {
+                for (var i = 0; i < values.Length; i++)
+                    insert.Parameters.AddWithValue(parameters[i], DecodeValue(values[i]));
+                insert.ExecuteNonQuery();
+                insert.Parameters.Clear();
+            }
         }
     }
 

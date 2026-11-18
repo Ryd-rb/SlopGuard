@@ -31,6 +31,35 @@ public static class MigrationStateBridge
         string ToolSha256, string PolicySha256, string BudgetRef, string GrantRef, string StateDirectory);
     private sealed record PeerResult(byte[] Payload, string Digest);
 
+    internal static ManagedTestResult RunManagedTests(Workspace workspace, ManagedTestRegistration registration,
+        MigrationSnapshot inventory, CancellationToken cancellationToken)
+    {
+        RequireLegacyWriter(workspace);
+        RequireExternalPeer(workspace, registration.Path, registration.Sha256, registration.Digest, registration.Digest);
+        var input = JsonSerializer.SerializeToUtf8Bytes(inventory, Json);
+        var epoch = Hash(Encoding.UTF8.GetBytes("managed-test-ledger\0" + inventory.RootIdentity))[..32].ToLowerInvariant();
+        var identity = Identity("managed_tests_v1", workspace, inventory.RootIdentity, epoch, inventory.Revision,
+            Hash(input), registration.Sha256, inventory.Policy, registration.Digest);
+        PeerResult reply;
+        try
+        {
+            reply = RunPeer(registration.Path, identity, input, wantExport: true, cancellationToken,
+                TimeSpan.FromMinutes(30));
+        }
+        catch
+        {
+            // A cancelled coordinator can leave a Linux service journal behind.
+            // Drain that scope before the managed daemon releases its writer.
+            RequireExternalPeer(workspace, registration.Path, registration.Sha256, registration.Digest, registration.Digest);
+            var drain = Identity("managed_tests_drain_v1", workspace, inventory.RootIdentity, epoch, inventory.Revision,
+                Hash([]), registration.Sha256, inventory.Policy, registration.Digest);
+            RunPeer(registration.Path, drain, [], wantExport: false, budget: TimeSpan.FromSeconds(6));
+            throw;
+        }
+        return JsonSerializer.Deserialize<ManagedTestResult>(reply.Payload, Json)
+            ?? throw new IOException("The managed test peer omitted its receipt projection.");
+    }
+
     public static string ReadRootIdentity(Workspace workspace) => RootIdentity.Read(workspace.Root);
     public static void RequirePhysicalDirectory(string path) => Workspace.CheckDirectory(path);
 
@@ -244,10 +273,12 @@ public static class MigrationStateBridge
         }
     }
 
-    private static PeerResult RunPeer(string path, JobIdentity identity, byte[] input, bool wantExport)
+    private static PeerResult RunPeer(string path, JobIdentity identity, byte[] input, bool wantExport,
+        CancellationToken cancellationToken = default, TimeSpan? budget = null)
     {
         if (identity.InputSha256 != Hash(input))
             throw new IOException("The migration job identity disagrees with its exact input digest.");
+        cancellationToken.ThrowIfCancellationRequested();
         var info = new ProcessStartInfo(path)
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true,
@@ -255,7 +286,8 @@ public static class MigrationStateBridge
         };
         info.ArgumentList.Add("--slophawk-migration-job-v1");
         using var process = Process.Start(info) ?? throw new IOException("The qualified native peer did not start.");
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(budget ?? TimeSpan.FromSeconds(45));
         // The separate stderr reader is bounded, preventing output backpressure or
         // untrusted diagnostics from exhausting memory.
         var stderr = ReadStderrAsync(process.StandardError.BaseStream, deadline.Token);
@@ -338,7 +370,7 @@ public static class MigrationStateBridge
             }
             return new PeerResult(received.ToArray(), digest);
         }
-        catch (OperationCanceledException exception)
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
             throw new IOException("The native migration job exceeded its deadline.", exception);
         }
@@ -348,6 +380,8 @@ public static class MigrationStateBridge
             {
                 try { process.Kill(entireProcessTree: true); }
                 catch (InvalidOperationException) { /* exited between probe and kill */ }
+                if (!process.WaitForExit((int)TimeSpan.FromSeconds(3).TotalMilliseconds))
+                    throw new IOException("The native peer did not exit after cancellation.");
             }
             try { stderr.WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult(); }
             catch (OperationCanceledException) { /* cancelled diagnostics are not evidence */ }

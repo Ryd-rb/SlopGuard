@@ -16,7 +16,7 @@ internal sealed class WorkspaceMonitor : IDisposable
     private readonly SourceScanner scanner;
     private readonly SourceInventory inventory;
     private readonly ReportFile reportFile;
-    private readonly DurableTestScheduler? scheduler;
+    private readonly IWorkspaceTestScheduler? scheduler;
     private GitContext gitContext;
     private FileSystemWatcher? parentWatcher;
     private FileSystemWatcher? profileWatcher;
@@ -24,7 +24,7 @@ internal sealed class WorkspaceMonitor : IDisposable
     private InventoryState? committed;
     private SourceScan? reconciled;
     private ScheduleFence? schedule;
-    private TestSchedulerStatus scheduleStatus;
+    private object scheduleStatus;
     private ProjectEvaluationStatus? projectEvaluation;
     private long revision;
     private bool scanAll;
@@ -36,14 +36,15 @@ internal sealed class WorkspaceMonitor : IDisposable
         string RootIdentity, GitRevision Git);
 
     internal WorkspaceMonitor(Workspace workspace, GitContext git, ITestAdapter? adapter,
-        Func<CancellationToken, Task>? afterStaging = null)
+        Func<CancellationToken, Task>? afterStaging = null, bool productionScheduler = false)
     {
         this.workspace = workspace;
         gitContext = git;
         scanner = new SourceScanner(workspace);
         inventory = new SourceInventory(workspace);
         reportFile = new ReportFile(workspace, afterStaging);
-        scheduler = adapter is null ? null : new DurableTestScheduler(inventory, this, adapter, workspace);
+        scheduler = adapter is not null ? new DurableTestScheduler(inventory, this, adapter, workspace) :
+            productionScheduler ? new ManagedTestScheduler(inventory, this, workspace) : null;
         scheduleStatus = new TestSchedulerStatus(adapter is null ? "awaiting_adapter" : "pending_reconciliation");
     }
 
@@ -80,7 +81,8 @@ internal sealed class WorkspaceMonitor : IDisposable
                 }
                 if (SourceScanner.Matches(path))
                     Invalidate(structural ? null : path);
-                else if (ProjectEvaluator.IsProjectInput(path))
+                else if (ProjectEvaluator.IsProjectInput(path) ||
+                    scheduler is ManagedTestScheduler managed && managed.WatchesProviderInput(path))
                     Invalidate();
             }));
         watchers.Add(Watch(workspace.Root, recursive: true, NotifyFilters.DirectoryName, (path, _) =>
@@ -389,7 +391,7 @@ internal sealed class WorkspaceMonitor : IDisposable
         return false;
     }
 
-    internal void UpdateScheduler(TestSchedulerStatus status, ScheduleFence? fence = null, PendingIntents? pending = null)
+    internal void UpdateScheduler(object status, ScheduleFence? fence = null, PendingIntents? pending = null)
     {
         lock (gate)
         {
@@ -423,10 +425,13 @@ internal sealed class WorkspaceMonitor : IDisposable
         profileWatcher?.Dispose();
         Workspace.CheckDirectory(workspace.StateDirectory);
         var profilePath = ExecutionProfile.PathFor(workspace);
+        var managedTestPeer = Path.Combine(workspace.StateDirectory, ManagedTestRegistration.Name);
+        var nativeTests = Path.Combine(workspace.StateDirectory, "native-tests.json");
         profileWatcher = Watch(workspace.StateDirectory, recursive: false,
             NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size, (path, _) =>
             {
-                if (Workspace.PathComparer.Equals(path, profilePath))
+                if (Workspace.PathComparer.Equals(path, profilePath) || scheduler is ManagedTestScheduler &&
+                    (Workspace.PathComparer.Equals(path, managedTestPeer) || Workspace.PathComparer.Equals(path, nativeTests)))
                     Invalidate();
             });
     }

@@ -6,6 +6,14 @@ namespace SlopHawk.Daemon;
 
 internal static class RootIdentity
 {
+    internal static bool IsPrivateLinuxFile(SafeFileHandle file)
+    {
+        const int emptyPath = 0x1000;
+        const uint ownerAndMode = 0xb;
+        return Statx(file.DangerousGetHandle().ToInt32(), "", emptyPath, ownerAndMode, out var info) == 0 &&
+            (info.Mask & ownerAndMode) == ownerAndMode && (info.Mode & 0xf03f) == 0x8000 && info.User == EffectiveUid();
+    }
+
     internal static string Read(string root)
     {
         Workspace.CheckDirectory(root);
@@ -51,6 +59,7 @@ internal static class RootIdentity
     private struct LinuxStatx
     {
         [FieldOffset(0)] public uint Mask;
+        [FieldOffset(20)] public uint User;
         [FieldOffset(28)] public ushort Mode;
         [FieldOffset(32)] public ulong Inode;
         [FieldOffset(80)] public long BirthSeconds;
@@ -71,4 +80,7 @@ internal static class RootIdentity
     [DllImport("libc", EntryPoint = "statx", SetLastError = true)]
     private static extern int Statx(int directory, [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
         int flags, uint mask, out LinuxStatx info);
+
+    [DllImport("libc", EntryPoint = "geteuid")]
+    private static extern uint EffectiveUid();
 }

@@ -132,6 +132,18 @@ state directory as the migration marker. The version-1 registration contains
 The [live scheduler fixture](../rust/frontends/public-shell/src/scheduled_tests.rs)
 shows registrations for C#, Python, Cargo and FluxR.
 
+For the managed daemon, put a second owner-only file, `managed-test-peer.json`,
+in the same private state directory. Use `version: 1`, the matching
+`rootIdentity`, and `peer` containing the absolute, outside-checkout path
+and SHA-256 of the installed `slophawk-native` binary. The ordinary managed
+daemon detects the registration and uses the same four-provider scheduler.
+It retains ownership of SQLite, checks the current workspace fence before
+committing test rows, and exposes the same receipt batches through CLI and
+MCP status. The peer has no authority to write to SQLite. Removing the
+registration withdraws execution authority. Restart reuses receipts only
+when the source, Git context and grants still match. Each receipt retains
+the revision it actually executed against.
+
 C# maps registered projects and frameworks to evaluated MSBuild test targets.
 The registration supplies pinned `dotnet` and execution-peer `assembly`,
 authorized results roots, explicit runtime closures and VSTest runner pins.

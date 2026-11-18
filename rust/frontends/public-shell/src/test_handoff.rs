@@ -138,11 +138,12 @@ fn trx_row(
     state: &Snapshot,
     epoch: &str,
     batch: u64,
+    revision: i64,
     id: i64,
     target: &str,
     receipt: &Value,
 ) -> io::Result<Vec<Cell>> {
-    if receipt["revision"].as_i64() != Some(state.revision)
+    if receipt["revision"].as_i64() != Some(revision)
         || receipt["epoch"] != epoch
         || receipt["fenceSequence"].as_u64() != Some(batch)
         || receipt["rootIdentity"] != state.root_identity
@@ -158,7 +159,7 @@ fn trx_row(
     let mut row = vec![
         Cell::integer(id),
         Cell::integer(1),
-        Cell::integer(state.revision),
+        Cell::integer(revision),
         text(epoch),
     ];
     for name in [
@@ -225,6 +226,7 @@ pub(super) fn project(
     state: &mut Snapshot,
     epoch: &str,
     batch: u64,
+    revision: i64,
     scope: &str,
     planned: &[String],
     batches: &[Value],
@@ -233,7 +235,7 @@ pub(super) fn project(
     if !needs_projection(state, epoch, batch)? {
         return Ok(false);
     }
-    if !hex(scope, 64) || planned != causes(state)? {
+    if revision < 0 || revision > state.revision || !hex(scope, 64) || planned != causes(state)? {
         return Err(invalid("native test batch differs from its pending causes"));
     }
     let epoch = guid(epoch);
@@ -291,7 +293,7 @@ pub(super) fn project(
                 }
                 accounted &=
                     receipt["selectionComplete"] == true && matches!(status, "passed" | "failed");
-                details.push(trx_row(state, &epoch, batch, max_id, target, raw)?);
+                details.push(trx_row(state, &epoch, batch, revision, max_id, target, raw)?);
                 (
                     text(field(receipt, "target", 128)?),
                     text(field(raw, "inputFingerprint", 128)?),
@@ -318,7 +320,7 @@ pub(super) fn project(
             attempts.push(vec![
                 Cell::integer(max_id),
                 Cell::integer(1),
-                Cell::integer(state.revision),
+                Cell::integer(revision),
                 text(&epoch),
                 target,
                 fingerprint,

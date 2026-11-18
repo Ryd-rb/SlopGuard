@@ -8,9 +8,13 @@ namespace SlopHawk.Daemon;
 public static class DaemonHost
 {
     public static void Run(Workspace workspace, CancellationToken cancellationToken = default) =>
-        Run(workspace, null, cancellationToken);
+        Run(workspace, null, cancellationToken, productionScheduler: true);
 
-    internal static void Run(Workspace workspace, ITestAdapter? adapter, CancellationToken cancellationToken)
+    internal static void Run(Workspace workspace, ITestAdapter? adapter, CancellationToken cancellationToken) =>
+        Run(workspace, adapter, cancellationToken, productionScheduler: false);
+
+    private static void Run(Workspace workspace, ITestAdapter? adapter, CancellationToken cancellationToken,
+        bool productionScheduler)
     {
         using var singleton = new Mutex(false, workspace.InstanceName);
         try
@@ -26,7 +30,7 @@ public static class DaemonHost
         try
         {
             MigrationStateBridge.RequireLegacyWriter(workspace);
-            RunOwnedAsync(workspace, adapter, cancellationToken).GetAwaiter().GetResult();
+            RunOwnedAsync(workspace, adapter, cancellationToken, productionScheduler).GetAwaiter().GetResult();
         }
         finally
         {
@@ -34,11 +38,12 @@ public static class DaemonHost
         }
     }
 
-    private static async Task RunOwnedAsync(Workspace workspace, ITestAdapter? adapter, CancellationToken cancellationToken)
+    private static async Task RunOwnedAsync(Workspace workspace, ITestAdapter? adapter, CancellationToken cancellationToken,
+        bool productionScheduler)
     {
         var git = await GitContext.DiscoverAsync(workspace.Root, cancellationToken);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        using var monitor = new WorkspaceMonitor(workspace, git, adapter);
+        using var monitor = new WorkspaceMonitor(workspace, git, adapter, productionScheduler: productionScheduler);
         monitor.Start();
         var indexing = monitor.RunAsync(stop.Token);
         var serving = ServeAsync(workspace, monitor, stop);

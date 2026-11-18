@@ -125,20 +125,14 @@ public sealed class NativeEngineSelectionTests
         var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binary!)));
         var profile = new string('F', 64);
         const string grant = "live-native-receipt-rollback";
+        string[] Native(string command) => ["--native-workspace-v1", workspace.Root, workspace.StateDirectory, profile, command];
+        JsonNode nativeStatus;
         MigrationStateBridge.TransferToNative(workspace, binary!, digest, profile, grant);
         try
         {
-            await Run("start");
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120));
-            while (true)
-            {
-                var status = JsonNode.Parse(await Run("status"))!;
-                if (status["pendingTestIntents"]?["state"]?.GetValue<string>() == "none")
-                    break;
-                Assert.False(status["testScheduler"]?["state"]?.GetValue<string>() is "blocked" or "blocked_policy",
-                    status.ToJsonString());
-                await Task.Delay(150, deadline.Token);
-            }
+            await Run(binary!, Native("start"));
+            nativeStatus = await WaitForReceipts(binary!, Native("status"));
+            Assert.Equal(Contract(nativeStatus), await ReadMcpContract(binary!, Native("mcp")));
         }
         finally
         {
@@ -164,19 +158,185 @@ public sealed class NativeEngineSelectionTests
         var original = batch["receipts"]!.AsArray().Single(group => group!["provider"]!.GetValue<string>() == "csharp")!;
         Assert.Equal(receipt.ArtifactSha256, original["receipts"]![0]!["receipt"]!["artifactSha256"]!.GetValue<string>());
 
-        async Task<string> Run(string command)
+        using (var pending = restored.CreateCommand())
         {
-            var start = new ProcessStartInfo(binary!) { RedirectStandardOutput = true,
-                RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var argument in new[] { "--native-workspace-v1", workspace.Root, workspace.StateDirectory, profile, command })
-                start.ArgumentList.Add(argument);
-            using var process = Process.Start(start)!;
+            pending.CommandText = """
+                INSERT INTO test_intent
+                SELECT revision,path_key,NULL,NULL,path,digest,'graph_unavailable' FROM workspace,source;
+                INSERT INTO intent_fallback SELECT 1,revision,revision FROM workspace;
+                """;
+            pending.ExecuteNonQuery();
+        }
+        var peer = Path.Combine(workspace.StateDirectory, ManagedTestRegistration.Name);
+        await File.WriteAllTextAsync(peer, JsonSerializer.Serialize(new
+        {
+            version = 1, rootIdentity = root, peer = new { path = Path.GetFullPath(binary!), sha256 = digest }
+        }));
+        if (OperatingSystem.IsLinux())
+            File.SetUnixFileMode(peer, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var apphost = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "slophawk.exe" : "slophawk");
+        string[] Managed(string command) => [command, "--root", workspace.Root];
+        var managedStatus = await RunManaged(false);
+        Assert.Equal(Contract(nativeStatus), Contract(managedStatus));
+        Assert.Equal(10, Scalar(restored, "SELECT count(*) FROM test_attempt"));
+        Assert.Equal(2, Scalar(restored, "SELECT count(*) FROM test_run_receipt"));
+        Assert.Equal(0, Scalar(restored, "SELECT count(*) FROM test_intent"));
+        Assert.Equal(0, Scalar(restored, "SELECT count(*) FROM intent_fallback"));
+        var restarted = await RunManaged(true);
+        Assert.Equal(managedStatus["testScheduler"]!["latest"]!.ToJsonString(),
+            restarted["testScheduler"]!["latest"]!.ToJsonString());
+        Assert.Equal(10, Scalar(restored, "SELECT count(*) FROM test_attempt"));
+        await StopWithLiveDescendant();
+        var recovered = await RunManaged(true);
+        Assert.Equal(Contract(nativeStatus), Contract(recovered));
+        Assert.Equal(3, recovered["testScheduler"]!["latest"]!["id"]!.GetValue<int>());
+        Assert.Equal(15, Scalar(restored, "SELECT count(*) FROM test_attempt"));
+
+        async Task StopWithLiveDescendant()
+        {
+            var python = Path.Combine(workspace.Root, "test_example.py");
+            var originalSource = await File.ReadAllBytesAsync(python);
+            var signal = Path.Combine(Path.GetDirectoryName(workspace.Root)!, "active-pytest-child.txt");
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(75));
+            var daemon = Task.Factory.StartNew(() => DaemonHost.Run(workspace, timeout.Token),
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            try
+            {
+                var connection = new DaemonConnection(workspace);
+                while ((await connection.NegotiateAsync(timeout.Token)).Handshake is null)
+                    await Task.Delay(60, timeout.Token);
+                await WaitForReceipts(apphost, Managed("status"));
+                await File.WriteAllTextAsync(python, $$"""
+                    import subprocess
+                    import sys
+                    import time
+
+                    def test_passes():
+                        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(90)"])
+                        with open({{JsonSerializer.Serialize(signal)}}, "w", encoding="ascii") as ready:
+                            ready.write(str(child.pid))
+                        time.sleep(90)
+                    """, timeout.Token);
+                while (!File.Exists(signal) || new FileInfo(signal).Length == 0)
+                    await Task.Delay(60, timeout.Token);
+                var pid = int.Parse(await File.ReadAllTextAsync(signal, timeout.Token));
+                using var child = Process.GetProcessById(pid);
+                Assert.False(child.HasExited);
+                Assert.True(JsonNode.Parse(await Run(apphost, Managed("stop")))!["stopping"]!.GetValue<bool>());
+                await daemon.WaitAsync(TimeSpan.FromSeconds(12));
+                await child.WaitForExitAsync(timeout.Token);
+                Assert.Equal(10, Scalar(restored, "SELECT count(*) FROM test_attempt"));
+            }
+            finally
+            {
+                await timeout.CancelAsync();
+                await daemon.WaitAsync(TimeSpan.FromSeconds(12));
+                await File.WriteAllBytesAsync(python, originalSource);
+            }
+        }
+
+        async Task<JsonNode> RunManaged(bool restart)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(140));
+            var daemon = Task.Factory.StartNew(() => DaemonHost.Run(workspace, timeout.Token),
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            try
+            {
+                var connection = new DaemonConnection(workspace);
+                while ((await connection.NegotiateAsync(timeout.Token)).Handshake is null)
+                    await Task.Delay(60, timeout.Token);
+                var status = await WaitForReceipts(apphost, Managed("status"));
+                if (!restart)
+                {
+                    Assert.Equal(Contract(status), await ReadMcpContract(apphost, Managed("mcp")));
+                    var results = JsonNode.Parse(await Run(apphost, Managed("results")))!;
+                    Assert.Equal(2, results["schemaVersion"]!.GetValue<int>());
+                    Assert.Equal(status["committedRevision"]!.GetValue<long>(), results["committedRevision"]!.GetValue<long>());
+                }
+                Assert.True(JsonNode.Parse(await Run(apphost, Managed("stop")))!["stopping"]!.GetValue<bool>());
+                return status;
+            }
+            finally
+            {
+                await timeout.CancelAsync();
+                await daemon.WaitAsync(TimeSpan.FromSeconds(12));
+            }
+        }
+
+        static string[] Contract(JsonNode status) => status["testScheduler"]!["latest"]!["receipts"]!.AsArray()
+            .SelectMany(group => group!["receipts"]!.AsArray().Select(item =>
+            {
+                var provider = group["provider"]!.GetValue<string>();
+                var receipt = item!["receipt"];
+                return provider + ":" + item["target"] + ":" + (item["outcome"] ?? receipt!["outcome"]) + ":" +
+                    (provider switch
+                    {
+                        "python" => $"{item["collected"]},{item["passed"]},{item["failed"]},{item["skipped"]}",
+                        "rust" => item["counters"]!.ToJsonString(),
+                        "csharp" => receipt!["counters"]!.ToJsonString(),
+                        "fluxr" => receipt!["observed_json"]!.GetValue<string>(),
+                        _ => throw new InvalidOperationException(provider),
+                    });
+            })).ToArray();
+
+        static async Task<JsonNode> WaitForReceipts(string executable, string[] args)
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            while (true)
+            {
+                var status = JsonNode.Parse(await Run(executable, args))!;
+                var state = status["testScheduler"]?["state"]?.GetValue<string>();
+                if (status["state"]?.GetValue<string>() == "ready" && state == "completed" &&
+                    status["pendingTestIntents"]?["state"]?.GetValue<string>() == "none")
+                    return status;
+                Assert.False(state is "blocked" or "blocked_policy" or "degraded", status.ToJsonString());
+                await Task.Delay(200, deadline.Token);
+            }
+        }
+
+        static async Task<string[]> ReadMcpContract(string executable, string[] args)
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var start = Start(executable, args);
+            start.RedirectStandardInput = true;
+            using var mcp = Process.Start(start)!;
+            try
+            {
+                var errors = mcp.StandardError.ReadToEndAsync(deadline.Token);
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"executable-parity","version":"1"}}}""");
+                var ready = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                Assert.Equal("2025-11-25", ready["result"]!["protocolVersion"]!.GetValue<string>());
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workspace_status","arguments":{}}}""");
+                var response = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                var status = JsonNode.Parse(response["result"]!["content"]![0]!["text"]!.GetValue<string>())!;
+                Assert.True(status["ok"]!.GetValue<bool>());
+                mcp.StandardInput.Close();
+                await mcp.WaitForExitAsync(deadline.Token);
+                Assert.True(mcp.ExitCode == 0, await errors);
+                return Contract(status["payload"]!);
+            }
+            finally
+            {
+                if (!mcp.HasExited)
+                    mcp.Kill(entireProcessTree: true);
+            }
+        }
+
+        static async Task<string> Run(string executable, string[] args)
+        {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.WaitForExitAsync(timeout.Token);
-            Assert.True(process.ExitCode == 0, await stderr);
-            return await stdout;
+            var result = await ProjectEvaluator.RunExplicitAsync(Start(executable, args), timeout);
+            Assert.True(result.ExitCode == 0, result.StandardError);
+            return result.StandardOutput;
+        }
+
+        static ProcessStartInfo Start(string executable, string[] args)
+        {
+            var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true,
+                RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var argument in args) start.ArgumentList.Add(argument);
+            return start;
         }
     }
 

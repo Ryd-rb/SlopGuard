@@ -3,8 +3,14 @@ using Microsoft.Data.Sqlite;
 
 namespace SlopHawk.Daemon;
 
+internal interface IWorkspaceTestScheduler
+{
+    void Signal();
+    Task RunAsync(CancellationToken cancellationToken);
+}
+
 internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceMonitor workspace, ITestAdapter adapter,
-    Workspace checkout)
+    Workspace checkout) : IWorkspaceTestScheduler
 {
     private readonly Channel<bool> changes = Channel.CreateBounded<bool>(1);
     private readonly WorkerAdmission workers = new(checkout);
@@ -13,9 +19,9 @@ internal sealed class DurableTestScheduler(SourceInventory inventory, WorkspaceM
     private long evaluatedRevision;
     private TestAttemptReceipt? latest;
 
-    internal void Signal() => changes.Writer.TryWrite(true);
+    public void Signal() => changes.Writer.TryWrite(true);
 
-    internal async Task RunAsync(CancellationToken cancellationToken)
+    public async Task RunAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
