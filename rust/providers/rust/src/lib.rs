@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cancellation;
+
 use ra_ap_syntax::{
     AstNode, Edition, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, ast,
 };
@@ -255,6 +257,8 @@ pub enum FrontierKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Unresolved {
     pub kind: FrontierKind,
+    /// Original source potentially affected by the unresolved feature. For an
+    /// attribute this includes its owner, not only the attribute's spelling.
     pub span: Span,
     pub reason: &'static str,
 }
@@ -439,12 +443,20 @@ pub fn analyze_source(
                     }
                 }
                 SyntaxKind::ATTR => {
+                    // Outer attributes govern their attached item/expression;
+                    // inner attributes govern the containing source/item/statement
+                    // list. A frontier over only `#[...]` misses owned bodies when
+                    // downstream consumers exclude overlapping source blocks.
+                    let affected = Span::from_range(node.parent().map_or_else(
+                        || node.text_range(),
+                        |owner| owner.text_range(),
+                    ));
                     if is_conditional_attribute(&node) {
                         push_frontier(
                             &mut result,
                             &mut budget,
                             FrontierKind::ConditionalCompilation,
-                            Span::from_range(node.text_range()),
+                            affected,
                             "cfg or cfg_attr not evaluated against a target/feature set",
                         );
                     } else {
@@ -454,7 +466,7 @@ pub fn analyze_source(
                             &mut result,
                             &mut budget,
                             FrontierKind::MacroExpansion,
-                            Span::from_range(node.text_range()),
+                            affected,
                             "attribute expansion and attribute-macro identity are not resolved",
                         );
                         if is_derive_attribute(&node) {
@@ -462,7 +474,7 @@ pub fn analyze_source(
                                 &mut result,
                                 &mut budget,
                                 FrontierKind::GeneratedItems,
-                                Span::from_range(node.text_range()),
+                                affected,
                                 "derive output is not part of the parsed source",
                             );
                         }

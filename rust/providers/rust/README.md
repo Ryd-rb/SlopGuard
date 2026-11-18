@@ -33,6 +33,13 @@ means semantic resolution, evaluated cfg, generated items, or discovered tests.
 `PartialSyntax` is accompanied by diagnostics or `Unresolved` reasons (macro
 expansion, cfg, generated includes, method dispatch, out-of-line modules,
 parse recovery, or fact limit). One output slot is reserved for `FactLimit`.
+Attribute frontiers cover the original source range of the attribute's owner,
+including its nested bodies, rather than only the `#[...]` or `#![...]` text.
+Consumers that exclude unresolved overlaps therefore omit bodies governed by an
+unevaluated `cfg`, `cfg_attr`, or unresolved attribute macro. Adjacent unattached
+items remain eligible for exact syntax comparison. This does not evaluate any
+configuration predicate or expand an attribute; even an apparently inert
+attribute retains the existing conservative unresolved treatment.
 The input is rejected over 1 MiB; output is capped at 20,000 records across all
 collections, with caller-specific smaller caps supported. The implementation
 is read-only and does not retain parse trees between calls. These limits do

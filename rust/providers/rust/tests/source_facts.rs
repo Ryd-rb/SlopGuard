@@ -392,3 +392,72 @@ fn cfg_with_intervening_comment_is_still_conditional() {
             .any(|u| u.kind == FrontierKind::ConditionalCompilation)
     );
 }
+
+#[test]
+fn attribute_frontiers_cover_owned_bodies_without_covering_neighbor_items() {
+    let owners = [
+        "#[cfg(any())] fn hidden() { 1 + 2; }",
+        "#[cfg_attr(feature = \"x\", custom)] fn hidden() { 1 + 2; }",
+        "#[custom] fn hidden() { 1 + 2; }",
+        "#[allow(dead_code)] fn hidden() { 1 + 2; }",
+        "#[cfg(any())] mod hidden { fn nested() { 1 + 2; } }",
+        "#[cfg(any())] impl S { fn hidden() { 1 + 2; } }",
+        "mod hidden { #![cfg(any())] fn nested() { 1 + 2; } }",
+        "impl S { #![cfg(any())] fn hidden() { 1 + 2; } }",
+        "fn hidden() { #![cfg(any())] 1 + 2; }",
+        "fn hidden() { #[cfg(any())] let x = { 1 + 2; }; }",
+    ];
+    for owner in owners {
+        // Prefix makes char counts differ from original UTF-8 byte positions.
+        let source = format!("// café\r\n{owner}\r\nfn visible() {{ 3 + 4; }}");
+        let facts = run(&source);
+        assert!(
+            facts.diagnostics.is_empty(),
+            "{owner}: {:?}",
+            facts.diagnostics
+        );
+        assert_eq!(facts.completeness, Completeness::PartialSyntax);
+        let affected_start = source.find("1 + 2").unwrap() as u32;
+        let affected_end = affected_start + "1 + 2".len() as u32;
+        let visible_start = source.find("fn visible").unwrap() as u32;
+        assert!(
+            facts.unresolved.iter().any(|frontier| {
+                frontier.span.start <= affected_start
+                    && frontier.span.end >= affected_end
+                    && frontier.span.end <= visible_start
+            }),
+            "{owner}: {:?}",
+            facts.unresolved
+        );
+    }
+}
+
+#[test]
+fn crate_inner_attribute_frontier_covers_later_items() {
+    let source = "#![cfg(any())]\nfn hidden() { 1 + 2; }";
+    let facts = run(source);
+    assert!(facts.diagnostics.is_empty());
+    let frontier = facts
+        .unresolved
+        .iter()
+        .find(|frontier| frontier.kind == FrontierKind::ConditionalCompilation)
+        .unwrap();
+    assert_eq!(frontier.span.start, 0);
+    assert_eq!(frontier.span.end as usize, source.len());
+}
+
+#[test]
+fn derive_frontiers_cover_the_same_attached_item() {
+    let owner = "#[derive(Clone)] struct Item;";
+    let source = format!("{owner}\nfn neighbor() {{ 3 + 4; }}");
+    let facts = run(&source);
+    for kind in [FrontierKind::MacroExpansion, FrontierKind::GeneratedItems] {
+        let frontier = facts
+            .unresolved
+            .iter()
+            .find(|frontier| frontier.kind == kind)
+            .unwrap();
+        assert_eq!(frontier.span.start, 0);
+        assert_eq!(frontier.span.end as usize, owner.len());
+    }
+}
