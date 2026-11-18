@@ -5,6 +5,8 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 
+mod correlated;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Ty {
     Int,
@@ -805,6 +807,17 @@ pub struct SearchResult {
     pub unknown: Vec<String>,
 }
 
+/// Candidate ordering is policy-dependent. The caller must bind an opted-in policy
+/// and planner revision to its replay identity; neither scalar wire schema changes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchPolicy {
+    /// The existing ordered search, also used by [`search`].
+    Legacy,
+    /// Try common wrapping shifts of three or more linked int parameters before
+    /// legacy proposals. Limits and unsupported correlations remain explicit.
+    CorrelatedEqualitiesV1,
+}
+
 #[derive(Clone, Debug)]
 struct Input {
     args: Vec<i64>,
@@ -850,6 +863,7 @@ impl Ord for Queued {
 
 struct Search<'a> {
     p: &'a Problem,
+    policy: SearchPolicy,
     seed_keys: HashSet<String>,
     simulated: HashSet<String>,
     covered: HashSet<String>,
@@ -867,6 +881,7 @@ impl<'a> Search<'a> {
     fn new(p: &'a Problem) -> Self {
         Self {
             p,
+            policy: SearchPolicy::Legacy,
             seed_keys: HashSet::new(),
             simulated: HashSet::new(),
             covered: HashSet::new(),
@@ -1057,6 +1072,16 @@ impl<'a> Search<'a> {
             if *attempts < 4 {
                 *attempts += 1;
                 for comparison in &guard.comparisons {
+                    if self.policy == SearchPolicy::CorrelatedEqualitiesV1 {
+                        self.propose_correlated(
+                            &input.args,
+                            comparison,
+                            &guard.alternate,
+                            &guard.taken,
+                            index,
+                            &preserved,
+                        );
+                    }
                     self.propose(
                         &input.args,
                         comparison,
@@ -1338,6 +1363,15 @@ impl<'a> Search<'a> {
 /// original-build execution and replay before treating any result as observed behavior.
 pub fn search(problem: &Problem) -> SearchResult {
     Search::new(problem).run()
+}
+
+/// Explicit policy selection for owner-side evaluation. Existing callers remain
+/// on [`search`]; opting in can change candidate order, work and unknown reasons.
+/// This produces predictions only and does not verify original-build behavior.
+pub fn search_with_policy(problem: &Problem, policy: SearchPolicy) -> SearchResult {
+    let mut search = Search::new(problem);
+    search.policy = policy;
+    search.run()
 }
 
 /// Machine-readable output; the wire type `candidate` means predicted, not measured.
