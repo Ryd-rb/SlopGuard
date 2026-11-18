@@ -4,10 +4,7 @@ namespace SlopHawk.Daemon;
 
 internal sealed partial class SourceInventory(Workspace workspace)
 {
-    // The existing policy identifies the same eligible .cs files and digests.
-    private const string Policy = "csharp.syntax:inventory-v1";
     internal const int MaxDetailedIntents = 2_048;
-    private const int MaxIntentPathCharacters = 2_048;
     private const int SchemaVersion = 5;
     private readonly object writer = new();
 
@@ -48,223 +45,6 @@ internal sealed partial class SourceInventory(Workspace workspace)
 
         return new InventoryState(revision, rootIdentity, priorPolicy, files, scopes, unobserved,
             ReadPending(connection, transaction), retirement);
-    }
-
-    internal InventoryState? Reconcile(InventoryState basis, SourceScan scan, string rootIdentity, GitRevision git,
-        bool startup, Func<bool> accept)
-    {
-        lock (writer)
-            return CommitInventory(basis, scan, rootIdentity, git, startup, accept);
-    }
-
-    private InventoryState? CommitInventory(InventoryState basis, SourceScan scan, string rootIdentity, GitRevision git,
-        bool startup, Func<bool> accept)
-    {
-        var rootReplaced = basis.RootIdentity is not null && basis.RootIdentity != rootIdentity;
-        var resetInventory = rootReplaced || basis.Policy != Policy;
-        var createIntents = !startup && !resetInventory;
-        var files = resetInventory
-            ? new Dictionary<string, SourceFingerprint>(Workspace.PathComparer)
-            : new Dictionary<string, SourceFingerprint>(basis.Files, Workspace.PathComparer);
-        var changes = new List<SourceChange>();
-
-        if (!resetInventory)
-        {
-            foreach (var prior in basis.Files.Values)
-            {
-                if (scan.Files.ContainsKey(prior.Path))
-                    continue;
-                if (SourceScan.IsUncertain(scan.UncertainScopes, prior.Path))
-                {
-                    if (prior.Verified)
-                    {
-                        var unverified = prior with { Verified = false };
-                        files[prior.Path] = unverified;
-                        changes.Add(new SourceChange(prior, unverified));
-                    }
-                    continue;
-                }
-                files.Remove(prior.Path);
-                changes.Add(new SourceChange(prior, null));
-            }
-        }
-
-        var pathCharacters = files.Values.Sum(file => file.Path.Length);
-        var omitted = new List<string>();
-        foreach (var (path, digest) in scan.Files)
-        {
-            var previous = files.GetValueOrDefault(path);
-            var next = new SourceFingerprint(path, digest);
-            if (previous == next)
-                continue;
-
-            var growth = path.Length - (previous?.Path.Length ?? 0);
-            if ((previous is null && files.Count >= SourceScanner.MaxFiles) ||
-                pathCharacters + growth > SourceScanner.MaxPathCharacters)
-            {
-                omitted.Add(path);
-                continue;
-            }
-
-            files[path] = next;
-            pathCharacters += growth;
-            changes.Add(new SourceChange(previous, next));
-        }
-
-        if (omitted.Count > 0)
-        {
-            foreach (var path in omitted)
-            {
-                scan.Files.Remove(path);
-                if (files.TryGetValue(path, out var prior) && prior.Verified)
-                {
-                    var unverified = prior with { Verified = false };
-                    files[path] = unverified;
-                    changes.Add(new SourceChange(prior, unverified));
-                }
-            }
-            scan.UncertainScopes.Clear();
-            scan.UncertainScopes.Add("");
-        }
-
-        var revision = checked(basis.Revision + 1);
-        var intents = createIntents ? changes.Where(change =>
-            (change.Old?.Path != change.New?.Path || change.Old?.Digest != change.New?.Digest) &&
-            (change.Old is not null || !SourceScan.IsUncertain(basis.UnobservedScopes, change.New!.Path))).ToArray() : [];
-        // Newly inaccessible scopes keep their prior absence proofs. Scopes left
-        // unobserved by the baseline narrow as later scans verify them.
-        var unobserved = startup || resetInventory
-            ? scan.UncertainScopes
-            : IntersectScopes(basis.UnobservedScopes, scan.UncertainScopes);
-        using var connection = Open(initialize: false);
-        using var transaction = connection.BeginTransaction();
-        using (var check = Command(connection, transaction, "SELECT revision FROM workspace WHERE id = 1"))
-        {
-            if ((long?)check.ExecuteScalar() != basis.Revision)
-                throw new IOException("The source inventory changed outside its writer.");
-        }
-
-        // The watcher can invalidate immediately once this transaction accepts its observation.
-        // Its changes still commit together. Only a current fence can publish the resulting report.
-        if (!accept())
-            return null;
-
-        var priorPending = ReadPending(connection, transaction);
-        var retirement = rootReplaced
-            ? new RetiredIntents(revision, priorPending.DetailedCount + (priorPending.Fallback is null ? 0 : 1))
-            : basis.Retirement;
-        if (resetInventory)
-            Execute(connection, transaction, "DELETE FROM source");
-        if (rootReplaced)
-            Execute(connection, transaction, """
-                DELETE FROM test_intent; DELETE FROM intent_fallback; DELETE FROM test_evidence; DELETE FROM project_graph;
-                """);
-
-        using var delete = Command(connection, transaction, "DELETE FROM source WHERE path_key = $key", ("$key", ""));
-        using var upsert = Command(connection, transaction, """
-            INSERT INTO source(path_key, path, digest, verified) VALUES ($key, $path, $digest, $verified)
-            ON CONFLICT(path_key) DO UPDATE SET path = excluded.path, digest = excluded.digest,
-                verified = excluded.verified
-            """, ("$key", ""), ("$path", ""), ("$digest", ""), ("$verified", true));
-        foreach (var change in changes)
-        {
-            if (change.New is { } next)
-            {
-                upsert.Parameters["$key"].Value = Key(next.Path);
-                upsert.Parameters["$path"].Value = next.Path;
-                upsert.Parameters["$digest"].Value = next.Digest;
-                upsert.Parameters["$verified"].Value = next.Verified;
-                upsert.ExecuteNonQuery();
-            }
-            else
-            {
-                delete.Parameters["$key"].Value = Key(change.Old!.Path);
-                delete.ExecuteNonQuery();
-            }
-        }
-
-        UpdateScopes(connection, transaction, 0, basis.UncertainScopes, scan.UncertainScopes);
-        UpdateScopes(connection, transaction, 1, basis.UnobservedScopes, unobserved);
-
-        if (intents.Length > 0)
-            RecordIntents(connection, transaction, priorPending, basis.Revision, revision, rootIdentity, intents);
-        Execute(connection, transaction, """
-            UPDATE workspace SET revision = $revision, root_identity = $root, policy = $policy,
-                branch = $branch, commit_id = $commit, retired_revision = $retired, retired_intents = $count WHERE id = 1
-            """, ("$revision", revision), ("$root", rootIdentity), ("$policy", Policy),
-            ("$branch", git.Branch), ("$commit", git.Commit), ("$retired", retirement?.Revision),
-            ("$count", retirement?.Count));
-
-        var pending = ReadPending(connection, transaction);
-        transaction.Commit();
-        return new InventoryState(revision, rootIdentity, Policy, files, scan.UncertainScopes, unobserved, pending, retirement);
-    }
-
-    private static string Key(string path) => OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path;
-
-    private static HashSet<string> IntersectScopes(HashSet<string> first, HashSet<string> second)
-    {
-        var intersection = new HashSet<string>(Workspace.PathComparer);
-        foreach (var scope in first.Where(path => SourceScan.IsUncertain(second, path)))
-            intersection.Add(scope);
-        foreach (var scope in second.Where(path => SourceScan.IsUncertain(first, path)))
-            intersection.Add(scope);
-        // Existing nested scopes do not need independent rows in the frontier.
-        intersection.RemoveWhere(path => path.Length != 0 &&
-            SourceScan.IsUncertain(intersection, path[..Math.Max(0, path.LastIndexOf('/'))]));
-        return intersection.Count <= 512 ? intersection : second;
-    }
-
-    private static void UpdateScopes(SqliteConnection connection, SqliteTransaction transaction,
-        int kind, HashSet<string> before, HashSet<string> after)
-    {
-        if (after.SetEquals(before))
-            return;
-        Execute(connection, transaction, "DELETE FROM scope WHERE kind = $kind", ("$kind", kind));
-        using var insert = Command(connection, transaction,
-            "INSERT INTO scope(kind, path) VALUES ($kind, $path)", ("$kind", kind), ("$path", ""));
-        foreach (var path in after)
-        {
-            insert.Parameters["$path"].Value = path;
-            insert.ExecuteNonQuery();
-        }
-    }
-
-    private static void RecordIntents(SqliteConnection connection, SqliteTransaction transaction,
-        PendingIntents pending, long basisRevision, long revision, string rootIdentity, SourceChange[] intents)
-    {
-        if (pending.Fallback is not null || intents.Length > MaxDetailedIntents - pending.DetailedCount ||
-            intents.Any(intent => (intent.Old?.Path.Length ?? 0) + (intent.New?.Path.Length ?? 0) > MaxIntentPathCharacters))
-        {
-            if (pending.Fallback is not null)
-                Execute(connection, transaction, "DELETE FROM test_evidence WHERE cause = $cause",
-                    ("$cause", TestCause.Identifier(pending.Fallback.LastRevision, "")));
-            Execute(connection, transaction, """
-                INSERT INTO intent_fallback(id, first_revision, last_revision) VALUES (1, $revision, $revision)
-                ON CONFLICT(id) DO UPDATE SET last_revision = excluded.last_revision
-                """, ("$revision", revision));
-            return;
-        }
-
-        using var predecessor = Command(connection, transaction, """
-            SELECT 'graph:' || revision FROM project_graph
-            WHERE root_identity = $root AND complete = 1 AND revision = $basis
-            """, ("$root", rootIdentity), ("$basis", basisRevision));
-        var graph = predecessor.ExecuteScalar() as string ?? "graph_unavailable";
-        using var insert = Command(connection, transaction, """
-            INSERT INTO test_intent(revision, path_key, old_path, old_digest, new_path, new_digest, predecessor)
-            VALUES ($revision, $key, $oldPath, $oldDigest, $newPath, $newDigest, $predecessor)
-            """, ("$revision", revision), ("$key", ""), ("$oldPath", null), ("$oldDigest", null),
-            ("$newPath", null), ("$newDigest", null), ("$predecessor", graph));
-        foreach (var intent in intents)
-        {
-            insert.Parameters["$key"].Value = Key(intent.New?.Path ?? intent.Old!.Path);
-            insert.Parameters["$oldPath"].Value = (object?)intent.Old?.Path ?? DBNull.Value;
-            insert.Parameters["$oldDigest"].Value = (object?)intent.Old?.Digest ?? DBNull.Value;
-            insert.Parameters["$newPath"].Value = (object?)intent.New?.Path ?? DBNull.Value;
-            insert.Parameters["$newDigest"].Value = (object?)intent.New?.Digest ?? DBNull.Value;
-            insert.ExecuteNonQuery();
-        }
     }
 
     private static PendingIntents ReadPending(SqliteConnection connection, SqliteTransaction transaction)
@@ -457,6 +237,13 @@ internal sealed partial class SourceInventory(Workspace workspace)
         return command;
     }
 
+    private const string ProjectSchema = """
+        CREATE TABLE project_graph (
+            revision INTEGER PRIMARY KEY, root_identity TEXT NOT NULL, complete INTEGER NOT NULL, payload BLOB NOT NULL
+        );
+        PRAGMA user_version = 3;
+        """;
+
     private const string Schema = """
         CREATE TABLE workspace (
             id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL,
@@ -485,7 +272,6 @@ internal sealed record InventoryState(long Revision, string? RootIdentity, strin
     RetiredIntents? Retirement);
 
 internal sealed record SourceFingerprint(string Path, string Digest, bool Verified = true);
-internal sealed record SourceChange(SourceFingerprint? Old, SourceFingerprint? New);
 
 internal sealed record PendingIntents(int DetailedCount, long? OldestRevision, long? LatestRevision, IntentFallback? Fallback)
 {

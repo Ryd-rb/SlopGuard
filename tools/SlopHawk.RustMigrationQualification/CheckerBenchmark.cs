@@ -11,7 +11,7 @@ internal static class CheckerBenchmark
     internal sealed record Work(string Binary, string BinaryDigest, string Adapter, string AdapterDigest,
         string Input, string InputDigest, string Workspace, string Receipt);
 
-    internal static async Task<int> RunAsync(string? managed, string native, string adapter, string scratch)
+    internal static async Task<int> RunAsync(string native, string adapter, string scratch)
     {
         scratch = Path.GetFullPath(scratch);
         if (Path.Exists(scratch)) throw new IOException("Checker benchmark requires a new evidence directory.");
@@ -22,47 +22,42 @@ internal static class CheckerBenchmark
         adapter = Path.GetFullPath(adapter);
         var platform = OperatingSystem.IsWindows() ? "windows" : "linux";
         var controller = ResidentBenchmark.ControllerPath();
-        var complete = true;
-        (string, string)[] engines = managed is null ? [("native", native)] : [("legacy", managed), ("native", native)];
-        foreach (var (engine, executable) in engines)
-        {
-            var binary = Path.GetFullPath(executable);
-            var root = Directory.CreateDirectory(Path.Combine(scratch, engine)).FullName;
-            var receipt = Path.Combine(scratch, $"{platform}-{engine}-checker-receipt.json");
-            var work = new Work(binary, Digest(binary), adapter, Digest(adapter), input, Digest(input), root, receipt);
-            var request = Path.Combine(scratch, $"{platform}-{engine}-checker-spec.json");
-            Program.Write(request, work);
-            var spec = new SampleSpec(1, platform, engine, "checker", binary, work.BinaryDigest, [], root, 18_000, 40, null, null);
-            var sample = await Sampler.CaptureAsync(spec, workload: ReadRuns,
-                controller: new SampleController(controller, Digest(controller), ["--measure-checker", request]));
-            if (!sample.Samples.Any(item => item.Processes >= 3) || sample.Samples.Any(item => item.ControllerResidentBytes is null))
-                sample = sample with { ScopeComplete = false, ScopeOmissions = [.. sample.ScopeOmissions, "checker_or_controller_not_observed"] };
-            Program.Write(Path.Combine(scratch, $"{platform}-{engine}-checker.json"), sample);
-            complete &= sample.ScopeComplete;
-            var peak = sample.Samples.Max(item => item.PrivateWorkingSetBytes ?? item.PssBytes);
-            var appPeak = sample.Samples.Max(item => (item.PrivateWorkingSetBytes ?? item.PssBytes) - item.ControllerResidentBytes);
-            Console.WriteLine($"{engine}/checker scopeComplete={sample.ScopeComplete} checkerPeakBytes={appPeak} scopePeakResidentBytes={peak}");
+        const string engine = "native";
+        var binary = Path.GetFullPath(native);
+        var root = Directory.CreateDirectory(Path.Combine(scratch, engine)).FullName;
+        var receipt = Path.Combine(scratch, $"{platform}-{engine}-checker-receipt.json");
+        var work = new Work(binary, Digest(binary), adapter, Digest(adapter), input, Digest(input), root, receipt);
+        var request = Path.Combine(scratch, $"{platform}-{engine}-checker-spec.json");
+        Program.Write(request, work);
+        var spec = new SampleSpec(1, platform, engine, "checker", binary, work.BinaryDigest, [], root, 18_000, 40, null, null);
+        var sample = await Sampler.CaptureAsync(spec, workload: ReadRuns,
+            controller: new SampleController(controller, Digest(controller), ["--measure-checker", request]));
+        if (!sample.Samples.Any(item => item.Processes >= 3) || sample.Samples.Any(item => item.ControllerResidentBytes is null))
+            sample = sample with { ScopeComplete = false, ScopeOmissions = [.. sample.ScopeOmissions, "checker_or_controller_not_observed"] };
+        Program.Write(Path.Combine(scratch, $"{platform}-{engine}-checker.json"), sample);
+        var peak = sample.Samples.Max(item => item.PrivateWorkingSetBytes ?? item.PssBytes);
+        var appPeak = sample.Samples.Max(item => (item.PrivateWorkingSetBytes ?? item.PssBytes) - item.ControllerResidentBytes);
+        Console.WriteLine($"{engine}/checker scopeComplete={sample.ScopeComplete} checkerPeakBytes={appPeak} scopePeakResidentBytes={peak}");
+        return sample.ScopeComplete ? 0 : 1;
 
-            async Task<IReadOnlyList<double>> ReadRuns()
+        async Task<IReadOnlyList<double>> ReadRuns()
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(17));
+            try
             {
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(17));
-                try
+                while (!File.Exists(receipt))
                 {
-                    while (!File.Exists(receipt))
-                    {
-                        if (File.Exists(receipt + ".failed"))
-                            throw new IOException("Measured checker failed. " + await File.ReadAllTextAsync(receipt + ".failed", deadline.Token));
-                        await Task.Delay(25, deadline.Token);
-                    }
-                    var latencies = Program.Read<double[]>(receipt);
-                    if (latencies.Length != Runs || latencies.Any(value => !double.IsFinite(value) || value < 0))
-                        throw new IOException("Checker did not record its complete workload.");
-                    return latencies;
+                    if (File.Exists(receipt + ".failed"))
+                        throw new IOException("Measured checker failed. " + await File.ReadAllTextAsync(receipt + ".failed", deadline.Token));
+                    await Task.Delay(25, deadline.Token);
                 }
-                catch (OperationCanceledException error) { throw new IOException("Measured checker did not finish.", error); }
+                var latencies = Program.Read<double[]>(receipt);
+                if (latencies.Length != Runs || latencies.Any(value => !double.IsFinite(value) || value < 0))
+                    throw new IOException("Checker did not record its complete workload.");
+                return latencies;
             }
+            catch (OperationCanceledException error) { throw new IOException("Measured checker did not finish.", error); }
         }
-        return complete ? 0 : 1;
     }
 
     internal static async Task<int> RunWorkAsync(Work request)

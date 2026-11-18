@@ -52,24 +52,6 @@
           "SQLitePCLRaw.core": "2.1.13"
         }
       },
-      "Microsoft.Extensions.AI.Abstractions": {
-        "type": "Transitive",
-        "resolved": "10.11.0",
-        "contentHash": "h4DX/TdJU4fk1GGaf19n6Kujkj6VXbGeL4UEOsQ8+ZJC5fVApPauokCtvBP684BYbczUYZQNfo1mbmyHG4WVSg=="
-      },
-      "Microsoft.Extensions.DependencyInjection.Abstractions": {
-        "type": "Transitive",
-        "resolved": "10.0.13",
-        "contentHash": "G2GrGWNAPZBsii2F6AU8n+JT2tC1/I0Ml/e9ZyNCgPjf3hZqronP7o0X91aAynCmVeae8KkSIUNXXeXCNRmdVQ=="
-      },
-      "Microsoft.Extensions.Logging.Abstractions": {
-        "type": "Transitive",
-        "resolved": "10.0.13",
-        "contentHash": "aSZEhEig4fvNiw2zs8Z6NyDlniKtq6YjcF3DyHuqTEHcZ2VKA/6itMPZ+dW+yWABWExlDcQwwdbqX1Rcb7W8WQ==",
-        "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.13"
-        }
-      },
       "Microsoft.TestPlatform.ObjectModel": {
         "type": "Transitive",
         "resolved": "17.14.1",
@@ -82,15 +64,6 @@
         "dependencies": {
           "Microsoft.TestPlatform.ObjectModel": "17.14.1",
           "Newtonsoft.Json": "13.0.3"
-        }
-      },
-      "ModelContextProtocol.Core": {
-        "type": "Transitive",
-        "resolved": "2.3.0",
-        "contentHash": "EDpbQholhVWoNumb0Ab3oGv9LmXOLgaD5ixEIUkrnzpnqD0TJCSHTJ5G71/J1KlrQ98aWDclWTPMffKTnCJoMw==",
-        "dependencies": {
-          "Microsoft.Extensions.AI.Abstractions": "10.11.0",
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.13"
         }
       },
       "Newtonsoft.Json": {
@@ -170,14 +143,6 @@
           "xunit.extensibility.core": "[2.9.3]"
         }
       },
-      "slophawk": {
-        "type": "Project",
-        "dependencies": {
-          "ModelContextProtocol.Core": "[2.3.0, )",
-          "SlopHawk.Daemon": "[1.0.0, )",
-          "SlopHawk.Providers.CSharp": "[1.0.0, )"
-        }
-      },
       "slophawk.core": {
         "type": "Project"
       },
@@ -185,8 +150,7 @@
         "type": "Project",
         "dependencies": {
           "Microsoft.Data.Sqlite": "[10.0.14, )",
-          "NuGet.Frameworks": "[7.3.0, )",
-          "SlopHawk.Core": "[1.0.0, )"
+          "NuGet.Frameworks": "[7.3.0, )"
         }
       },
       "slophawk.providers.csharp": {
@@ -202,6 +166,7 @@
       "slophawk.workerfixture": {
         "type": "Project",
         "dependencies": {
+          "SlopHawk.Core": "[1.0.0, )",
           "SlopHawk.Daemon": "[1.0.0, )"
         }
       }

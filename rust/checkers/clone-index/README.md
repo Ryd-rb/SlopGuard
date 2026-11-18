@@ -4,7 +4,7 @@ This standalone library ports the pretokenized `TokenCloneIndex.Upsert`, `Delete
 `Query` behavioral surface at pinned SlopHawk commit
 `978a6464a6e5013fb1ad3a56c4e2877e62c18ac4`. It does **not** parse code, search
 near clones, persist indexes, launch providers, or integrate with the daemon. The
-reference is `src/SlopHawk.Core/TokenCloneIndex.cs` and its focused tests.
+reference is the [C# implementation and harness at commit `7196845`](https://github.com/Ryd-rb/SlopHawk/tree/71968455a60a716bd4cc46ecf4e210b0410f9860).
 
 ## Surface and identity
 
@@ -44,12 +44,13 @@ The crate has **no third-party dependencies**. `Cargo.lock` is local to the crat
 
 ## Diffable C#/Rust fixture
 
-The identical UTF-8 tab-delimited `fixtures/parity.tsv` file is consumed by
-`clone-parity` and `tools/SlopHawk.RustCloneParity`. Run the C# harness after
-restoring/building the solution with .NET 10 and run the Rust fixture in release:
+The Rust `clone-parity` binary consumes the UTF-8 tab-delimited `fixtures/parity.tsv`
+and is tested against the captured C# output. To regenerate the reference output,
+set `reference` to a checkout of `71968455a60a716bd4cc46ecf4e210b0410f9860` and run
+the historical C# harness with .NET 10:
 
 ```sh
-dotnet run -c Release --project tools/SlopHawk.RustCloneParity/SlopHawk.RustCloneParity.csproj \
+dotnet run -c Release --project "$reference/tools/SlopHawk.RustCloneParity/SlopHawk.RustCloneParity.csproj" \
   -- rust/checkers/clone-index/fixtures/parity.tsv > /tmp/clone-csharp.txt
 cargo +1.99.1 run --manifest-path rust/checkers/clone-index/Cargo.toml \
   --locked --offline --release --bin clone-parity \
@@ -70,7 +71,7 @@ no source parsing is involved. The C# focused test command at the original
 checkout remains:
 
 ```sh
-dotnet test SlopHawk.slnx --filter FullyQualifiedName~TokenCloneIndexTests
+dotnet test "$reference/SlopHawk.slnx" --filter FullyQualifiedName~TokenCloneIndexTests
 ```
 
 ## Matched synthetic **engine-only** measurements
@@ -79,7 +80,7 @@ Run both release-mode binaries on the same Linux host and record stdout outside
 this repository. Use the same four positional parameters and input generator:
 
 ```sh
-dotnet run -c Release --no-build --project tools/SlopHawk.RustCloneParity \
+dotnet run -c Release --no-build --project "$reference/tools/SlopHawk.RustCloneParity" \
   -- --bench 30 64 5 10000
 cargo +1.99.1 run --manifest-path rust/checkers/clone-index/Cargo.toml \
   --locked --offline --release --bin clone-bench -- 30 64 5 10000
@@ -117,4 +118,4 @@ The Rust integration test `tests/parity_trace.rs` runs the Rust binary against
 `parity.tsv` and checks **every output byte**, including pair ordering, stats,
 versions, offsets, caps, gaps, and post-update/cold-rebuild states. This makes
 an offline Rust-only parity regression possible after the initial reference
-capture. Refresh the golden only after validating a deliberate C# rule change.
+capture.

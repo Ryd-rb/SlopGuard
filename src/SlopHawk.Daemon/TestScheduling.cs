@@ -4,25 +4,9 @@ using System.Text;
 
 namespace SlopHawk.Daemon;
 
-internal interface ITestAdapter
-{
-    Task<TestSelection> SelectAsync(TestSelectionInput input, CancellationToken cancellationToken);
-    WorkerRequirements Requirements(SelectedTarget target) => new(ExecutionOperation.Test, false, []);
-    Task<TestOutcome> RunAsync(TestAttempt attempt, WorkerLease worker, CancellationToken cancellationToken);
-}
-
-internal interface IEvaluatedTestAdapter : ITestAdapter
-{
-    Task<ProjectGraph> EvaluateAsync(WorkerLease worker, CancellationToken cancellationToken);
-}
-
+internal sealed record GitRevision(string? Branch, string? Commit);
 internal sealed record ScheduleFence(Guid Epoch, long Sequence, long Revision, string RootIdentity, GitRevision Git);
-internal sealed record TestSelectionInput(ScheduleFence Fence, IReadOnlyList<TestCause> Causes,
-    EvaluatedSelectionInputs? Projects = null);
-internal sealed record EvaluatedSelectionInputs(ProjectGraph Current, IReadOnlyDictionary<string, ProjectGraph> Predecessors,
-    IReadOnlyDictionary<string, string> SourceDigests);
-internal sealed record ProjectEvaluationStatus(long Revision, int TargetCount, bool Complete,
-    IReadOnlyList<ProjectEvaluationIssue> Issues);
+internal sealed record TestSelectionInput(ScheduleFence Fence, IReadOnlyList<TestCause> Causes);
 
 internal sealed record TestCause(long Revision, string PathKey, string? OldPath, string? OldDigest,
     string? NewPath, string? NewDigest, string? Predecessor, long? FallbackFirstRevision = null)
@@ -36,10 +20,7 @@ internal sealed record TestCause(long Revision, string PathKey, string? OldPath,
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 
-internal sealed record TestSelection(bool Complete, IReadOnlyList<SelectedTarget> Targets)
-{
-    internal TestSelectionProjection? Projection { get; init; }
-}
+internal sealed record TestSelection(bool Complete, IReadOnlyList<SelectedTarget> Targets);
 internal sealed record SelectedTarget(string Id, string InputFingerprint, IReadOnlyList<string> CauseIds);
 internal sealed record TestEvidence(string CauseId, string Target, string InputFingerprint);
 internal sealed record TestWork(TestSelectionInput Input, HashSet<TestEvidence> Evidence,
@@ -51,9 +32,6 @@ internal sealed record TestAttempt(long Id, int Number, ScheduleFence Fence, Sel
 internal sealed record TestAttemptReceipt(long Id, int Number, long Revision, Guid Epoch, string Target,
     string State, string? Outcome, DateTimeOffset? RetryAt);
 internal sealed record TestAdmission(TestAttempt? Attempt, DateTimeOffset? RetryAt);
-internal sealed record TestSchedulerStatus(string State, TestAttemptReceipt? Latest = null,
-    DateTimeOffset? RetryAt = null, string? Error = null);
-
 internal sealed class ValidatedSelection
 {
     internal const int MaxTargets = 16;

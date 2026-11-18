@@ -2,7 +2,7 @@
 
 Move SlopHawk's checker decisions, indexes and foreground verification commands into a shared Rust engine. Run the final daemon, CLI and MCP bridge as native binaries. Use short-lived language-tool workers for compiler facts and test execution. This gives the idle daemon a path to lower memory use and lets C# retain compiler-accurate analysis. Measure the entire process tree before switching defaults.
 
-The pre-cutover baseline was SlopHawk commit `3819a66`. It ships foreground contract, probe, path and review commands, plus C# source reconciliation and project-based test selection. The clone index and Roslyn document-fact extractor are library components exercised by tests. The clone index handles whole-block exact and renamed-local matches. Near-clone search, spelling and several supplemental checks are still roadmap work. The real test runner is also gated separately from the scheduler and its fixtures. [Current CLI](../rust/frontends/public-shell/src/main.rs) · [Clone index](../src/SlopHawk.Core/TokenCloneIndex.cs) · [Delivery stages](delivery.md)
+The pre-cutover baseline was SlopHawk commit `3819a66`. It shipped foreground contract, probe, path and review commands, plus C# source reconciliation and project-based test selection. Its clone index and Roslyn document-fact extractor were library components exercised by tests. The clone index handled whole-block exact and renamed-local matches. Near-clone search, spelling and several supplemental checks were still roadmap work. The real test runner was gated separately from the scheduler and its fixtures. [Current CLI](../rust/frontends/public-shell/src/main.rs) · [Rust clone index](../rust/checkers/clone-index/src/lib.rs) · [Delivery stages](delivery.md)
 
 ## Checker ownership
 

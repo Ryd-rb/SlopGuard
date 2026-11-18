@@ -21,24 +21,10 @@ internal static class Program
                 Write(output, run);
                 return run.ScopeComplete ? 0 : 1;
             }
-            if (args is ["benchmark-resident" or "benchmark-resident-events", var legacy, var native, var scratch])
-                return await ResidentBenchmark.RunAsync(legacy, native, scratch, includeSoak: args[0] == "benchmark-resident");
             if (args is ["benchmark-rust", var installed, var rustScratch])
-                return await ResidentBenchmark.RunAsync(null, installed, rustScratch, includeSoak: true);
-            if (args is ["--measure-managed-handoff", var transitionSpec])
-            {
-                var request = Read<ResidentBenchmark.HandoffSpec>(transitionSpec);
-                try { return await ResidentBenchmark.RunHandoffAsync(request); }
-                catch (Exception error) when (error is IOException or OperationCanceledException or InvalidOperationException)
-                {
-                    Write(request.Receipt + ".failed", error.Message);
-                    throw new IOException("Measured writer handoff failed.", error);
-                }
-            }
-            if (args is ["benchmark-checker", var oldEngine, var newEngine, var adapter, var checkerScratch])
-                return await CheckerBenchmark.RunAsync(oldEngine, newEngine, adapter, checkerScratch);
+                return await ResidentBenchmark.RunAsync(installed, rustScratch);
             if (args is ["benchmark-rust-checker", var checker, var worker, var rustCheckerScratch])
-                return await CheckerBenchmark.RunAsync(null, checker, worker, rustCheckerScratch);
+                return await CheckerBenchmark.RunAsync(checker, worker, rustCheckerScratch);
             if (args is ["--measure-checker", var checkerSpec])
             {
                 var request = Read<CheckerBenchmark.Work>(checkerSpec);
@@ -49,16 +35,7 @@ internal static class Program
                     throw new IOException("Measured checker failed.", error);
                 }
             }
-            if (args is ["qualify", var input, var receipt, var report])
-            {
-                var result = Qualification.Evaluate(Read<QualificationInput>(input));
-                Write(receipt, result.Receipt);
-                Write(report, result.Report);
-                return result.Report.Qualified ? 0 : 1;
-            }
             Console.Error.WriteLine("Usage: qualification sample <spec.json> <capture.json> | " +
-                "qualify <evidence.json> <receipt.json> <report.json> | " +
-                "benchmark-resident|benchmark-resident-events <legacy> <native> <new-scratch> | " +
                 "benchmark-rust <slophawk> <new-scratch> | " +
                 "benchmark-rust-checker <slophawk> <fixture-dll> <new-scratch>");
             return 2;

@@ -52,15 +52,11 @@
           "SQLitePCLRaw.core": "2.1.13"
         }
       },
-      "slophawk.core": {
-        "type": "Project"
-      },
       "slophawk.daemon": {
         "type": "Project",
         "dependencies": {
           "Microsoft.Data.Sqlite": "[10.0.14, )",
-          "NuGet.Frameworks": "[7.3.0, )",
-          "SlopHawk.Core": "[1.0.0, )"
+          "NuGet.Frameworks": "[7.3.0, )"
         }
       },
       "slophawk.providers.csharp": {

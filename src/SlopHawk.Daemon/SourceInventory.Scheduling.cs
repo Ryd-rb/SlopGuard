@@ -7,48 +7,6 @@ internal sealed partial class SourceInventory
 {
     private const int MaxAttemptsPerPlan = 3;
 
-    internal TestWork? ReadTestWork(ScheduleFence fence, bool recover, Func<bool> isCurrent, bool includeProjects = false)
-    {
-        lock (writer)
-        {
-            using var connection = Open(initialize: false);
-            using var transaction = connection.BeginTransaction(deferred: !recover);
-            if (!MatchesFence(connection, transaction, fence) || !isCurrent())
-                return null;
-
-            if (recover)
-                Execute(connection, transaction, """
-                    UPDATE test_attempt SET state = 'interrupted' WHERE state = 'running'
-                    """);
-            var pending = ReadPending(connection, transaction);
-            var causes = new List<TestCause>();
-            using (var command = Command(connection, transaction, """
-                SELECT revision, path_key, old_path, old_digest, new_path, new_digest, predecessor
-                FROM test_intent ORDER BY revision, path_key
-                """))
-            using (var rows = command.ExecuteReader())
-            {
-                while (rows.Read())
-                    causes.Add(new TestCause(rows.GetInt64(0), rows.GetString(1), Text(rows, 2), Text(rows, 3),
-                        Text(rows, 4), Text(rows, 5), rows.GetString(6)));
-            }
-            if (pending.Fallback is { } fallback)
-                causes.Add(new TestCause(fallback.LastRevision, "", null, null, null, null,
-                    "graph_unavailable", fallback.FirstRevision));
-            var evidence = new HashSet<TestEvidence>();
-            using (var command = Command(connection, transaction, "SELECT cause, target, fingerprint FROM test_evidence"))
-            using (var rows = command.ExecuteReader())
-            {
-                while (rows.Read())
-                    evidence.Add(new TestEvidence(rows.GetString(0), rows.GetString(1), rows.GetString(2)));
-            }
-            var latest = ReadLatest(connection, transaction);
-            var projects = includeProjects ? ReadProjects(connection, transaction, fence, causes) : null;
-            transaction.Commit();
-            return new TestWork(new TestSelectionInput(fence, causes.AsReadOnly(), projects), evidence, pending, latest);
-        }
-    }
-
     internal TestAdmission Admit(ScheduleFence fence, SelectedTarget target, WorkerLease worker, DateTimeOffset now,
         Func<bool> isCurrent)
     {
@@ -159,21 +117,6 @@ internal sealed partial class SourceInventory
         }
     }
 
-    internal PendingIntents? ResolveExisting(TestWork work, ValidatedSelection selection, Func<bool> isCurrent)
-    {
-        lock (writer)
-        {
-            using var connection = Open(initialize: false);
-            using var transaction = connection.BeginTransaction();
-            if (!MatchesFence(connection, transaction, work.Input.Fence) || !isCurrent())
-                return null;
-            Resolve(connection, transaction, work, selection, work.Evidence);
-            var pending = ReadPending(connection, transaction);
-            transaction.Commit();
-            return pending;
-        }
-    }
-
     private static void Resolve(SqliteConnection connection, SqliteTransaction transaction, TestWork work,
         ValidatedSelection selection, HashSet<TestEvidence> evidence)
     {
@@ -200,19 +143,6 @@ internal sealed partial class SourceInventory
             """, ("$revision", fence.Revision), ("$root", fence.RootIdentity));
         return command.ExecuteScalar() is not null;
     }
-
-    private static TestAttemptReceipt? ReadLatest(SqliteConnection connection, SqliteTransaction transaction)
-    {
-        using var command = Command(connection, transaction, """
-            SELECT id, number, revision, epoch, target, state, outcome, retry_at FROM test_attempt
-            ORDER BY id DESC LIMIT 1
-            """);
-        using var row = command.ExecuteReader();
-        return row.Read() ? new TestAttemptReceipt(row.GetInt64(0), row.GetInt32(1), row.GetInt64(2),
-            Guid.Parse(row.GetString(3)), row.GetString(4), row.GetString(5), Text(row, 6), ReadRetryAt(row, 7)) : null;
-    }
-
-    private static string? Text(SqliteDataReader row, int column) => row.IsDBNull(column) ? null : row.GetString(column);
 
     private static DateTimeOffset? ReadRetryAt(SqliteDataReader row, int column) =>
         row.IsDBNull(column) ? null : DateTimeOffset.FromUnixTimeMilliseconds(row.GetInt64(column));

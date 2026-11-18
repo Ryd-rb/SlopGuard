@@ -4,6 +4,7 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../src/SlopHawk.Core/SlopHawk.Core.csproj" />
     <ProjectReference Include="../../src/SlopHawk.Daemon/SlopHawk.Daemon.csproj" />
     <InternalsVisibleTo Include="SlopHawk.IntegrationTests" />
   </ItemGroup>
