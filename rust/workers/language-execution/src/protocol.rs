@@ -11,6 +11,13 @@ pub const MAX_FRAMES: usize = 3;
 pub fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
+
+/// Keep object key order independent of Cargo's unified serde_json features.
+/// Array order remains part of the worker input identity.
+pub fn ordered_json(mut value: serde_json::Value) -> serde_json::Result<Vec<u8>> {
+    value.sort_all_objects();
+    serde_json::to_vec(&value)
+}
 pub fn is_sha(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }

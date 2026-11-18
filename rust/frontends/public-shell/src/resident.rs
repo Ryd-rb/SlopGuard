@@ -293,6 +293,7 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
     let stopping = Arc::new(AtomicBool::new(false));
     let recheck = Arc::new(AtomicBool::new(false));
     let mut checker: Option<crate::migration::resident_store::CheckerWorker> = None;
+    let mut test: Option<crate::migration::resident_store::TestWorker> = None;
     let result = std::thread::scope(|threads| -> io::Result<()> {
         let mut active = Vec::<std::thread::ScopedJoinHandle<'_, ()>>::new();
         let mut next_scan = Instant::now() + POLL;
@@ -311,6 +312,10 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
                     state.finish_checks(finished);
                     checker = None;
                 }
+                if let Some(finished) = test.as_mut().and_then(|worker| worker.completed()) {
+                    state.finish_tests(finished);
+                    test = None;
+                }
                 let refresh = recheck.swap(false, Ordering::AcqRel) || Instant::now() >= next_scan;
                 #[cfg(target_os = "linux")]
                 let refresh = refresh
@@ -322,8 +327,11 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
                     };
                 if refresh {
                     state.refresh();
-                    if checker.is_none() {
+                    if checker.is_none() && test.is_none() {
                         checker = state.schedule_checks();
+                        if checker.is_none() {
+                            test = state.schedule_tests();
+                        }
                     }
                     next_scan = Instant::now() + POLL;
                 }
@@ -355,6 +363,7 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
         Ok(())
     });
     drop(checker);
+    drop(test);
     if session.read().is_ok_and(|current| current == record) {
         fs::remove_file(&session.0)?;
     }

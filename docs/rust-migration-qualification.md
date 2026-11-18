@@ -123,6 +123,30 @@ and clone rules. Larger or incomplete source closures are explicitly blocked.
 Executable test selection, scalar replay and test receipts have their own
 qualification requirements.
 
+### Scheduled executable tests
+
+The native resident writer reads `native-tests.json` in the same private
+state directory as the migration marker. The version-1 registration contains
+`version`, `rootIdentity`, the pinned language `worker` with its `path` and
+`sha256`, a worker `budget`, and a `providers` array.
+The [live scheduler fixture](../rust/frontends/public-shell/src/scheduled_tests.rs)
+shows a registration for Python, Cargo and FluxR.
+
+Python selects the registered project and collects its full pytest scope.
+Cargo evaluates the root workspace manifest and conservatively selects up
+to sixteen workspace packages. Use a variant valid for every selected
+package. FluxR executes the registered checked modules and ordered cases.
+Pin the worker and tools and set the provider-specific grants as described
+in the [worker contract](../rust/workers/language-execution/README.md).
+
+The writer persists a running attempt before launching a worker. Restart
+recovers the worker scope first and marks an unfinished attempt interrupted.
+It records provider receipts only for the same root, Git context, source
+inventory and grant. View the latest batch under `testScheduler` in daemon
+status. Its ledger lives in `native-<epoch>.tests.json` and provider captures
+remain in private attempt directories. This registration does not resolve
+managed schema-v5 causes or establish C# executable-test parity.
+
 ### Migration job frame contract
 
 Protocol `slophawk.migration-job/1`: every frame is little-endian `int32`

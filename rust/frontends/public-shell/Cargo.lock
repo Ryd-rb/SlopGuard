@@ -922,6 +922,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "slophawk-fluxr-checked-context"
+version = "0.1.0"
+dependencies = [
+ "fluxr",
+ "serde",
+ "serde_json",
+ "sha2",
+ "slophawk-fluxr-provider",
+ "slophawk-probe-replay",
+]
+
+[[package]]
 name = "slophawk-fluxr-provider"
 version = "0.1.0"
 dependencies = [
@@ -939,6 +951,20 @@ dependencies = [
  "slophawk-probe-replay",
  "slophawk-worker-scope",
  "uuid",
+]
+
+[[package]]
+name = "slophawk-language-execution"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "slophawk-fluxr-checked-context",
+ "slophawk-python-project-context",
+ "slophawk-rust-project-context",
+ "slophawk-worker-scope",
+ "windows-sys",
 ]
 
 [[package]]
@@ -984,12 +1010,19 @@ dependencies = [
  "sha2",
  "slophawk-contracts-probes",
  "slophawk-foreground-checks",
+ "slophawk-language-execution",
  "slophawk-native-checks",
  "slophawk-native-coordinator",
+ "slophawk-python-project-context",
+ "slophawk-rust-project-context",
  "slophawk-scalar-foreground",
  "slophawk-worker-scope",
  "windows-sys",
 ]
+
+[[package]]
+name = "slophawk-python-project-context"
+version = "0.1.0"
 
 [[package]]
 name = "slophawk-python-syntax-provider"
@@ -998,6 +1031,14 @@ dependencies = [
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
+ "sha2",
+]
+
+[[package]]
+name = "slophawk-rust-project-context"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
  "sha2",
 ]
 

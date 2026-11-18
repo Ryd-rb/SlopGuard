@@ -64,7 +64,7 @@ fn windows_directory() -> Result<PathBuf, String> {
 /// represented by fixed tokens; no inherited variables or network are used.
 pub fn cargo_environment_digest(cargo: &Executable, rustc: &Executable, rustdoc: &Executable) -> String {
     let representation = cargo_environment(cargo, rustc, rustdoc);
-    protocol::sha256(&serde_json::to_vec(&representation).expect("static cargo environment schema"))
+    protocol::sha256(&protocol::ordered_json(representation).expect("static cargo environment schema"))
 }
 
 fn cargo_environment(cargo: &Executable, rustc: &Executable, rustdoc: &Executable) -> Value {
@@ -90,7 +90,7 @@ pub fn cargo_msvc_environment_digest(cargo: &Executable, rustc: &Executable, rus
     representation["TMP"] = "$ATTEMPT/temp".into();
     representation["msvc"] = serde_json::to_value(msvc).expect("MSVC toolchain schema");
     representation["linker_variable"] = msvc_linker_variable(target).into();
-    protocol::sha256(&serde_json::to_vec(&representation).expect("static cargo environment schema"))
+    protocol::sha256(&protocol::ordered_json(representation).expect("static cargo environment schema"))
 }
 
 fn msvc_linker_variable(target: &str) -> String {
@@ -191,6 +191,17 @@ fn run_cargo(job: &Job, directory: &Path, cargo: &Executable, variant: &CargoVar
         || capture.stderr.len() > cargo_context::MAX_LOG_BYTES) {
         return Err("metadata capture exceeded classifier bounds".into());
     }
+    if package.is_some() {
+        if capture.stdout.len().saturating_add(capture.stderr.len()) > job.budget.artifact_bytes {
+            return Err("Cargo test artifacts exceeded the attempt budget".into());
+        }
+        for (name, contents) in [("cargo-stdout", &capture.stdout), ("cargo-stderr", &capture.stderr)] {
+            use std::io::Write;
+            fs::OpenOptions::new().write(true).create_new(true).open(directory.join(name))
+                .and_then(|mut file| file.write_all(contents))
+                .map_err(|_| "Cargo test artifact could not be recorded")?;
+        }
+    }
     serde_json::to_value(capture).map_err(|_| "Cargo capture encoding failed".into())
 }
 
@@ -260,7 +271,7 @@ fn run_fluxr(job: &Job, checked_worker: &Executable,
             else { serde_json::from_value(limits.clone()).map_err(|_| "FluxR limits are malformed")? },
     };
     if mode != "check" && mode != "observe" && mode != "replay" { return Err("unknown FluxR mode".into()); }
-    let bytes = serde_json::to_vec(cases).map_err(|_| "FluxR cases are malformed")?;
+    let bytes = protocol::ordered_json(cases.clone()).map_err(|_| "FluxR cases are malformed")?;
     if protocol::sha256(&bytes) != job.identity.input_sha256 {
         return Err("FluxR ordered case digest changed".into());
     }

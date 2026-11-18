@@ -17,6 +17,8 @@ const CAP: usize = 16 * 1024 * 1024;
 pub mod resident_store;
 #[path = "scheduled_checks.rs"]
 mod scheduled_checks;
+#[path = "scheduled_tests.rs"]
+mod scheduled_tests;
 
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -1,5 +1,6 @@
 pub use super::scheduled_checks::Running as CheckerWorker;
 use super::scheduled_checks::{Finished, Running, Scheduler};
+pub use super::scheduled_tests::Running as TestWorker;
 use super::*;
 use serde_json::{Value, json};
 
@@ -15,6 +16,7 @@ pub struct Workspace {
     report: Option<Vec<u8>>,
     error: Option<String>,
     scheduler: Scheduler,
+    tests: super::scheduled_tests::Scheduler,
     #[cfg(target_os = "linux")]
     observed_head: Option<String>,
 }
@@ -51,6 +53,7 @@ impl Workspace {
         let lease = writer_lock(&state_dir, &marker.epoch, Duration::ZERO)?;
         slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
         let scheduler = Scheduler::open(&state_dir, &marker.epoch)?;
+        let tests = super::scheduled_tests::Scheduler::open(&state_dir, &marker.epoch)?;
         let state = state_dir.join(format!("native-{}.json", marker.epoch));
         let backup = bytes(
             &state_dir.join(format!("migration-backup-{}.json", marker.epoch)),
@@ -94,6 +97,7 @@ impl Workspace {
             report: None,
             error: None,
             scheduler,
+            tests,
             #[cfg(target_os = "linux")]
             observed_head,
         };
@@ -213,6 +217,20 @@ impl Workspace {
         }
     }
 
+    pub fn schedule_tests(&mut self) -> Option<TestWorker> {
+        self.report.as_ref()?;
+        self.tests.start(&self.root, &self.marker.root_identity, &self.marker.epoch, self.snapshot.revision)
+    }
+
+    pub fn finish_tests(&mut self, finished: io::Result<super::scheduled_tests::Finished>) {
+        if let Err(error) = finished.and_then(|receipt| {
+            self.authorized()?;
+            self.tests.finish(&self.root, &self.marker.root_identity, self.snapshot.revision, receipt)
+        }) {
+            self.tests.failed(error);
+        }
+    }
+
     pub fn status(&self) -> Value {
         let detail = &self.snapshot.tables[3].rows;
         let fallback = self.snapshot.tables[4].rows.first().map(|row| json!({
@@ -238,7 +256,7 @@ impl Workspace {
             "state": if ready { "ready" } else if self.error.is_some() { "degraded" } else { "pending" },
             "lastError":self.error,"fileCount":ready.then(||self.snapshot.tables[1].rows.len()),
             "partial":ready.then_some(false),"recordingError":null,
-            "testScheduler":{"state":"awaiting_adapter","latest":null,"retryAt":null,"error":null},
+            "testScheduler":self.tests.status(),
             "executionProfile":{"path":self.identity.state_directory.join("execution.json"),"rootIdentity":self.identity.root_identity},
             "projectEvaluation":null,"pendingTestIntents":{"detailedCount":detail.len(),
                 "oldestRevision":detail.first().and_then(|row|integer(&row[0])).or(first_fallback),

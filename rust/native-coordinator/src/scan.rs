@@ -264,7 +264,8 @@ pub fn language(name: &str) -> Option<&'static str> {
 fn is_source_input(name: &str) -> bool {
     language(name).is_some() ||
     [".csproj", ".sln", ".slnx", ".props", ".targets",
-        "pyproject.toml", "Cargo.toml", "Cargo.lock", "fluxr.toml",
+        "pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini",
+        "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml", "fluxr.toml",
         "global.json", ".editorconfig"]
         .iter().any(|suffix| name.ends_with(suffix))
 }

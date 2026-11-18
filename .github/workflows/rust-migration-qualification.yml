@@ -72,6 +72,12 @@ jobs:
           cargo +1.99.1 test --locked --offline --manifest-path rust/runtime/worker-scope/Cargo.toml
           cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml
           cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml --test real_workers -- --ignored --nocapture --test-threads=1
+      - name: Run the native executable-test scheduler against real workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VODA_LANGUAGE_WORKER_BIN="$CARGO_TARGET_DIR/debug/slophawk-language-worker"
+          cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml --bin slophawk-native resident_scheduler_runs_registered_providers_and_recovers_receipts -- --ignored --nocapture
       - name: Exercise the coordinator and recover an interrupted live worker
         shell: bash
         run: |

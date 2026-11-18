@@ -129,6 +129,14 @@ fn read_private_profile(path: &Path) -> io::Result<Vec<u8>> {
     read_bounded(file, 32 * 1024)
 }
 
+/// Read an owner-authenticated scheduler configuration outside the checkout.
+pub fn read_owner_document(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
+    if path.canonicalize()?.starts_with(root.canonicalize()?) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "checkout cannot grant execution"));
+    }
+    read_private_profile(path)
+}
+
 fn verify_profile(path: &Path, job: &Job) -> Result<(Profile, String), Refusal> {
     if !job.valid() { return Err(Refusal::Denied("invalid job identity or budget")); }
         let bytes = read_private_profile(path)
@@ -268,10 +276,20 @@ fn verify_inputs(job: &Job) -> Result<(), Refusal> {
 /// Verify the private profile before launching and before accepting the receipt.
 /// The shared manager owns the complete process tree and the exchange deadline.
 pub fn run_admitted(profile_path: &Path, job: Job, cancelled: &AtomicBool) -> Result<Verified, Refusal> {
+    run_admitted_guarded(profile_path, job, cancelled, &|| true)
+}
+
+/// Also hold a coordinator-owned execution fence throughout the attempt.
+pub fn run_admitted_guarded(
+    profile_path: &Path,
+    job: Job,
+    cancelled: &AtomicBool,
+    coordinator_current: &dyn Fn() -> bool,
+) -> Result<Verified, Refusal> {
     let (profile, fingerprint) = verify_profile(profile_path, &job)?;
     verify_inputs(&job)?;
     #[cfg(not(any(target_os = "linux", windows)))]
-    { let _ = (profile, fingerprint, cancelled); return Err(Refusal::Unsupported("OS worker supervision unavailable")); }
+    { let _ = (profile, fingerprint, cancelled, coordinator_current); return Err(Refusal::Unsupported("OS worker supervision unavailable")); }
     #[cfg(any(target_os = "linux", windows))]
     {
         if cancelled.load(Ordering::Acquire) { return Err(Refusal::WorkerStatus {
@@ -315,7 +333,8 @@ pub fn run_admitted(profile_path: &Path, job: Job, cancelled: &AtomicBool) -> Re
         let mut request = Vec::new();
         protocol::write_frame(&mut request, &job).map_err(|_| Refusal::Failed("invalid worker request"))?;
         let started_ms = unix_ms();
-        let current = || current_fingerprint(profile_path).as_deref() == Some(fingerprint.as_str());
+        let current = || coordinator_current()
+            && current_fingerprint(profile_path).as_deref() == Some(fingerprint.as_str());
         let output = match run_scope(&command, &request,
             slophawk_worker_scope::Limits {
                 stdout: protocol::MAX_TOTAL,
@@ -354,7 +373,8 @@ pub fn run_admitted(profile_path: &Path, job: Job, cancelled: &AtomicBool) -> Re
         })();
         let finished_ms = unix_ms();
         // Never publish evidence or retain attempt output on an invalid peer or fence.
-        if result.is_err() || !matches!(verify_profile(profile_path, &job), Ok((_, digest)) if digest == fingerprint)
+        if result.is_err() || !coordinator_current()
+            || !matches!(verify_profile(profile_path, &job), Ok((_, digest)) if digest == fingerprint)
             || verify_inputs(&job).is_err() || cancelled.load(Ordering::Acquire)
         {
             let _ = fs::remove_dir_all(&artifact_dir);

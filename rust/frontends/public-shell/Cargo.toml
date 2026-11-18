@@ -27,6 +27,9 @@ slophawk-foreground-checks = { path = "../../foreground/checks" }
 slophawk-scalar-foreground = { path = "../../foreground/paths" }
 slophawk-contracts-probes = { path = "../../foreground/contracts-probes" }
 slophawk-native-checks = { path = "../../native-checks" }
+slophawk-language-execution = { path = "../../workers/language-execution" }
+slophawk-python-project-context = { path = "../../project-context/python" }
+slophawk-rust-project-context = { path = "../../project-context/rust" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 sha2 = "=0.10.9"
