@@ -97,7 +97,8 @@ internal static partial class Sampler
                         await Task.Delay(spec.IntervalMilliseconds);
                         continue;
                     }
-                    if (!descendants.IsSubsetOf(roots)) errors.Add("linux_descendant_outside_cgroup");
+                    if (scope.CgroupPath is { } scopePath && HasUncontainedLinuxDescendant(descendants, roots, scopePath))
+                        errors.Add("linux_descendant_outside_cgroup");
                     if (!countersComplete) errors.Add("linux_pss_unavailable");
                     if (cgroupBytes is null) errors.Add("missing_cgroup_peak");
                 }
@@ -193,9 +194,16 @@ internal static partial class Sampler
                     members.Add(int.Parse(line, CultureInfo.InvariantCulture));
                 foreach (var child in Directory.EnumerateDirectories(group))
                 {
-                    if (++count > 4096 || (File.GetAttributes(child) & FileAttributes.ReparsePoint) != 0)
+                    if (++count > 4096)
                         throw new IOException("The measurement cgroup tree exceeded its scope.");
-                    groups.Enqueue(child);
+                    try
+                    {
+                        if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) != 0)
+                            throw new IOException("Unexpected linked measurement cgroup.");
+                        groups.Enqueue(child);
+                    }
+                    catch (IOException error) when (error is FileNotFoundException or DirectoryNotFoundException)
+                    { /* The child disappeared before it could have any members. */ }
                 }
             }
             catch (IOException error) when (group != cgroup && error is FileNotFoundException or DirectoryNotFoundException)
@@ -232,6 +240,28 @@ internal static partial class Sampler
                     grew |= active.Add(pair.Key);
         }
         return active;
+    }
+
+    private static bool HasUncontainedLinuxDescendant(HashSet<int> descendants, HashSet<int> measured, string cgroup)
+    {
+        const string kernelRoot = "/sys/fs/cgroup";
+        var group = cgroup[kernelRoot.Length..];
+        foreach (var pid in descendants.Except(measured))
+        {
+            var process = $"/proc/{pid}";
+            try
+            {
+                var current = File.ReadLines(Path.Combine(process, "cgroup")).FirstOrDefault(line => line.StartsWith("0::", StringComparison.Ordinal));
+                if (current is null || current[3..] != group && !current[3..].StartsWith(group + "/", StringComparison.Ordinal))
+                    return true;
+            }
+            catch (IOException error) when (error is FileNotFoundException or DirectoryNotFoundException || !Directory.Exists(process))
+            {
+                // A checker can start and finish between equal cgroup snapshots.
+                // An exited PID cannot be evidence of an escaped running process.
+            }
+        }
+        return false;
     }
 
     private static double? LinuxPss(int pid)
