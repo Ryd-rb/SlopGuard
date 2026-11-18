@@ -186,6 +186,15 @@ pub(crate) struct Comparison {
 }
 
 impl Comparison {
+    pub(crate) fn inclusive_pair(&self) -> Option<(usize, usize)> {
+        match (self.op.as_str(), self.left.node.as_ref(), self.right.node.as_ref()) {
+            ("<=" | ">=", Node::Parameter(left), Node::Parameter(right)) if left != right => {
+                Some((*left, *right))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn modulo_anchor(&self) -> Option<(usize, i64, i64)> {
         if self.op != "==" {
             return None;

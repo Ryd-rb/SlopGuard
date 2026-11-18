@@ -48,6 +48,119 @@ fn periodic_projection_reaches_a_coupled_branch_from_an_ordinary_input() {
 }
 
 #[test]
+fn projected_branch_probes_vary_inputs_outside_the_predicate() {
+    let rule = IntegerContract::new(
+        "Rate",
+        &["width", "height", "phase", "amount"],
+        "width >= 0 && height >= 0 && phase >= 0 && amount >= 0",
+        "width * height == 15 && mod(width + height, 4) == phase ? amount + 4 : amount",
+        "rate.md",
+    );
+    let catalog =
+        ContractCases::new(&[rule], &[known("Rate", &[3, 2, 1, 6], 6)]).unwrap();
+    let probes = catalog.generate(96, 0, None, true, &[]).unwrap();
+    assert!(probes.iter().any(|case| {
+        let [width, height, phase, amount] = case.args[..] else {
+            return false;
+        };
+        width * height == 15 && (width + height).rem_euclid(4) == phase && amount == 0
+    }));
+}
+
+#[test]
+fn projected_branch_probes_repair_coupled_equalities_in_another_cycle() {
+    let rule = IntegerContract::new(
+        "Scheduled",
+        &["clock", "end", "quota"],
+        "clock >= 0 && end >= 0 && quota >= 0",
+        "mod(clock, 7) == 2 && end == 2 * clock + quota ? quota + 1 : quota",
+        "schedule.md",
+    );
+    let catalog =
+        ContractCases::new(&[rule], &[known("Scheduled", &[2, 7, 3], 4)]).unwrap();
+    let probes = catalog.generate(96, 0, None, true, &[]).unwrap();
+    assert!(probes.iter().any(|case| {
+        let [clock, end, quota] = case.args[..] else {
+            return false;
+        };
+        clock == 9 && end == 2 * clock + quota
+    }));
+}
+
+#[test]
+fn projection_can_change_anchors_to_keep_a_product_within_bounds() {
+    let rule = IntegerContract::new(
+        "Area",
+        &["length", "breadth", "base"],
+        "length >= 0 && length <= 14 && breadth >= 0 && breadth <= 14 && base >= 0",
+        "length * breadth == 40 ? base + 1 : base",
+        "area.md",
+    );
+    let catalog = ContractCases::new(&[rule], &[known("Area", &[2, 1, 6], 6)]).unwrap();
+    let probes = catalog.generate(96, 0, None, true, &[]).unwrap();
+    assert!(
+        probes
+            .iter()
+            .any(|case| case.args[0] * case.args[1] == 40 && case.args[0] > case.args[1])
+    );
+}
+
+#[test]
+fn projected_branch_probes_include_equality_on_inclusive_edges() {
+    let rule = IntegerContract::new(
+        "Grid",
+        &["column", "row", "credit", "usage"],
+        "column >= 0 && column <= 14 && row >= 0 && row <= 14 && credit >= 0 && usage >= 0",
+        "column * column + row == 64 && mod(credit + usage, 4) == 0 && credit >= usage ? credit + 1 : credit",
+        "grid.md",
+    );
+    let catalog = ContractCases::new(&[rule], &[known("Grid", &[1, 1, 5, 1], 5)]).unwrap();
+    let probes = catalog.generate(128, 0, None, true, &[]).unwrap();
+    assert!(probes.iter().any(|case| {
+        let [column, row, credit, usage] = case.args[..] else {
+            return false;
+        };
+        column * column + row == 64 && (credit + usage).rem_euclid(4) == 0 && credit == usage
+    }));
+}
+
+#[test]
+fn branch_probes_hold_one_operand_at_zero_and_solve_a_quadratic_equality() {
+    let rule = IntegerContract::new(
+        "Square",
+        &["side", "offset", "state"],
+        "side >= 0 && side <= 12 && offset >= 0 && offset <= 15 && state >= 0",
+        "side * side + offset == 25 && state >= 1 ? 7 : 0",
+        "square.md",
+    );
+    let catalog = ContractCases::new(&[rule], &[known("Square", &[1, 1, 4], 0)]).unwrap();
+    let probes = catalog.generate(128, 0, None, true, &[]).unwrap();
+    assert!(
+        probes
+            .iter()
+            .any(|case| case.args[0] == 5 && case.args[1] == 0 && case.args[2] > 0)
+    );
+}
+
+#[test]
+fn branch_probes_cover_the_high_bound_of_a_free_input() {
+    let rule = IntegerContract::new(
+        "Tier",
+        &["left", "right", "reserve"],
+        "left >= 0 && right >= 0 && reserve >= 0 && reserve <= 12",
+        "left * right == 30 ? max(0, 7 - reserve) : 0",
+        "tier.md",
+    );
+    let catalog = ContractCases::new(&[rule], &[known("Tier", &[2, 1, 3], 0)]).unwrap();
+    let probes = catalog.generate(128, 0, None, true, &[]).unwrap();
+    assert!(
+        probes
+            .iter()
+            .any(|case| case.args[0] * case.args[1] == 30 && case.args[2] == 12)
+    );
+}
+
+#[test]
 fn public_example_validation_and_rule_absence() {
     let guarded = IntegerContract::new(
         "Guarded",

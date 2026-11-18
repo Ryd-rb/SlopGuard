@@ -507,13 +507,79 @@ impl Rule {
         let mut output = Vec::new();
         for example in self.ordinary.iter().take(4) {
             for group in &self.combined {
+                let compared_fields = group
+                    .iter()
+                    .fold(0, |mask, comparison| mask | comparison.inputs);
                 for reverse in [false, true] {
-                    let mut point = example.args.clone();
-                    if !project(group, &mut point, &self.locals, reverse) || point == example.args {
+                    let Some(point) =
+                        self.legal_projection(group, &example.args, compared_fields, reverse)
+                    else {
                         continue;
+                    };
+                    if point != example.args {
+                        push_point(&mut output, point.clone())?;
                     }
-                    push_point(&mut output, point.clone())?;
+                    // Test equality at an inclusive edge while holding the
+                    // other parts of the matched branch constant.
+                    for (left, right) in group.iter().filter_map(Comparison::inclusive_pair) {
+                        if left >= point.len() || right >= point.len() {
+                            continue;
+                        }
+                        for shared in [point[left], point[right], 0, 1] {
+                            if point[left] == shared && point[right] == shared {
+                                continue;
+                            }
+                            let mut neighbor = point.clone();
+                            neighbor[left] = shared;
+                            neighbor[right] = shared;
+                            if let Ok(frame) = fill_frame(&neighbor, &self.locals)
+                                && group.iter().all(|condition| {
+                                    condition
+                                        .difference(&frame)
+                                        .is_ok_and(|value| condition.matches(&value))
+                                })
+                            {
+                                push_point(&mut output, neighbor)?;
+                            }
+                        }
+                    }
+                    // Exercise nearby cycles without losing the other conditions of the branch.
+                    for (field, period, _) in group.iter().filter_map(Comparison::modulo_anchor) {
+                        if field >= point.len() {
+                            continue;
+                        }
+                        for value in [point[field].checked_add(period), point[field].checked_sub(period)]
+                            .into_iter()
+                            .flatten()
+                        {
+                            let mut neighbor = point.clone();
+                            neighbor[field] = value;
+                            if project(group, &mut neighbor, &self.locals, reverse, Some(field)) {
+                                push_point(&mut output, neighbor)?;
+                            }
+                        }
+                    }
                     for field in 0..point.len() {
+                        let used_by_predicate = compared_fields & (1 << field) != 0;
+                        let landmarks = &self.landmarks[field];
+                        let boundaries = [0, 1]
+                            .into_iter()
+                            .chain(landmarks.iter().copied().take(3))
+                            .chain(landmarks.iter().rev().copied().take(3));
+                        // A free input can change the output inside the branch.
+                        // A constrained input needs its other operands repaired.
+                        for value in boundaries {
+                            if value == point[field] {
+                                continue;
+                            }
+                            let mut neighbor = point.clone();
+                            neighbor[field] = value;
+                            if !used_by_predicate
+                                || project(group, &mut neighbor, &self.locals, reverse, Some(field))
+                            {
+                                push_point(&mut output, neighbor)?;
+                            }
+                        }
                         if point[field] == example.args[field] {
                             continue;
                         }
@@ -531,6 +597,43 @@ impl Rule {
             }
         }
         Ok(output)
+    }
+
+    fn legal_projection(
+        &self,
+        group: &[Comparison],
+        seed: &[i64],
+        compared_fields: u32,
+        reverse: bool,
+    ) -> Option<Vec<i64>> {
+        let mut point = seed.to_vec();
+        if project(group, &mut point, &self.locals, reverse, None)
+            && self.try_expected(&point).is_some()
+        {
+            return Some(point);
+        }
+
+        // A coupled equality can have legal solutions even when solving it
+        // from the published anchor pushes one operand beyond its bounds.
+        for step in 0..seed.len() {
+            let field = if reverse { seed.len() - 1 - step } else { step };
+            if compared_fields & (1 << field) == 0 {
+                continue;
+            }
+            for &value in self.atoms[field].iter().take(12) {
+                if value == seed[field] {
+                    continue;
+                }
+                point.copy_from_slice(seed);
+                point[field] = value;
+                if project(group, &mut point, &self.locals, reverse, Some(field))
+                    && self.try_expected(&point).is_some()
+                {
+                    return Some(point);
+                }
+            }
+        }
+        None
     }
 
     fn mutate(&self, legal: &[Vec<i64>], random: &mut CompatRandom, guided: bool) -> Vec<i64> {
@@ -614,7 +717,13 @@ fn cmp_difference(
     comparison.difference(&frame)
 }
 
-fn project(group: &[Comparison], point: &mut [i64], locals: &[Expr], reverse: bool) -> bool {
+fn project(
+    group: &[Comparison],
+    point: &mut [i64],
+    locals: &[Expr],
+    reverse: bool,
+    fixed_field: Option<usize>,
+) -> bool {
     // Anchor periodic equalities before projecting coupled arithmetic.
     // Otherwise an earlier linear projection can pin the only periodic input.
     let mut ordered: Vec<_> = group.iter().map(|comparison| {
@@ -634,7 +743,7 @@ fn project(group: &[Comparison], point: &mut [i64], locals: &[Expr], reverse: bo
                 } else {
                     step
                 };
-                if comparison.inputs & (1_u32 << field) == 0 {
+                if fixed_field == Some(field) || comparison.inputs & (1_u32 << field) == 0 {
                     continue;
                 }
                 let origin = point[field];
@@ -694,6 +803,37 @@ fn project(group: &[Comparison], point: &mut [i64], locals: &[Expr], reverse: bo
                             point[field] = value;
                             adjusted = true;
                             break;
+                        }
+                    }
+                    // The linear estimate can overshoot a nearby integral
+                    // root. Search between the seed and the estimate when
+                    // their differences bracket zero.
+                    if !adjusted
+                        && comparison.op == "=="
+                        && let Some(edge) = center.to_i64()
+                        && edge != origin
+                    {
+                        candidate[field] = edge;
+                        let edge_diff = cmp_difference(comparison, &candidate, locals)?;
+                        if !edge_diff.is_zero() && edge_diff.negative() != current.negative() {
+                            let (mut near, mut far) = (i128::from(origin), i128::from(edge));
+                            while (near - far).abs() > 1 {
+                                let middle = (near + far) / 2;
+                                candidate[field] = middle as i64;
+                                let difference = cmp_difference(comparison, &candidate, locals)?;
+                                if difference.is_zero() {
+                                    if preserves(&candidate)? {
+                                        point[field] = candidate[field];
+                                        adjusted = true;
+                                    }
+                                    break;
+                                }
+                                if difference.negative() == current.negative() {
+                                    near = middle;
+                                } else {
+                                    far = middle;
+                                }
+                            }
                         }
                     }
                 }
