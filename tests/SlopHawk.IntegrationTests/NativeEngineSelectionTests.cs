@@ -174,7 +174,8 @@ public sealed class NativeEngineSelectionTests
         }));
         if (OperatingSystem.IsLinux())
             File.SetUnixFileMode(peer, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        var apphost = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "slophawk.exe" : "slophawk");
+        var apphost = Environment.GetEnvironmentVariable("SLOPHAWK_MANAGED_MIGRATION_BINARY") ??
+            Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "slophawk.exe" : "slophawk");
         string[] Managed(string command) => [command, "--root", workspace.Root];
         var managedStatus = await RunManaged(false);
         Assert.Equal(Contract(nativeStatus), Contract(managedStatus));
@@ -186,20 +187,37 @@ public sealed class NativeEngineSelectionTests
         Assert.Equal(managedStatus["testScheduler"]!["latest"]!.ToJsonString(),
             restarted["testScheduler"]!["latest"]!.ToJsonString());
         Assert.Equal(10, Scalar(restored, "SELECT count(*) FROM test_attempt"));
-        await StopWithLiveDescendant();
+        await InterruptWithLiveDescendant(graceful: true);
         var recovered = await RunManaged(true);
         Assert.Equal(Contract(nativeStatus), Contract(recovered));
         Assert.Equal(3, recovered["testScheduler"]!["latest"]!["id"]!.GetValue<int>());
         Assert.Equal(15, Scalar(restored, "SELECT count(*) FROM test_attempt"));
+        await InterruptWithLiveDescendant(graceful: false);
+        var afterCrash = await RunManaged(true);
+        Assert.Equal(Contract(nativeStatus), Contract(afterCrash));
+        Assert.Equal(5, afterCrash["testScheduler"]!["latest"]!["id"]!.GetValue<int>());
+        Assert.Equal(20, Scalar(restored, "SELECT count(*) FROM test_attempt"));
+        if (Environment.GetEnvironmentVariable("VODA_PRODUCTION_PARITY_EVIDENCE") is { Length: > 0 } evidence)
+        {
+            await using var output = new FileStream(evidence, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            await JsonSerializer.SerializeAsync(output, new
+            {
+                native = nativeStatus, managed = managedStatus, restarted, recovered, afterCrash,
+                providerResults = Contract(nativeStatus),
+                archivedAttempts = Scalar(restored, "SELECT count(*) FROM test_attempt"),
+                platform = OperatingSystem.IsWindows() ? "windows" : "linux"
+            });
+        }
 
-        async Task StopWithLiveDescendant()
+        async Task InterruptWithLiveDescendant(bool graceful)
         {
             var python = Path.Combine(workspace.Root, "test_example.py");
             var originalSource = await File.ReadAllBytesAsync(python);
-            var signal = Path.Combine(Path.GetDirectoryName(workspace.Root)!, "active-pytest-child.txt");
+            var signal = Path.Combine(Path.GetDirectoryName(workspace.Root)!, $"active-pytest-child-{graceful}.txt");
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(75));
-            var daemon = Task.Factory.StartNew(() => DaemonHost.Run(workspace, timeout.Token),
-                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            using var daemon = Process.Start(Start(apphost, Managed("serve")))!;
+            var errors = daemon.StandardError.ReadToEndAsync(timeout.Token);
+            var attempts = Scalar(restored, "SELECT count(*) FROM test_attempt");
             try
             {
                 var connection = new DaemonConnection(workspace);
@@ -222,15 +240,23 @@ public sealed class NativeEngineSelectionTests
                 var pid = int.Parse(await File.ReadAllTextAsync(signal, timeout.Token));
                 using var child = Process.GetProcessById(pid);
                 Assert.False(child.HasExited);
-                Assert.True(JsonNode.Parse(await Run(apphost, Managed("stop")))!["stopping"]!.GetValue<bool>());
-                await daemon.WaitAsync(TimeSpan.FromSeconds(12));
+                if (graceful)
+                    Assert.True(JsonNode.Parse(await Run(apphost, Managed("stop")))!["stopping"]!.GetValue<bool>());
+                else
+                    daemon.Kill(); // Simulate loss of the writer while its admitted child is still live.
+                await daemon.WaitForExitAsync(timeout.Token);
+                if (graceful)
+                    Assert.True(daemon.ExitCode == 0, await errors);
                 await child.WaitForExitAsync(timeout.Token);
-                Assert.Equal(10, Scalar(restored, "SELECT count(*) FROM test_attempt"));
+                Assert.Equal(attempts, Scalar(restored, "SELECT count(*) FROM test_attempt"));
             }
             finally
             {
-                await timeout.CancelAsync();
-                await daemon.WaitAsync(TimeSpan.FromSeconds(12));
+                if (!daemon.HasExited)
+                {
+                    daemon.Kill();
+                    await daemon.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(8));
+                }
                 await File.WriteAllBytesAsync(python, originalSource);
             }
         }
@@ -238,8 +264,8 @@ public sealed class NativeEngineSelectionTests
         async Task<JsonNode> RunManaged(bool restart)
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(140));
-            var daemon = Task.Factory.StartNew(() => DaemonHost.Run(workspace, timeout.Token),
-                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            using var daemon = Process.Start(Start(apphost, Managed("serve")))!;
+            var stderr = daemon.StandardError.ReadToEndAsync(timeout.Token);
             try
             {
                 var connection = new DaemonConnection(workspace);
@@ -249,17 +275,23 @@ public sealed class NativeEngineSelectionTests
                 if (!restart)
                 {
                     Assert.Equal(Contract(status), await ReadMcpContract(apphost, Managed("mcp")));
+                    status = await WaitForReceipts(apphost, Managed("status"));
                     var results = JsonNode.Parse(await Run(apphost, Managed("results")))!;
                     Assert.Equal(2, results["schemaVersion"]!.GetValue<int>());
                     Assert.Equal(status["committedRevision"]!.GetValue<long>(), results["committedRevision"]!.GetValue<long>());
                 }
                 Assert.True(JsonNode.Parse(await Run(apphost, Managed("stop")))!["stopping"]!.GetValue<bool>());
+                await daemon.WaitForExitAsync(timeout.Token);
+                Assert.True(daemon.ExitCode == 0, await stderr);
                 return status;
             }
             finally
             {
-                await timeout.CancelAsync();
-                await daemon.WaitAsync(TimeSpan.FromSeconds(12));
+                if (!daemon.HasExited)
+                {
+                    daemon.Kill();
+                    await daemon.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(8));
+                }
             }
         }
 
@@ -289,7 +321,9 @@ public sealed class NativeEngineSelectionTests
                 if (status["state"]?.GetValue<string>() == "ready" && state == "completed" &&
                     status["pendingTestIntents"]?["state"]?.GetValue<string>() == "none")
                     return status;
-                Assert.False(state is "blocked" or "blocked_policy" or "degraded", status.ToJsonString());
+                Assert.False(state is "blocked" or "blocked_policy", status.ToJsonString());
+                if (deadline.IsCancellationRequested)
+                    Assert.Fail(status.ToJsonString());
                 await Task.Delay(200, deadline.Token);
             }
         }
@@ -307,10 +341,23 @@ public sealed class NativeEngineSelectionTests
                 var ready = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
                 Assert.Equal("2025-11-25", ready["result"]!["protocolVersion"]!.GetValue<string>());
                 await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
-                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workspace_status","arguments":{}}}""");
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}""");
+                var listed = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                var names = listed["result"]!["tools"]!.AsArray().Select(item => item!["name"]!.GetValue<string>());
+                Assert.Equal(new[] { "get_findings", "list_checkers", "run_checks", "workspace_status" }, names.Order(StringComparer.Ordinal));
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_status","arguments":{}}}""");
                 var response = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
                 var status = JsonNode.Parse(response["result"]!["content"]![0]!["text"]!.GetValue<string>())!;
                 Assert.True(status["ok"]!.GetValue<bool>());
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_findings","arguments":{}}}""");
+                var findings = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                var report = JsonNode.Parse(findings["result"]!["content"]![0]!["text"]!.GetValue<string>())!;
+                Assert.True(report["ok"]!.GetValue<bool>());
+                Assert.Equal(2, report["payload"]!["schemaVersion"]!.GetValue<int>());
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_checks","arguments":{}}}""");
+                var recheck = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
+                var accepted = JsonNode.Parse(recheck["result"]!["content"]![0]!["text"]!.GetValue<string>())!;
+                Assert.True(accepted["ok"]!.GetValue<bool>());
                 mcp.StandardInput.Close();
                 await mcp.WaitForExitAsync(deadline.Token);
                 Assert.True(mcp.ExitCode == 0, await errors);

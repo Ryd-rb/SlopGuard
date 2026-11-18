@@ -288,6 +288,7 @@ public static class MigrationStateBridge
         using var process = Process.Start(info) ?? throw new IOException("The qualified native peer did not start.");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(budget ?? TimeSpan.FromSeconds(45));
+        var liveTestPeer = identity.Operation == "managed_tests_v1";
         // The separate stderr reader is bounded, preventing output backpressure or
         // untrusted diagnostics from exhausting memory.
         var stderr = ReadStderrAsync(process.StandardError.BaseStream, deadline.Token);
@@ -299,7 +300,8 @@ public static class MigrationStateBridge
                 WriteFrame(process.StandardInput.BaseStream, new { kind = "chunk", index = offset / ChunkBytes,
                     data = Convert.ToBase64String(input.AsSpan(offset, Math.Min(ChunkBytes, input.Length - offset))) }, deadline.Token);
             WriteFrame(process.StandardInput.BaseStream, new { kind = "end", identity }, deadline.Token);
-            process.StandardInput.Close();
+            if (!liveTestPeer)
+                process.StandardInput.Close();
 
             using var received = new MemoryStream();
             var index = 0;
@@ -376,6 +378,11 @@ public static class MigrationStateBridge
         }
         finally
         {
+            if (liveTestPeer)
+            {
+                process.StandardInput.Close();
+                process.WaitForExit((int)TimeSpan.FromSeconds(3).TotalMilliseconds);
+            }
             if (!process.HasExited)
             {
                 try { process.Kill(entireProcessTree: true); }

@@ -143,6 +143,9 @@ MCP status. The peer has no authority to write to SQLite. Removing the
 registration withdraws execution authority. Restart reuses receipts only
 when the source, Git context and grants still match. Each receipt retains
 the revision it actually executed against.
+The managed writer keeps a lifetime pipe open while its scheduler peer runs.
+Closing the pipe cancels the active attempt and drains the worker scope,
+including when the managed writer exits unexpectedly.
 
 C# maps registered projects and frameworks to evaluated MSBuild test targets.
 The registration supplies pinned `dotnet` and execution-peer `assembly`,

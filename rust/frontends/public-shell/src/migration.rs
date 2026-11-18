@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 
 const PROTOCOL: &str = "slophawk.migration-job/1";
@@ -230,7 +231,8 @@ fn receive(input: &mut impl Read) -> io::Result<(Identity, Vec<u8>)> {
     let Packet::End { identity: end } = frame(input)? else {
         return Err(invalid("migration request terminal missing"));
     };
-    if end != identity || hash(&payload) != sha256 || input.read(&mut [0])? != 0 {
+    if end != identity || hash(&payload) != sha256
+        || identity.operation != "managed_tests_v1" && input.read(&mut [0])? != 0 {
         return Err(invalid(
             "migration request has stale identity or extra data",
         ));
@@ -606,7 +608,7 @@ fn store_snapshot(state: &Path, data: &[u8], job: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
+fn exchange(identity: &Identity, data: &[u8], owner_alive: &AtomicBool) -> io::Result<(Vec<u8>, bool)> {
     let root = directory(&identity.root)?;
     let directory = directory(&identity.state_directory)?;
     if directory.starts_with(&root)
@@ -624,7 +626,7 @@ fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
         return Ok((Vec::new(), false));
     }
     if identity.operation == "managed_tests_v1" {
-        return managed_tests(identity, &root, &directory, data).map(|result| (result, false));
+        return managed_tests(identity, &root, &directory, data, owner_alive).map(|result| (result, false));
     }
     let marker = read_marker(&directory)?;
     if marker.version != 1
@@ -721,10 +723,11 @@ fn managed_test_epoch(root: &str) -> String {
     hash(format!("managed-test-ledger\0{root}").as_bytes())[..32].to_ascii_lowercase()
 }
 
-fn managed_tests(identity: &Identity, root: &Path, state: &Path, data: &[u8]) -> io::Result<Vec<u8>> {
+fn managed_tests(identity: &Identity, root: &Path, state: &Path, data: &[u8],
+    owner_alive: &AtomicBool) -> io::Result<Vec<u8>> {
     let binding = state.join("managed-test-peer.json");
     let current = || {
-        ["migration-engine.json", "migration-engine.json.pending"]
+        owner_alive.load(Ordering::Acquire) && ["migration-engine.json", "migration-engine.json.pending"]
             .iter()
             .all(|name| fs::symlink_metadata(state.join(name)).is_err_and(|error| {
                 error.kind() == io::ErrorKind::NotFound
@@ -781,7 +784,17 @@ fn managed_tests(identity: &Identity, root: &Path, state: &Path, data: &[u8]) ->
 
 pub fn run_stdio() -> io::Result<()> {
     let (identity, data) = receive(&mut io::stdin().lock())?;
-    let (export, claimed) = exchange(&identity, &data)?;
+    let owner_alive = Arc::new(AtomicBool::new(true));
+    if identity.operation == "managed_tests_v1" {
+        let alive = Arc::clone(&owner_alive);
+        // Only the current managed writer holds this pipe. EOF fences the
+        // running attempt even if the daemon exits without sending Stop.
+        std::thread::Builder::new().name("managed-writer-lifetime".into()).spawn(move || {
+            let _ = io::stdin().lock().read(&mut [0]);
+            alive.store(false, Ordering::Release);
+        })?;
+    }
+    let (export, claimed) = exchange(&identity, &data, &owner_alive)?;
     let mut output = io::stdout().lock();
     for (index, chunk) in export.chunks(CHUNK).enumerate() {
         emit(

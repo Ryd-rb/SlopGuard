@@ -132,12 +132,16 @@ jobs:
           set -euo pipefail
           exec > >(tee "$RUNNER_TEMP/native-state-transfer.log") 2>&1
           artifacts="$RUNNER_TEMP/voda-dotnet"
-          cargo +1.99.1 build --locked --manifest-path rust/frontends/public-shell/Cargo.toml
+          release="$RUNNER_TEMP/voda-dotnet-release"
+          cargo +1.99.1 build --release --locked --manifest-path rust/frontends/public-shell/Cargo.toml
+          dotnet build src/SlopHawk.Cli/SlopHawk.Cli.csproj -c Release --artifacts-path "$release"
           dotnet build tests/fixtures/native-engine/ControlledPeer.csproj --artifacts-path "$artifacts"
           dotnet build src/SlopHawk.Providers.CSharp.ScalarWorker/SlopHawk.Providers.CSharp.ScalarWorker.csproj --artifacts-path "$artifacts"
-          export SLOPHAWK_NATIVE_MIGRATION_BINARY="$CARGO_TARGET_DIR/debug/slophawk-native"
+          export SLOPHAWK_NATIVE_MIGRATION_BINARY="$CARGO_TARGET_DIR/release/slophawk-native"
+          export SLOPHAWK_MANAGED_MIGRATION_BINARY="$release/bin/SlopHawk.Cli/release/slophawk"
           export VODA_SCHEDULER_FIXTURE_MANIFEST="$RUNNER_TEMP/native-scheduler-workspace.json"
           export VODA_NATIVE_PROVIDER_RECEIPTS="$RUNNER_TEMP/native-executable-receipts.json"
+          export VODA_PRODUCTION_PARITY_EVIDENCE="$RUNNER_TEMP/production-daemon-parity.json"
           export SLOPHAWK_NATIVE_TEST_PEER_BINARY="$artifacts/bin/ControlledPeer/debug/slophawk-controlled-migration-peer"
           export SLOPHAWK_NATIVE_SCALAR_WORKER="$artifacts/bin/SlopHawk.Providers.CSharp.ScalarWorker/debug/SlopHawk.Providers.CSharp.ScalarWorker.dll"
           export SLOPHAWK_PROJECT_TEST_DOTNET="$(readlink -f "$(command -v dotnet)")"
@@ -150,7 +154,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: linux-state-transfer-and-managed-parity
-          path: ${{ runner.temp }}/native-state-transfer.log
+          path: |
+            ${{ runner.temp }}/native-state-transfer.log
+            ${{ runner.temp }}/production-daemon-parity.json
           if-no-files-found: ignore
       - name: Reject incomplete release evidence
         shell: bash
