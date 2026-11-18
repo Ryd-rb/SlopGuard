@@ -8,6 +8,7 @@
 pub mod capture;
 pub mod cobertura;
 pub mod identity;
+pub mod input_audit;
 pub mod receipt;
 pub mod verification;
 
