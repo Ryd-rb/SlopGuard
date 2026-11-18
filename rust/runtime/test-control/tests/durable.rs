@@ -169,6 +169,40 @@ fn missing_predecessor_falls_back_to_approved_tests_and_limit_is_partial() {
 }
 
 #[test]
+fn partial_predecessor_empty_selection_retains_cause_across_reopen() {
+    let fixture=Fixture::new();
+    let f=fence("first",1,1,1);
+    let c=old_cause(1);
+    let auth=TestAuthority::new();
+    let mut input=selection_input(&[c.clone()],1,false);
+    input.predecessors.insert("graph:missing".into(),graph(1,true));
+    let mut store=fixture.open();
+    store.bind(&f,&[c.clone()]).unwrap();
+
+    let (selection,retired)=store.select(&f,&input,&auth).unwrap();
+    assert!(!selection.complete);
+    assert!(selection.targets.is_empty());
+    assert_eq!(selection.projection.unresolved_frontiers[0].reason,"provider_frontier");
+    assert!(retired.is_empty());
+    assert_eq!(store.causes().unwrap(),vec![c.clone()]);
+    drop(store);
+
+    let mut store=fixture.open();
+    assert_eq!(store.causes().unwrap(),vec![c.clone()]);
+    assert_eq!(store.pending().unwrap().state,"partial_selection");
+    assert_eq!(store.next(&f,0).unwrap(),(Admission::AwaitingSelection,None));
+    // A replacement, qualified complete snapshot establishes the negative control.
+    input.predecessors.insert("graph:missing".into(),graph(1,false));
+    let corrected=fence("first",1,2,1);
+    assert!(store.bind(&corrected,&[]).unwrap().revoke_scopes.is_empty());
+    let (selection,retired)=store.select(&corrected,&input,&auth).unwrap();
+    assert!(selection.complete);
+    assert!(selection.targets.is_empty());
+    assert_eq!(retired,vec![c.id()]);
+    assert!(store.causes().unwrap().is_empty());
+}
+
+#[test]
 fn a_failed_test_is_a_completed_measurement_but_zero_skip_incomplete_unadmitted_are_not() {
     for disposition in [RunDisposition::ZeroDiscovered,RunDisposition::Skipped,
         RunDisposition::Incomplete,RunDisposition::Unadmitted] {

@@ -2,10 +2,13 @@
 //!
 //! Graph evaluation, reference resolution, path normalization, source digests, worker
 //! admission, test execution, and receipt validation belong to upstream providers.
-//! The output represents the diagnostic projection of C# `EvaluatedTestAdapter`,
-//! not an independent authority to launch tests. No automatic filter is inferred.
+//! The output is derived from the diagnostic projection of C# `EvaluatedTestAdapter`,
+//! with consulted predecessor issues also preventing complete selection. It is not
+//! an independent authority to launch tests. No automatic filter is inferred.
 
 mod sha256;
+
+pub mod lost_routes;
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -623,9 +626,10 @@ fn write_json_str(json: &mut String, value: &str) {
     json.push('"');
 }
 
-/// Reproduce the pure evaluated-project selection and diagnostic projection from
-/// the pinned C# selector. An unresolved provider reference or unsupported path
-/// comparison is an explicit error, never an authoritative empty selection.
+/// Project evaluated-project selection and diagnostics from the pinned C# selector,
+/// retaining partial scope for every predecessor consulted for an old path.
+/// An unresolved selected fingerprint reference or unsupported path comparison is
+/// an explicit error, never an authoritative empty selection.
 pub fn select(input: &SelectionInput) -> Result<TestSelection, SelectionError> {
     let comparison = input.path_comparison;
     let current = GraphIndex::new(&input.current, comparison)?;
@@ -669,7 +673,7 @@ pub fn select(input: &SelectionInput) -> Result<TestSelection, SelectionError> {
             missing_approved.push(approved.clone());
         }
     }
-    let complete = input.current.complete() && missing_approved.is_empty();
+    let mut complete = input.current.complete() && missing_approved.is_empty();
     let current_ids: HashSet<String> = current_tests.keys().map(|id| (*id).into()).collect();
     let mut explanations = ExplanationBuilder::default();
     explanations.issues(None, &input.current.issues);
@@ -703,6 +707,10 @@ pub fn select(input: &SelectionInput) -> Result<TestSelection, SelectionError> {
                 .as_ref()
                 .and_then(|key| previous.get(key.as_str()))
             {
+                // Missing old membership in an explicitly partial graph is not
+                // evidence that no current test is affected. Preserve known
+                // impacts and frontiers, but do not authorize cause retirement.
+                complete &= prior.graph.complete();
                 let prior_walk = prior.dependents_of(Some(old_path), comparison)?;
                 impacted.extend(prior_walk.parents.keys().cloned());
                 explanations.record_walk(

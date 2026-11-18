@@ -232,6 +232,145 @@ fn first_revision_fallback_never_invents_reference_path() {
 }
 
 #[test]
+fn consulted_partial_predecessor_cannot_authorize_empty_selection() {
+    let current = graph(vec![target("Tests/Test.csproj|net10.0", true, &[], &[])]);
+    let mut i = input(
+        current.clone(),
+        vec![cause(Some("Deleted.cs"), None)],
+        &["Tests/Test.csproj"],
+    );
+    let mut prior = current;
+    prior.issues.push(ProjectEvaluationIssue {
+        path: "Lib/Lib.csproj".into(),
+        reason: "evaluation_failed".into(),
+    });
+    i.predecessors.insert("graph:0".into(), prior);
+
+    let partial = select(&i).unwrap();
+    assert!(!partial.complete);
+    assert!(partial.targets.is_empty());
+    assert!(!partial.projection.conservative_fallback);
+    assert_eq!(
+        partial.projection.unresolved_frontiers,
+        vec![TestSelectionFrontier {
+            predecessor: Some("graph:0".into()),
+            path: "Lib/Lib.csproj".into(),
+            reason: "evaluation_failed".into(),
+        }]
+    );
+
+    // A separately complete graph can establish that the path had no owner.
+    i.predecessors.get_mut("graph:0").unwrap().issues.clear();
+    let complete = select(&i).unwrap();
+    assert!(complete.complete);
+    assert!(complete.targets.is_empty());
+    assert!(complete.projection.unresolved_frontiers.is_empty());
+}
+
+#[test]
+fn partial_predecessor_preserves_known_impacts_and_fingerprints() {
+    let current = graph(vec![
+        target("Lib/Lib.csproj|net10.0", false, &[], &[]),
+        target(
+            "Tests/Test.csproj|net10.0",
+            true,
+            &[],
+            &["Lib/Lib.csproj|net10.0"],
+        ),
+    ]);
+    let mut prior = current.clone();
+    prior.targets[0].compile.push(CompileMember {
+        path: "Deleted.cs".into(),
+        link: None,
+    });
+    let mut i = input(
+        current,
+        vec![cause(Some("Deleted.cs"), None)],
+        &["Tests/Test.csproj"],
+    );
+    i.predecessors.insert("graph:0".into(), prior);
+    let complete = select(&i).unwrap();
+    assert!(complete.complete);
+    assert_eq!(complete.targets.len(), 1);
+
+    i.predecessors.get_mut("graph:0").unwrap().issues.push(ProjectEvaluationIssue {
+        path: "Other/Other.csproj".into(),
+        reason: "unresolved_reference_context".into(),
+    });
+    let partial = select(&i).unwrap();
+    assert!(!partial.complete);
+    assert_eq!(partial.targets, complete.targets);
+    assert_eq!(partial.projection.targets, complete.projection.targets);
+    assert_eq!(
+        explanation(&partial, "Tests/Test.csproj|net10.0").reasons[0].kind,
+        TestSelectionReasonKind::PredecessorDependency
+    );
+    assert_eq!(partial.projection.unresolved_frontiers.len(), 1);
+}
+
+#[test]
+fn unused_partial_predecessor_does_not_change_complete_selection() {
+    let current = graph(vec![target(
+        "Tests/Test.csproj|net10.0", true, &["Added.cs"], &[],
+    )]);
+    let mut i = input(
+        current.clone(),
+        vec![cause(None, Some("Added.cs"))],
+        &["Tests/Test.csproj"],
+    );
+    let expected = select(&i).unwrap();
+    let mut prior = current;
+    prior.issues.push(ProjectEvaluationIssue {
+        path: ".".into(),
+        reason: "evaluation_failed".into(),
+    });
+    i.predecessors.insert("graph:0".into(), prior);
+    assert_eq!(select(&i).unwrap(), expected);
+    assert!(expected.complete);
+}
+
+#[test]
+fn first_revision_fallback_does_not_consult_partial_predecessor() {
+    let current = graph(vec![target("Tests/Test.csproj|net10.0", true, &[], &[])]);
+    let mut c = cause(Some("Deleted.cs"), None);
+    c.fallback_first_revision = Some(1);
+    let mut i = input(current.clone(), vec![c], &["Tests/Test.csproj"]);
+    let expected = select(&i).unwrap();
+    let mut prior = current;
+    prior.issues.push(ProjectEvaluationIssue {
+        path: ".".into(),
+        reason: "evaluation_failed".into(),
+    });
+    i.predecessors.insert("graph:0".into(), prior);
+    assert_eq!(select(&i).unwrap(), expected);
+    assert!(expected.complete);
+    assert!(expected.projection.conservative_fallback);
+}
+
+#[test]
+fn complete_later_predecessor_cannot_clear_an_earlier_partial_scope() {
+    let current = graph(vec![target("Tests/Test.csproj|net10.0", true, &[], &[])]);
+    let first = cause(Some("First.cs"), None);
+    let mut second = cause(Some("Second.cs"), None);
+    second.predecessor = Some("graph:other".into());
+    let mut i = input(
+        current.clone(), vec![first, second], &["Tests/Test.csproj"],
+    );
+    let mut partial = current.clone();
+    partial.issues.push(ProjectEvaluationIssue {
+        path: ".".into(),
+        reason: "evaluation_failed".into(),
+    });
+    i.predecessors.insert("graph:0".into(), partial);
+    i.predecessors.insert("graph:other".into(), current);
+    let forward = select(&i).unwrap();
+    assert!(!forward.complete);
+    assert!(forward.targets.is_empty());
+    i.causes.reverse();
+    assert_eq!(select(&i).unwrap(), forward);
+}
+
+#[test]
 fn cycles_terminate_and_unapproved_and_unresolved_scopes_are_visible() {
     let mut current = graph(vec![
         target(

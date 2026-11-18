@@ -17,6 +17,27 @@ remains visible in `UnresolvedFrontiers` and makes the current selection partial
 supplied all relevant resolved graph facts. This Rust model cannot itself audit
 whether the provider's completeness claim is truthful.
 
+For deletions and renames, an issue in any predecessor graph actually consulted
+for an old path also makes the selection partial. Known targets, fingerprints,
+reason chains and predecessor frontiers remain available. Unused predecessor
+snapshots do not change completeness; the first-revision and missing-predecessor
+conservative fallbacks retain their existing behavior. This intentionally tightens
+the legacy C# selector's completeness decision for explicitly partial predecessors.
+It does not detect missing facts that a provider incorrectly declares complete.
+
+The standalone `slophawk-test-control` consumer retains all pending causes while
+selection is partial, including when there are no selected targets or every known
+target has completed. Its owner must repair or re-evaluate the relevant graph
+facts before relying on a complete selection. This change adds no resident CLI,
+MCP or execution wiring. The new predecessor fixtures require owner validation;
+the historical validation results below apply to the earlier baseline only.
+
+On adoption, an owner of an existing native test-control database must establish
+a fresh valid authority fence, drain prior running work under the existing host
+protocol, and reselect the full authoritative pending-cause set before consuming
+old plans. This patch does not rewrite persisted selections or reconstruct causes
+already retired by an earlier version.
+
 The `PathComparison::Ordinal` mode matches Linux path comparison;
 `OrdinalIgnoreAsciiCase` is deliberately limited to ASCII rather than making
 false claims about non-ASCII Windows case folding. Broken selected fingerprint
@@ -35,3 +56,101 @@ all 18 tests passed, including C# frontier omission-count behavior when
 discarded events recur. Formatting, locked offline all-target builds and
 Clippy with warnings denied passed. Unicode Windows path equivalence and
 full runtime cutover remain outside this pure pilot.
+
+
+## Opt-in lost-route comparison (SG-CHECK-R01)
+
+`lost_routes::check(&lost_routes::Input)` is a separate, pure advisory over two
+already captured graphs. It does not call `select`, change its output, admit work,
+read files, evaluate MSBuild, execute tests, persist state, or publish a result.
+The caller supplies every affected supported logical item as a `Request`.
+
+### Required owner evidence
+
+- Both captures must match the expected `Identity` values. Root-qualified,
+  immutable source and graph snapshot tokens must bind the actual observations.
+  The checker checks equality; it does not authenticate the provider or recompute
+  graph digests. Root, evaluation universe, configured-group policy and path mode
+  must agree across the pair. Graph/evaluation input fingerprints may change.
+- `Capture.complete` must mean the entire evaluated universe. Any graph issue or
+  dangling reference makes the comparison unknown. `evaluation_sufficient` must
+  be false when relevant execution-created items or references could be missing.
+  An issue-free evaluation alone does not establish this capability.
+- `previous_configured_tests` and `current_configured_tests` are the complete
+  resolved configured groups for each capture, including unapproved and deferred
+  targets. They are independent of selected-test output. New configured tests can
+  preserve an alternate route. A changed group policy requires a different
+  `configured_scope` and yields `ScopeMismatch`; never relabel an approval list as
+  a complete configured group. Group enumeration completeness remains an owner
+  attestation.
+- A request names the exact predecessor target and `(physical path, logical Link)`.
+  Its current counterpart matches canonical project, framework, configuration,
+  platform and RID. Shared target IDs with changed contexts and matching contexts
+  with changed SDKs yield unknown, even outside a particular request's closure.
+  IDs may differ if the full context is identical. Source-target replacements
+  across contexts have no implicit successor mapping in this first version.
+- `SurvivingSource` binds an independently observed current path and uppercase
+  SHA-256 to the current source snapshot. This function does not read or hash that
+  file. Physical or logical item renames require a current-bound `Declaration`;
+  mappings are one-to-one within the supplied request set. A retirement similarly
+  requires a current-bound policy provenance record and returns `Retired`.
+
+### Decisions and evidence
+
+An old logical item present in a supported target but absent from its matching
+current target is `CompileMembershipLost` when the physical source still survives.
+Another target or another logical Link cannot hide that loss. Membership loss has
+precedence over route comparison.
+
+For retained items, reverse traversal starts at that exact owner, reusing
+`GraphIndex` adjacency without its physical-path owner union. A prior configured
+route and an exhaustively empty current configured frontier yield
+`LastConfiguredRouteLost`. Any current alternate route yields `Preserved`.
+No prior configured route yields `NoPriorConfiguredRoute`. Unknowns are explicit,
+and report completeness applies only to the supplied requests.
+
+`MissingFact` identifies the first missing item, target, stored project-reference
+edge, test classification or configured membership on one deterministic old
+witness. Reference fields use the actual referencing-to-referenced direction.
+This attribution is computed before witness truncation and is emitted as a loss
+only after current absence is established. It is not necessarily the sole cause
+or a cut covering every former path. The current graph model has no defining XML
+file/line; the checker does not guess an import or declaration location.
+
+### Limits and platform scope
+
+Defaults admit at most 256 targets, 40,000 Compile records, 16,384 references and
+256 requests across the two graphs; both configured inventories together are
+capped by the target limit. Each string is at most 2,048 bytes. The 8 MiB admission
+budget includes string bytes plus repeated target-ID copies made by GraphIndex.
+A shared budget permits 262,144 reverse edge visits, charging duplicate edges and
+already visited nodes. It is consumed in UTF-16 ordinal request-key order. Reaching
+the exact limit is allowed; needing another edge returns `Unknown(EdgeBudget)`.
+Zero-edge ownership by a configured test needs no edge budget.
+
+At most 64 results and 16 nodes per old/current witness are retained by default.
+Omitted results make `complete` false; witness omission counts do not invalidate a
+completed decision. Full witnesses are inspected before presentation is capped.
+All limits are explicit inputs and affect only this opt-in comparison. Allocation
+and validation are also bounded by input counts and bytes, not by the output cap.
+
+Paths must already be canonical under the supplied provider policy. Ordinal paths
+support case-sensitive inputs; ASCII ignore-case supports only ASCII physical and
+project paths. Logical Link names compare exactly. There is no filesystem probing,
+separator normalization, Unicode Windows case folding or symlink resolution here.
+Current C# capture also rejects platform-specific target frameworks; unsupported
+provider contexts must remain unknown instead of being represented as empty facts.
+
+### Status and owner gates
+
+This SG-CHECK-R01 addition and `tests/lost_routes.rs` are a source-only proposal.
+No compilation, builds, test execution, or CI was performed for this packet.
+Source applicability is weaker than type, runtime, parity or performance validation.
+Owner gates are `cargo +1.99.1 test --locked --manifest-path
+rust/checkers/test-impact/Cargo.toml`, the direct consumer's test-control test gate,
+and the repository completion gate `dotnet test SlopHawk.slnx`; all are unrun here.
+
+The pinned live public-shell scheduler currently calls its separate C# scheduling
+path, not test-control/test-impact. Pair capture, persistence, support/group policy,
+source-survival/rename evidence and publication freshness remain external owner
+handoffs. This addition is not enabled by a daemon or a default configuration.
