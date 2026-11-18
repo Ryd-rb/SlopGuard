@@ -33,6 +33,15 @@ public sealed class ForegroundEvidenceTests
         var summary = workspace.Read(result.Json.GetProperty("Summary").GetString()!);
         Assert.Equal(3, summary.GetProperty("ReplayChanges").GetArrayLength());
         Assert.True(File.Exists(summary.GetProperty("ReplayReport").GetString()));
+        var reviewPath = result.Json.GetProperty("Review").GetString()!;
+        Assert.Equal(reviewPath, summary.GetProperty("Review").GetString());
+        var review = workspace.Read(reviewPath);
+        Assert.Equal("slophawk-contract-review-v1", review.GetProperty("Format").GetString());
+        Assert.Equal(stable.GetProperty("Run").GetString(), review.GetProperty("Run").GetString());
+        Assert.Equal(stable.GetProperty("Candidate").GetString(), review.GetProperty("Candidate").GetString());
+        Assert.Equal(stable.GetProperty("Result").GetRawText(), review.GetProperty("Result").GetRawText());
+        Assert.Equal(operations.Length, review.GetProperty("Operations").GetArrayLength());
+        Assert.Equal(3, review.GetProperty("ReplayChanges").GetInt32());
     }
 
     [NativeCliFact]

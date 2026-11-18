@@ -145,7 +145,7 @@ struct CheckRun<'a> {
     Candidate: &'a str,
     RunVerb: Option<&'a str>,
     PrepareVerb: Option<&'a str>,
-    Result: Box<RawValue>,
+    Result: &'a RawValue,
     Expected: Vec<Box<RawValue>>,
 }
 
@@ -153,6 +153,7 @@ struct Published {
     report: Option<String>,
     run: Option<String>,
     findings: usize,
+    result: Option<Box<RawValue>>,
     replay_report: Option<String>,
 }
 
@@ -167,6 +168,7 @@ fn publish_replay(
         report: None,
         run: None,
         findings: 0,
+        result: None,
         replay_report: outcome.replay_report.clone(),
     };
     match &outcome.publication {
@@ -181,6 +183,7 @@ fn publish_replay(
             published.replay_report = Some(path);
             published.run = Some(original.run.clone());
             published.findings = original.result.findings.len();
+            published.result = Some(raw(&check_result_json(&original.result))?);
         }
         Publication::Subset {
             cases,
@@ -190,6 +193,7 @@ fn publish_replay(
             let root = make_new_dir(&checks)?;
             let run = root.file_name().unwrap().to_string_lossy().into_owned();
             let checked = check(cases, observed).map_err(|e| e.to_string())?;
+            let result = raw(&check_result_json(&checked))?;
             write_new(
                 &root.join("requests.json"),
                 inputs_json(
@@ -213,7 +217,7 @@ fn publish_replay(
                 Candidate: candidate,
                 RunVerb: run_verb,
                 PrepareVerb: prepare_verb,
-                Result: raw(&check_result_json(&checked))?,
+                Result: &result,
                 Expected: cases
                     .iter()
                     .map(|case| raw(case.expected.raw_json()))
@@ -228,6 +232,7 @@ fn publish_replay(
             published.report = Some(root.join("report.json").to_string_lossy().into_owned());
             published.run = Some(run);
             published.findings = checked.findings.len();
+            published.result = Some(result);
         }
     }
     Ok(published)
@@ -244,6 +249,7 @@ struct Summary<'a> {
     RulesSha256: &'a str,
     PublishedSha256: &'a str,
     Summary: &'a str,
+    Review: &'a str,
     Report: &'a Option<String>,
     Run: &'a Option<String>,
     Compared: usize,
@@ -256,6 +262,24 @@ struct Summary<'a> {
     ReplayReport: &'a Option<String>,
     ReplayChanges: Box<RawValue>,
     Operations: Value,
+}
+
+#[derive(Serialize)]
+#[allow(non_snake_case)]
+struct Review<'a> {
+    Format: &'static str,
+    Run: &'a Option<String>,
+    Candidate: &'a str,
+    QualificationBasis: &'static str,
+    ExpectationBasis: &'static str,
+    RulesSha256: &'a str,
+    PublishedSha256: &'a str,
+    Compared: usize,
+    Unsupported: usize,
+    ReplayUnsupported: usize,
+    ReplayChanges: usize,
+    Operations: &'a Value,
+    Result: Option<&'a RawValue>,
 }
 
 fn check_contracts(
@@ -353,6 +377,8 @@ fn check_contracts(
     )?;
     let summary_path = search_path.join("summary.json");
     let summary_string = summary_path.to_string_lossy().into_owned();
+    let review_path = search_path.join("review.json");
+    let review_string = review_path.to_string_lossy().into_owned();
     let qualification_string = qualification_path.to_string_lossy().into_owned();
     let summary = Summary {
         Format: FORMAT,
@@ -363,6 +389,7 @@ fn check_contracts(
         RulesSha256: &rule_sha,
         PublishedSha256: &published_sha,
         Summary: &summary_string,
+        Review: &review_string,
         Report: &evidence.report,
         Run: &evidence.run,
         Compared: outcome.compared,
@@ -376,6 +403,27 @@ fn check_contracts(
         ReplayChanges: raw(&replay_changes_json(&outcome.replay_changes)?)?,
         Operations: operations_json(&outcome.operations),
     };
+    let review = Review {
+        Format: "slophawk-contract-review-v1",
+        Run: &evidence.run,
+        Candidate: &peer.candidate_sha,
+        QualificationBasis: summary.QualificationBasis,
+        ExpectationBasis: summary.ExpectationBasis,
+        RulesSha256: &rule_sha,
+        PublishedSha256: &published_sha,
+        Compared: outcome.compared,
+        Unsupported: outcome.unsupported,
+        ReplayUnsupported: outcome.replay_unsupported,
+        ReplayChanges: outcome.replay_changes.len(),
+        Operations: &summary.Operations,
+        Result: evidence.result.as_deref(),
+    };
+    publish_json(
+        &review_path,
+        serde_json::to_string_pretty(&review)
+            .map_err(|e| e.to_string())?
+            .as_bytes(),
+    )?;
     publish_json(
         &summary_path,
         serde_json::to_string(&summary)
@@ -385,7 +433,7 @@ fn check_contracts(
     println!(
         "{}",
         json!({
-            "Format": FORMAT, "Summary": summary_string,
+            "Format": FORMAT, "Summary": summary_string, "Review": review_string,
             "Report": evidence.report, "Run": evidence.run, "Compared": outcome.compared,
             "Unsupported": outcome.unsupported, "Findings": evidence.findings,
             "ObservedDiscrepancies": outcome.observed_discrepancies,
