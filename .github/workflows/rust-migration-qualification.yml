@@ -81,7 +81,12 @@ jobs:
           export VODA_LANGUAGE_WORKER_BIN="$CARGO_TARGET_DIR/debug/slophawk-language-worker"
           artifacts="$RUNNER_TEMP/voda-dotnet"
           dotnet build src/SlopHawk.Providers.CSharp.ExecutionWorker/SlopHawk.Providers.CSharp.ExecutionWorker.csproj --artifacts-path "$artifacts"
-          export VODA_CSHARP_DOTNET="$(readlink -f "$(command -v dotnet)")"
+          installed_sdk="$(dirname "$(readlink -f "$(command -v dotnet)")")"
+          private_sdk="$RUNNER_TEMP/voda-csharp-sdk"
+          mkdir -m 700 "$private_sdk"
+          cp -RL "$installed_sdk/." "$private_sdk/"
+          chmod -R go-w "$private_sdk"
+          export VODA_CSHARP_DOTNET="$private_sdk/dotnet"
           export VODA_CSHARP_PEER="$artifacts/bin/SlopHawk.Providers.CSharp.ExecutionWorker/debug/SlopHawk.Providers.CSharp.ExecutionWorker.dll"
           export VODA_SCHEDULER_EVIDENCE="$RUNNER_TEMP/native-executable-receipts.json"
           cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml --bin slophawk-native resident_scheduler_runs_registered_providers_and_recovers_receipts -- --ignored --nocapture
