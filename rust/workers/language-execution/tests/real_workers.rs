@@ -1,7 +1,7 @@
-//! Explicitly ignored, Linux-only real worker fixtures. The owner prepares
+//! Explicitly ignored real worker fixtures. The owner prepares
 //! pinned tools/offline Python wheel environment and invokes with --ignored.
 //! No fixture is executed by source-only task delivery.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))]
 use slophawk_language_execution::{
     Budget, CargoVariant, Executable, FluxrModule, FluxrOperation, Identity, InputFile,
     Job, Operation, PROTOCOL, Refusal, Status, classify_cargo_metadata,
@@ -12,24 +12,31 @@ use slophawk_python_project_context as python;
 use slophawk_rust_project_context as rust;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::thread;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Scratch { path: PathBuf, root: PathBuf, owner: PathBuf, artifacts: PathBuf }
 impl Scratch {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("voda-language-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let temp = std::env::var_os("VODA_REAL_WORKER_TEMP").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let path = temp.join(format!("voda-language-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         fs::create_dir(&path).unwrap();
         let root = path.join("workspace");
         let owner = path.join("owner");
         let artifacts = path.join("artifacts");
         for dir in [&root, &owner, &artifacts] {
             fs::create_dir(dir).unwrap();
+            #[cfg(target_os = "linux")]
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
         }
         Self { path, root, owner, artifacts }
@@ -72,10 +79,14 @@ impl Scratch {
             "allow_proc_macros": true,
             "tool": job.operation.executable(),
             "worker": worker,
-            "artifacts_root": self.artifacts.to_str().unwrap(),
+            "artifacts_root": wire_path(&self.artifacts),
             "budget": &job.budget,
         });
-        let mut writer = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&file).unwrap();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(target_os = "linux")]
+        options.mode(0o600);
+        let mut writer = options.open(&file).unwrap();
         writer.write_all(&serde_json::to_vec(&profile).unwrap()).unwrap();
         file
     }
@@ -85,9 +96,12 @@ impl Drop for Scratch { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.pa
 fn env_needed(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("owner must provide {name} for ignored fixture"))
 }
+fn wire_path(path: &Path) -> String {
+    rust::platform_path_to_wire(path.to_str().unwrap()).unwrap()
+}
 fn executable(path: &str) -> Executable {
     let contents = fs::read(path).unwrap();
-    Executable { path: path.into(), sha256: protocol::sha256(&contents) }
+    Executable { path: wire_path(Path::new(path)), sha256: protocol::sha256(&contents) }
 }
 fn migration_worker() -> Executable {
     executable(env!("CARGO_BIN_EXE_slophawk-language-worker"))
@@ -96,7 +110,7 @@ fn identity(scratch: &Scratch, operation: &str, tool: &Executable, context: &str
     source: &str, config: &str, env_sha: &str, attempt: &str) -> Identity {
     Identity {
         operation: operation.into(), job_id: format!("{operation}-{attempt}"),
-        attempt_id: attempt.into(), root: scratch.root.to_str().unwrap().into(),
+        attempt_id: attempt.into(), root: wire_path(&scratch.root),
         context_sha256: context.into(), epoch: "fixture-epoch".into(),
         committed_revision: 5, fence_sequence: 0, input_sha256: input.into(), source_sha256: source.into(),
         config_sha256: config.into(), environment_sha256: env_sha.into(),
@@ -182,11 +196,11 @@ fn copy_cargo_fixture(scratch: &Scratch) -> Vec<&'static str> {
 fn snap(path: PathBuf) -> rust::SnapshotFile {
     let bytes = fs::read(&path).unwrap();
     rust::SnapshotFile { expected_sha256: protocol::sha256(&bytes),
-        path: path.to_str().unwrap().into(), bytes }
+        path: wire_path(&path), bytes }
 }
 
 #[test]
-#[ignore = "requires owner-approved Linux Rust 1.99.1 toolchain and offline Cargo execution"]
+#[ignore = "requires owner-approved Rust 1.99.1 toolchain and offline Cargo execution"]
 fn real_locked_cargo_two_package_graph_and_test_receipt() {
     let scratch = Scratch::new();
     let files = copy_cargo_fixture(&scratch);
@@ -199,26 +213,39 @@ fn real_locked_cargo_two_package_graph_and_test_receipt() {
     let version = String::from_utf8(output.stdout.clone()).unwrap();
     assert!(version.contains("rustc 1.99.1"));
     let target = version.lines().find_map(|l| l.strip_prefix("host: ")).unwrap();
+    let rustc = executable(&rustc);
+    #[cfg(windows)]
+    let msvc = Some(slophawk_language_execution::MsvcToolchain {
+        linker: executable(&env_needed("VODA_MSVC_LINKER")),
+        library_paths: std::env::split_paths(&env_needed("VODA_MSVC_LIB"))
+            .map(|path| wire_path(&path)).collect(),
+    });
+    #[cfg(not(windows))]
+    let msvc = None;
+    let environment_sha256 = match &msvc {
+        Some(msvc) => slophawk_language_execution::cargo_msvc_environment_digest(&tool, &rustc, &rustdoc, msvc, target),
+        None => cargo_environment_digest(&tool, &rustc, &rustdoc),
+    };
     let variant = CargoVariant {
-        rustc: executable(&rustc),
-        rustdoc: rustdoc.clone(),
+        rustc, rustdoc,
         revision: 5, epoch: "fixture-epoch".into(),
         git_commit: "0123456789012345678901234567890123456789".into(),
         target_triple: target.into(), rustc_version: "rustc 1.99.1".into(),
         rustc_vv_sha256: protocol::sha256(&output.stdout),
-        environment_sha256: cargo_environment_digest(&tool, &executable(&rustc), &rustdoc),
+        environment_sha256,
         all_features: false, no_default_features: false,
         features: vec!["alpha/with-beta".into()],
+        msvc,
     };
     let binding = rust::Binding {
-        workspace_root: scratch.root.to_str().unwrap().into(), workspace_revision: variant.revision,
+        workspace_root: wire_path(&scratch.root), workspace_revision: variant.revision,
         epoch: variant.epoch.clone(), git_commit: variant.git_commit.clone(),
         target_triple: variant.target_triple.clone(), rustc_version: variant.rustc_version.clone(),
         rustc_vv_sha256: variant.rustc_vv_sha256.clone(),
         cargo_executable_sha256: tool.sha256.clone(), environment_sha256: variant.environment_sha256.clone(),
         features: rust::Features { selected: variant.features.clone(), ..Default::default() },
     };
-    let manifest = scratch.root.join("Cargo.toml").to_str().unwrap().to_string();
+    let manifest = wire_path(&scratch.root.join("Cargo.toml"));
     let context = binding.digest().unwrap();
     let ledger_digest = protocol::sha256(&serde_json::to_vec(&ledger).unwrap());
     let metadata_job = Job {
@@ -236,6 +263,11 @@ fn real_locked_cargo_two_package_graph_and_test_receipt() {
     assert_eq!(graph.workspace_members.len(), 2);
     assert_eq!(graph.coverage, rust::Coverage::EvaluatedCargoGraph);
     let alpha = graph.workspace_members.iter().find(|id| graph.packages[*id].name == "alpha").unwrap().clone();
+    let selected = rust::select_tests(Some(&graph), &graph, &[
+        rust::Change { path: wire_path(&scratch.root.join("alpha/src/lib.rs")), previous_path: None },
+    ], 16).unwrap();
+    assert!(selected.exact, "{selected:?}");
+    assert_eq!(selected.selected.iter().map(|target| &target.package_id).collect::<Vec<_>>(), [&alpha]);
     let spec = graph.test_package_spec(&alpha).unwrap();
     let test = rust::CargoTestJob { context_sha256: graph.context_sha256.clone(),
         package_id: alpha, attempt_id: 22, fence_sequence: 7 };
@@ -253,13 +285,15 @@ fn real_locked_cargo_two_package_graph_and_test_receipt() {
     let classified = classify_cargo_test(&capture, &graph, &test).unwrap();
     let stderr = capture.payload()["stderr"].as_array().unwrap().iter().take(4096)
         .map(|byte| byte.as_u64().unwrap() as u8).collect::<Vec<_>>();
+    let stdout = capture.payload()["stdout"].as_array().unwrap().iter().take(16384)
+        .map(|byte| byte.as_u64().unwrap() as u8).collect::<Vec<_>>();
     assert_eq!(classified.disposition, rust::Disposition::Passed,
-        "{classified:?}\n{}", String::from_utf8_lossy(&stderr));
+        "{classified:?}\n{}\n{}", String::from_utf8_lossy(&stderr), String::from_utf8_lossy(&stdout));
     assert!(classified.counters.unwrap().passed >= 1);
 }
 
 #[test]
-#[ignore = "requires exact pinned FluxR checked worker and Linux process-group admission"]
+#[ignore = "requires exact pinned FluxR checked worker and OS process-tree admission"]
 fn real_fluxr_checked_and_unqualified_codec() {
     let scratch = Scratch::new();
     let source = b"fluxr 1\npub run 3 x int factor int offset int int ret add mul x factor offset\n";
@@ -299,6 +333,7 @@ fn real_fluxr_checked_and_unqualified_codec() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 #[ignore = "executes a bounded scripted negative worker, not the product"]
 fn missing_terminal_and_source_change_cannot_publish() {
     let scratch = Scratch::new();
@@ -330,6 +365,7 @@ fn missing_terminal_and_source_change_cannot_publish() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 #[ignore = "admitted POSIX scripted worker for revocation and cancellation; owner runs"]
 fn owner_revocation_and_cancellation_fence_a_running_attempt() {
     let scratch = Scratch::new();

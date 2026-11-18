@@ -2,8 +2,8 @@
 
 This is a **separate, opt-in migration worker**, not a scheduler registration, a
 new daemon IPC revision, or a public command. The passive Python/Cargo project
-context libraries still never launch repository code. Rust 1.99.1 and Linux are
-the initial supervised target. The owner must compile and qualify this code
+context libraries still never launch repository code. The Rust 1.99.1 worker
+supports authenticated Linux cgroup and Windows Job Object supervision. The owner must compile and qualify this code
 before enabling it from an authenticated coordinator. Existing .NET, MCP,
 Roslyn-frame-v1, public argv and artifact contracts are unchanged.
 
@@ -18,10 +18,12 @@ including SHA-256 of canonical JSON serializations of `inputs` and `operation`.
 Neither the request nor a repository file can supply a grant. The owner
 acquires its worker slot/output lease, commits the attempt, checks its root and
 sources, and uses `run_admitted(profile_path, job, &cancelled)`. The method
-verifies 0600 OS-user profile ownership under a private directory, hashes the
-approved worker and tool binaries, verifies every declared file without
-following symlinks, and launches a fresh worker process group in a 0700
-exclusive attempt directory. Only a successful child, matching single evidence
+verifies the profile and directory owner and access rights, hashes the
+approved worker and tool binaries, and verifies every declared file against
+its physical path and digest. The worker runs in a recoverable scope with an
+exclusive private attempt directory. Linux uses mode 0600 profiles and mode
+0700 directories. Windows checks the owner SID and DACL and rejects reparse
+paths. Only a successful child, matching single evidence
 frame plus complete terminal, unchanged profile, unchanged inputs and still
 valid tool pins produce `Verified`. A refused, stale, missing or malformed
 terminal discards staged output. `discard_staged` releases even successful
@@ -36,7 +38,8 @@ signature. Required field names are `root`, `context_sha256`, `epoch`,
 `environment_sha256`, `policy_sha256`, `grant_ref`, `budget_ref`, `operations`
 (list of permitted operation names), `tool`, `worker`, `artifacts_root`,
 `budget`, `allow_build`, `allow_build_scripts`, `allow_proc_macros`. Executable
-objects have `{ "path": "/canonical/exe", "sha256": "64 lowercase hex" }`.
+objects have `path` and `sha256` fields. Use `/canonical/exe` on Linux and
+`C:/canonical/exe.exe` on Windows, with lowercase hexadecimal SHA-256.
 The deadline is in milliseconds and byte limits are counts. **Cargo test**
 requires explicit owner grants for build, scripts and proc macros, because the
 command can execute them; metadata is a separate, non-build operation. Do not
@@ -44,7 +47,10 @@ infer these grants from a workspace manifest. The process environment is
 cleared and network access is not requested (`--locked --offline`,
 `CARGO_NET_OFFLINE=true`). The coordinator must compute the variant environment with
 `cargo_environment_digest(&cargo, &rustc, &rustdoc)` over the exact controlled
-key/value recipe; the per-attempt Cargo scratch path is a normalized token.
+key/value recipe on Linux. Windows uses
+`cargo_msvc_environment_digest(&cargo, &rustc, &rustdoc, &msvc, target)`
+with the approved linker executable pin and external MSVC and SDK library
+paths. The per-attempt Cargo scratch paths are represented by fixed tokens.
 The installer must provide an approved, directly
 invocable Cargo toolchain. Both `CargoVariant.rustc` and `CargoVariant.rustdoc`
 are digest-pinned. `rustc -Vv` bytes are separately verified. All implicit ancestor Cargo config
@@ -94,27 +100,23 @@ pytest failed cases are valid *observed outcomes*, not successful checks.
   serialized ordered `cases`. Source hashes, compiler tree/revision and
   worker hash are enforced by the published checked harness. `check`,
   `observe`, or `replay` are supported. Compact/native codecs and native
-  execution remain unsupported. The outer process-group deadline covers
+  execution remain unsupported. The outer scope deadline covers
   reads, checked compilation, the direct-child deadline and replay passes.
 
-**Boundaries:** A process group is not a hard security sandbox: a child can
-attempt to daemonize, create another process group, access files, or make
-network requests. Production admission of untrusted repositories requires a
-separate owner-configured OS isolation/network boundary and a supervisor that
-contains the *entire* process tree; this crate does not authorize unattended
-scheduling. Mutable local worktrees also need publication-time revalidation.
+The worker retains the caller's OS account and its filesystem and network
+privileges. Mutable local worktrees need publication-time revalidation.
 Symlinked input files, incomplete Cargo source/lock/config input inventories,
 non-CPython runtimes, other pytest/plugin versions, unsupported/custom JSON
-shapes, unknown generated macro inputs, and non-Linux targets remain unresolved
-until separately qualified. Full daemon integration remains owner work.
+shapes and unknown generated macro inputs remain unresolved.
 
-## Verification (source only in this delivery)
+## Verification
 
 Tests in `tests/protocol_contract.rs` and `src/python.rs` cover frame caps,
 matching terminals, collection, deselection, and setup/call/teardown parsing.
 Ignored `tests/real_workers.rs` contains real Python, two-package offline Cargo
 and checked FluxR workers, with malformed/missing terminal, stale source,
-codec and failure-neighbor fixtures. The owner must prepare pinned tools,
-execute those tests under an admitted Linux worker, and review the resulting
-receipts before enabling automatic routing. No tests or builds were executed
-by the SG-MIG-12 recipient.
+codec and failure-neighbor fixtures. Supply the pinned tool paths and hashes
+using the fixture's `VODA_*` environment variables and run the suite with
+`--ignored --test-threads=1`. On Windows, set `VODA_MSVC_LINKER` to the
+installed MSVC linker and `VODA_MSVC_LIB` to the Windows path list of MSVC and
+SDK library directories.

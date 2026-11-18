@@ -315,17 +315,47 @@ fn valid_package_spec(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'@' | b'+'))
 }
 
-pub(crate) fn valid_absolute_path(path: &str) -> bool {
-    path.starts_with('/')
-        && path.len() <= 4096
-        && path != "/"
-        && !path.ends_with('/')
-        && !path.contains("//")
-        && path
-            .split('/')
-            .skip(1)
-            .all(|p| p != "." && p != ".." && !p.is_empty())
-        && !path.chars().any(|c| c.is_control() || c == '\\')
+pub fn valid_absolute_path(path: &str) -> bool {
+    if path.len() > 4096 || path.chars().any(|c| c.is_control() || c == '\\') {
+        return false;
+    }
+    let (relative, windows) = match path.as_bytes() {
+        [b'/', ..] => (&path[1..], false),
+        [drive, b':', b'/', ..] if drive.is_ascii_uppercase() => (&path[3..], true),
+        _ => return false,
+    };
+    relative.split('/').all(|part| {
+        !part.is_empty() && part != "." && part != ".."
+            && (!windows || valid_windows_component(part))
+    })
+}
+
+fn valid_windows_component(part: &str) -> bool {
+    if part.ends_with(['.', ' ']) || part.contains([':', '*', '?', '"', '<', '>', '|']) {
+        return false;
+    }
+    let stem = part.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        && !["COM", "LPT"].iter().any(|prefix| stem.strip_prefix(prefix)
+            .is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")))
+}
+
+/// Convert a path emitted by Cargo or another platform tool to the wire form.
+/// Windows volumes are restricted to drive letters, including extended drive paths.
+pub fn platform_path_to_wire(path: &str) -> Option<String> {
+    #[cfg(windows)]
+    let path = {
+        let mut value = path.strip_prefix(r"\\?\").unwrap_or(path).replace('\\', "/");
+        let drive = value.get(..1)?.to_ascii_uppercase();
+        value.replace_range(..1, &drive);
+        if !matches!(value.as_bytes(), [drive, b':', b'/', ..] if drive.is_ascii_uppercase()) {
+            return None;
+        }
+        value
+    };
+    #[cfg(not(windows))]
+    let path = path.to_owned();
+    valid_absolute_path(&path).then_some(path)
 }
 
 pub(crate) fn check_member_path(root: &str, path: &str) -> Result<(), Error> {
@@ -335,6 +365,23 @@ pub(crate) fn check_member_path(root: &str, path: &str) -> Result<(), Error> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn wire_paths_reject_windows_aliases_and_ambiguous_spellings() {
+        assert!(valid_absolute_path("C:/work dir/Cargo.toml"));
+        assert!(valid_absolute_path("/workspace/Cargo.toml"));
+        for path in ["C:foo", "C:/a/..", "C:/a/dir.", "C:/a/b:stream", "C:/a/AUX.rs",
+            "C:/a/LPT¹.txt", "//server/share", "C:/a//b", r"C:\a\b", "/a/.."] {
+            assert!(!valid_absolute_path(path), "{path}");
+        }
+        assert!(check_member_path("C:/work", "C:/work/Cargo.toml").is_ok());
+        assert!(check_member_path("C:/work", "C:/work-other/Cargo.toml").is_err());
+    }
 }
 
 pub(crate) fn json_object(

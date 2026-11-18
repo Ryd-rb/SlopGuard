@@ -55,16 +55,23 @@ fn object<'a>(value: &'a Value, name: &str) -> Result<&'a serde_json::Map<String
 fn array<'a>(obj: &'a serde_json::Map<String, Value>, name: &str) -> Result<&'a Vec<Value>, String> {
     obj.get(name).and_then(Value::as_array).ok_or_else(|| format!("{name} array missing"))
 }
-fn num(obj: &serde_json::Map<String, Value>, name: &str) -> Result<u64, String> {
-    obj.get(name).and_then(Value::as_u64).ok_or_else(|| format!("{name} count missing"))
-}
 fn string<'a>(obj: &'a serde_json::Map<String, Value>, name: &str) -> Result<&'a str, String> {
     obj.get(name).and_then(Value::as_str).ok_or_else(|| format!("{name} string missing"))
 }
 fn report_root(doc: &Value, cwd: &Path, code: i32) -> Result<(), String> {
     let top = object(doc, "pytest report")?;
+    let reported = top.get("root").and_then(Value::as_str);
+    let expected = cwd.to_str();
+    #[cfg(windows)]
+    let same_root = reported.zip(expected).is_some_and(|(reported, expected)| {
+        use slophawk_rust_project_context::platform_path_to_wire;
+        reported == expected || platform_path_to_wire(reported)
+            .is_some_and(|path| Some(path) == platform_path_to_wire(expected))
+    });
+    #[cfg(not(windows))]
+    let same_root = reported.is_some() && reported == expected;
     if top.get("exitcode").and_then(Value::as_i64) != Some(i64::from(code))
-        || top.get("root").and_then(Value::as_str) != cwd.to_str() {
+        || !same_root {
         return Err("pytest exit or effective root differs from admitted scope".into());
     }
     object(top.get("summary").ok_or("pytest summary missing")?, "pytest summary")?;
@@ -202,7 +209,7 @@ fn safe_project(root: &str, relative: &str) -> Result<PathBuf, String> {
         return Err("invalid Python project root".into());
     }
     let path = if relative == "." { PathBuf::from(root) } else { Path::new(root).join(relative) };
-    if path != std::fs::canonicalize(&path).map_err(|_| "Python project root missing")? {
+    if !path.is_dir() || !crate::admission::physical(&path).map_err(|_| "Python project root missing")? {
         return Err("Python project root is not a canonical directory".into());
     }
     Ok(path)

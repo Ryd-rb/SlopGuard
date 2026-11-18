@@ -14,6 +14,7 @@ const HANDLE_LIST: usize = 0x0002_0002;
 const JOB_LIST: usize = 0x0002_000d;
 const EXTENDED_STARTUP: u32 = 0x0008_0000;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
 const USE_STD_HANDLES: u32 = 0x0000_0100;
 const DUP_SAME_ACCESS: u32 = 0x0000_0002;
 const WAIT_OBJECT_0: u32 = 0;
@@ -23,6 +24,35 @@ const JOB_QUERY: u32 = 4;
 const JOB_TERMINATE: u32 = 8;
 const REPARSE_POINT: u32 = 0x400;
 const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+pub(super) fn environment_block(command: &std::process::Command) -> Result<Vec<u16>, String> {
+    let mut entries = std::collections::BTreeMap::new();
+    for (name, value) in command.get_envs() {
+        let name = name.to_str().filter(|name| !name.is_empty()
+            && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+            .ok_or("invalid Windows worker environment variable name")?;
+        let Some(value) = value else { continue; };
+        let value: Vec<u16> = value.encode_wide().collect();
+        if value.contains(&0) || entries.insert(name.to_ascii_uppercase(), value).is_some() {
+            return Err("invalid or duplicate Windows worker environment variable".into());
+        }
+    }
+    let mut environment = Vec::new();
+    for (name, value) in entries {
+        environment.extend(name.encode_utf16());
+        environment.push(b'=' as u16);
+        environment.extend(value);
+        environment.push(0);
+    }
+    if environment.is_empty() {
+        environment.push(0);
+    }
+    environment.push(0);
+    if environment.len() > 32767 {
+        return Err("Windows worker environment exceeds limit".into());
+    }
+    Ok(environment)
+}
 
 #[link(name = "bcrypt")]
 unsafe extern "system" {
@@ -360,6 +390,8 @@ fn launch(worker: &Invocation, files: &Files, job: &Handle) -> Result<Handle, St
             .collect::<Result<Vec<_>, _>>()?
             .join(" ");
         let directory = worker.cwd.as_ref().map(|path| wide(path.as_os_str()));
+        let mut environment = worker.env.clone();
+        let environment_ptr = environment.as_mut().map_or(null_mut(), |block| block.as_mut_ptr().cast());
         let mut arguments = wide(std::ffi::OsStr::new(&command));
         let mut info = ProcessInfo {
             process: null_mut(),
@@ -374,8 +406,8 @@ fn launch(worker: &Invocation, files: &Files, job: &Handle) -> Result<Handle, St
                 null_mut(),
                 null_mut(),
                 1,
-                EXTENDED_STARTUP | CREATE_NO_WINDOW,
-                null_mut(),
+                EXTENDED_STARTUP | CREATE_NO_WINDOW | if environment.is_some() { CREATE_UNICODE_ENVIRONMENT } else { 0 },
+                environment_ptr,
                 directory.as_ref().map_or(null(), |value| value.as_ptr()),
                 &mut startup,
                 &mut info,
@@ -644,6 +676,7 @@ mod tests {
         let path = files.directory.join("pending");
         fs::write(&path, &identity).unwrap();
         let worker = Invocation {
+            env: None,
             program: std::env::current_exe().unwrap().into_os_string(),
             args: ["--ignored", "--exact", "windows::tests::worker_fixture"]
                 .into_iter()

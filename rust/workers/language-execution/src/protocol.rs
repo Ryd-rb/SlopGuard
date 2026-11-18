@@ -43,10 +43,7 @@ impl Identity {
     pub fn valid(&self) -> bool {
         [self.operation.as_str(), &self.job_id, &self.attempt_id, &self.epoch,
             &self.grant_ref, &self.budget_ref].into_iter().all(code)
-            && self.root.starts_with('/') && self.root.len() <= 4096
-            && !self.root.ends_with('/') && !self.root.contains("//")
-            && !self.root.contains("/../") && !self.root.contains("/./")
-            && !self.root.chars().any(char::is_control)
+            && slophawk_rust_project_context::valid_absolute_path(&self.root)
             && [&self.context_sha256, &self.input_sha256, &self.source_sha256,
                 &self.config_sha256, &self.environment_sha256, &self.tool_sha256,
                 &self.policy_sha256].into_iter().all(|s| is_sha(s))
@@ -78,9 +75,7 @@ pub struct Executable {
 }
 impl Executable {
     pub fn valid(&self) -> bool {
-        self.path.starts_with('/') && self.path.len() <= 4096
-            && self.path.split('/').skip(1).all(|s| !s.is_empty() && s != "." && s != "..")
-            && !self.path.chars().any(char::is_control) && is_sha(&self.sha256)
+        slophawk_rust_project_context::valid_absolute_path(&self.path) && is_sha(&self.sha256)
     }
 }
 
@@ -101,6 +96,15 @@ pub struct CargoVariant {
     pub all_features: bool,
     pub no_default_features: bool,
     pub features: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msvc: Option<MsvcToolchain>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MsvcToolchain {
+    pub linker: Executable,
+    pub library_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

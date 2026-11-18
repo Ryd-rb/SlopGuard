@@ -212,6 +212,30 @@ pub fn run_guarded(
     cancel: &AtomicBool,
     current: &dyn Fn() -> bool,
 ) -> Result<Output, String> {
+    run_with_environment(command, input, limits, cancel, current, false)
+}
+
+/// Launch a Windows worker with only the environment entries supplied by its
+/// admitted caller. Existing scoped launches retain their regular environment.
+#[cfg(windows)]
+pub fn run_guarded_clean(
+    command: &Command,
+    input: &[u8],
+    limits: Limits,
+    cancel: &AtomicBool,
+    current: &dyn Fn() -> bool,
+) -> Result<Output, String> {
+    run_with_environment(command, input, limits, cancel, current, true)
+}
+
+fn run_with_environment(
+    command: &Command,
+    input: &[u8],
+    limits: Limits,
+    cancel: &AtomicBool,
+    current: &dyn Fn() -> bool,
+    clean: bool,
+) -> Result<Output, String> {
     if !Path::new(command.get_program()).is_absolute()
         || command
             .get_current_dir()
@@ -219,7 +243,7 @@ pub fn run_guarded(
     {
         return Err("worker executable and working directory must be absolute".into());
     }
-    if command
+    if !clean && command
         .get_envs()
         .any(|(name, value)| std::env::var_os(name).as_deref() != value || value.is_none())
     {
@@ -247,6 +271,8 @@ pub fn run_guarded(
         program: command.get_program().to_owned(),
         args: command.get_args().map(ToOwned::to_owned).collect(),
         cwd: command.get_current_dir().map(ToOwned::to_owned),
+        #[cfg(windows)]
+        env: if clean { Some(windows::environment_block(command)?) } else { None },
         #[cfg(target_os = "linux")]
         env: command
             .get_envs()
@@ -281,6 +307,8 @@ struct Invocation {
     program: OsString,
     args: Vec<OsString>,
     cwd: Option<PathBuf>,
+    #[cfg(windows)]
+    env: Option<Vec<u16>>,
     #[cfg(target_os = "linux")]
     env: Vec<OsString>,
 }

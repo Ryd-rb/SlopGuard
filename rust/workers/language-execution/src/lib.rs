@@ -1,4 +1,4 @@
-//! Admitted Linux language execution with private `slophawk.migration-job/1`
+//! Admitted language execution with private `slophawk.migration-job/1`
 //! receipt transport. Not a daemon scheduler registration or public CLI change.
 //!
 //! The owner creates an OS-user-private profile outside the checkout, pins a
@@ -14,8 +14,8 @@ mod python;
 mod runner;
 
 pub use admission::{Refusal, Verified, discard_staged, run_admitted};
-pub use runner::cargo_environment_digest;
-pub use protocol::{Budget, CargoVariant, Executable, InputFile, FluxrModule, FluxrOperation, Identity, Job, Operation, Status, PROTOCOL};
+pub use runner::{cargo_environment_digest, cargo_msvc_environment_digest};
+pub use protocol::{Budget, CargoVariant, Executable, InputFile, FluxrModule, FluxrOperation, Identity, Job, MsvcToolchain, Operation, Status, PROTOCOL};
 use slophawk_python_project_context as py;
 use slophawk_rust_project_context as cargo;
 

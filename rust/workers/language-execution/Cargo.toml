@@ -20,3 +20,6 @@ sha2 = "=0.10.9"
 slophawk-python-project-context = { path = "../../project-context/python" }
 slophawk-rust-project-context = { path = "../../project-context/rust" }
 slophawk-fluxr-checked-context = { path = "../../project-context/fluxr" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }

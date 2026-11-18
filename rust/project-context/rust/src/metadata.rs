@@ -213,7 +213,8 @@ pub fn interpret_metadata(input: MetadataInput) -> Result<CargoGraph, Error> {
     if top.get("version").and_then(Value::as_u64) != Some(1) {
         return Err(Error::Unsupported("Cargo metadata format-version is not 1"));
     }
-    if string(field(top, "workspace_root")?, 4096)? != binding.workspace_root {
+    let workspace_root = string(field(top, "workspace_root")?, 4096)?;
+    if metadata_path(&workspace_root, &binding.workspace_root) != binding.workspace_root {
         return Err(Error::Stale(
             "Cargo metadata workspace root differs from admitted root",
         ));
@@ -237,7 +238,7 @@ pub fn interpret_metadata(input: MetadataInput) -> Result<CargoGraph, Error> {
         let obj = json_object(item)?;
         let id = string(field(obj, "id")?, 2048)?;
         let workspace_member = workspace_members.contains(&id);
-        let manifest = string(field(obj, "manifest_path")?, 4096)?;
+        let manifest = metadata_path(&string(field(obj, "manifest_path")?, 4096)?, &binding.workspace_root);
         if workspace_member {
             check_member_path(&binding.workspace_root, &manifest)?;
         }
@@ -261,7 +262,7 @@ pub fn interpret_metadata(input: MetadataInput) -> Result<CargoGraph, Error> {
             if kinds.len() > 16 {
                 return Err(Error::Limit("Cargo target kind list"));
             }
-            let source_path = string(field(t, "src_path")?, 4096)?;
+            let source_path = metadata_path(&string(field(t, "src_path")?, 4096)?, &binding.workspace_root);
             targets.push(CargoTarget {
                 name: string(field(t, "name")?, 160)?,
                 kinds,
@@ -440,6 +441,13 @@ pub fn interpret_metadata(input: MetadataInput) -> Result<CargoGraph, Error> {
         },
         unresolved,
     })
+}
+
+fn metadata_path(path: &str, root: &str) -> String {
+    if root.starts_with('/') {
+        return path.to_owned();
+    }
+    crate::platform_path_to_wire(path).unwrap_or_else(|| path.to_owned())
 }
 
 fn field<'a>(obj: &'a serde_json::Map<String, Value>, name: &str) -> Result<&'a Value, Error> {

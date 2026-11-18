@@ -1,9 +1,9 @@
-#[cfg(feature = "with-beta")]
+#[cfg(all(feature = "with-beta", target_os = "linux"))]
 pub fn number() -> u32 {
     beta::number()
 }
 
-#[cfg(not(feature = "with-beta"))]
+#[cfg(not(all(feature = "with-beta", target_os = "linux")))]
 pub fn number() -> u32 {
     8
 }

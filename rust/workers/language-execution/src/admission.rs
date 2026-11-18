@@ -1,10 +1,10 @@
-//! Linux OS-user admission and cgroup supervision. Never read grants from a checkout.
+//! OS-user admission and recoverable worker scopes.
 use crate::protocol::{self, Budget, Executable, Job};
 use serde::Deserialize;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -74,25 +74,65 @@ mod linux {
     unsafe extern "C" { pub fn geteuid() -> u32; }
 }
 
-fn verify_profile(path: &Path, job: &Job) -> Result<(Profile, String), Refusal> {
-    if !job.valid() { return Err(Refusal::Denied("invalid job identity or budget")); }
-    #[cfg(not(target_os = "linux"))]
-    { let _ = path; return Err(Refusal::Unsupported("OS-authenticated process-group admission is Linux only")); }
+#[cfg(windows)]
+mod windows;
+
+pub(crate) fn physical(path: &Path) -> io::Result<bool> {
+    let canonical = fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use slophawk_rust_project_context::platform_path_to_wire;
+        let wire = |p: &Path| p.to_str().and_then(platform_path_to_wire);
+        let Some(path_text) = wire(path) else { return Ok(false); };
+        if Some(path_text) != wire(&canonical) { return Ok(false); }
+        for ancestor in path.ancestors().filter(|p| p.has_root()) {
+            if fs::symlink_metadata(ancestor)?.file_attributes() & 0x400 != 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    #[cfg(not(windows))]
+    Ok(canonical == path)
+}
+
+fn open_private(path: &Path, directory: bool) -> io::Result<File> {
+    if !physical(path)? {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "nonphysical private path"));
+    }
+    #[cfg(windows)]
+    return windows::open_checked(path, directory, true);
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let uid = unsafe { linux::geteuid() };
-        let dir = path.parent().ok_or(Refusal::Denied("profile has no parent"))?;
-        let dir_meta = fs::symlink_metadata(dir).map_err(|_| Refusal::Denied("profile directory unavailable"))?;
-        if !dir_meta.is_dir() || dir_meta.uid() != uid || dir_meta.permissions().mode() & 0o077 != 0 {
-            return Err(Refusal::Denied("profile directory is not private to OS user"));
+        let file = File::open(path)?;
+        let meta = file.metadata()?;
+        if (if directory { !meta.is_dir() } else { !meta.is_file() })
+            || meta.uid() != unsafe { linux::geteuid() }
+            || meta.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "path is not private to the OS user"));
         }
-        let meta = fs::symlink_metadata(path).map_err(|_| Refusal::Denied("profile unavailable"))?;
-        if !meta.file_type().is_file() || meta.uid() != uid || meta.permissions().mode() & 0o077 != 0 || meta.len() > 32 * 1024 {
-            return Err(Refusal::Denied("profile is not a private regular file"));
-        }
-        let bytes = read_bounded(File::open(path).map_err(|_| Refusal::Denied("profile cannot be opened"))?, 32 * 1024)
-            .map_err(|_| Refusal::Denied("profile exceeds limit"))?;
+        Ok(file)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = directory;
+        Err(io::Error::new(io::ErrorKind::Unsupported, "OS user admission unavailable"))
+    }
+}
+
+fn read_private_profile(path: &Path) -> io::Result<Vec<u8>> {
+    let dir = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    let _directory = open_private(dir, true)?;
+    let file = open_private(path, false)?;
+    read_bounded(file, 32 * 1024)
+}
+
+fn verify_profile(path: &Path, job: &Job) -> Result<(Profile, String), Refusal> {
+    if !job.valid() { return Err(Refusal::Denied("invalid job identity or budget")); }
+        let bytes = read_private_profile(path)
+            .map_err(|_| Refusal::Denied("profile is not a bounded private regular file"))?;
         let profile: Profile = serde_json::from_slice(&bytes).map_err(|_| Refusal::Denied("invalid profile JSON"))?;
         let i = &job.identity;
         if profile.root != i.root || profile.context_sha256 != i.context_sha256
@@ -115,20 +155,13 @@ fn verify_profile(path: &Path, job: &Job) -> Result<(Profile, String), Refusal> 
             || job.budget.stdout_bytes > profile.budget.stdout_bytes
             || job.budget.stderr_bytes > profile.budget.stderr_bytes
             || job.budget.artifact_bytes > profile.budget.artifact_bytes
-            || !Path::new(&profile.root).is_absolute()
-            || fs::canonicalize(&profile.root).map_err(|_| Refusal::Stale("workspace missing"))?
-                != Path::new(&profile.root)
-            || path.starts_with(&profile.root)
+            || !physical(Path::new(&profile.root)).map_err(|_| Refusal::Stale("workspace missing"))?
+            || inside(path, Path::new(&profile.root))?
         {
             return Err(Refusal::Denied("scope, tool, policy, grant or budget not authorized"));
         }
         let output = Path::new(&profile.artifacts_root);
-        let out_meta = fs::symlink_metadata(output).map_err(|_| Refusal::Denied("artifact root missing"))?;
-        if !output.is_absolute() || output.starts_with(&profile.root)
-            || !out_meta.is_dir() || out_meta.uid() != uid
-            || out_meta.permissions().mode() & 0o077 != 0
-            || fs::canonicalize(output).map_err(|_| Refusal::Denied("artifact root missing"))? != output
-        {
+        if inside(output, Path::new(&profile.root))? || open_private(output, true).is_err() {
             return Err(Refusal::Denied("artifact root not owned and private outside checkout"));
         }
         verify_executable(&profile.worker)?;
@@ -138,11 +171,28 @@ fn verify_profile(path: &Path, job: &Job) -> Result<(Profile, String), Refusal> 
             | crate::protocol::Operation::CargoTest { variant, .. } => {
                 verify_executable(&variant.rustc)?;
                 verify_executable(&variant.rustdoc)?;
+                if let Some(msvc) = &variant.msvc {
+                    verify_executable(&msvc.linker)?;
+                    for lib in &msvc.library_paths {
+                        let dir = Path::new(lib);
+                        if !physical(dir).unwrap_or(false) || !dir.is_dir()
+                            || inside(dir, Path::new(&profile.root))? {
+                            return Err(Refusal::Denied("MSVC library directory is not physical and external"));
+                        }
+                        #[cfg(windows)]
+                        windows::open_checked(dir, true, false)
+                            .map_err(|_| Refusal::Denied("MSVC library directory ownership check failed"))?;
+                    }
+                }
             },
             _ => {}
         }
         Ok((profile, protocol::sha256(&bytes)))
-    }
+}
+
+fn inside(path: &Path, root: &Path) -> Result<bool, Refusal> {
+    let denied = |_| Refusal::Denied("scope path unavailable");
+    Ok(path.canonicalize().map_err(denied)?.starts_with(root.canonicalize().map_err(denied)?))
 }
 
 pub(crate) fn read_bounded(mut input: impl Read, limit: usize) -> io::Result<Vec<u8>> {
@@ -176,7 +226,16 @@ fn verify_executable(executable: &Executable) -> Result<(), Refusal> {
             return Err(Refusal::Denied("executable is writable by another OS principal"));
         }
     }
-    let bytes = read_bounded(File::open(path).map_err(|_| Refusal::Denied("executable read failed"))?, 64 * 1024 * 1024)
+    #[cfg(windows)]
+    let file = {
+        if !physical(path).map_err(|_| Refusal::Denied("executable unavailable"))? {
+            return Err(Refusal::Denied("executable is not a physical Windows path"));
+        }
+        windows::open_checked(path, false, false)
+    };
+    #[cfg(not(windows))]
+    let file = File::open(path);
+    let bytes = read_bounded(file.map_err(|_| Refusal::Denied("executable read or ownership check failed"))?, 64 * 1024 * 1024)
         .map_err(|_| Refusal::Denied("executable exceeds cap"))?;
     if protocol::sha256(&bytes) != executable.sha256 { return Err(Refusal::Stale("executable digest mismatch")); }
     Ok(())
@@ -185,20 +244,7 @@ fn verify_executable(executable: &Executable) -> Result<(), Refusal> {
 /// Recheck only the OS-private profile's bytes on supervision ticks. Executable
 /// bytes are checked fully before launch and after the worker exits.
 fn current_fingerprint(path: &Path) -> Option<String> {
-    #[cfg(not(target_os = "linux"))]
-    { let _ = path; None }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let uid = unsafe { linux::geteuid() };
-        let d = fs::symlink_metadata(path.parent()?).ok()?;
-        let m = fs::symlink_metadata(path).ok()?;
-        if !d.is_dir() || d.uid() != uid || d.permissions().mode() & 0o077 != 0
-            || !m.file_type().is_file() || m.uid() != uid || m.permissions().mode() & 0o077 != 0
-            || m.len() > 32 * 1024 { return None; }
-        let bytes = read_bounded(File::open(path).ok()?, 32 * 1024).ok()?;
-        Some(protocol::sha256(&bytes))
-    }
+    Some(protocol::sha256(&read_private_profile(path).ok()?))
 }
 
 fn verify_inputs(job: &Job) -> Result<(), Refusal> {
@@ -207,7 +253,7 @@ fn verify_inputs(job: &Job) -> Result<(), Refusal> {
         let path = Path::new(&job.identity.root).join(&input.relative_path);
         let meta = fs::symlink_metadata(&path).map_err(|_| Refusal::Stale("declared source missing"))?;
         if !meta.file_type().is_file() || meta.len() != input.byte_count
-            || fs::canonicalize(&path).map_err(|_| Refusal::Stale("source unavailable"))? != path {
+            || !physical(&path).map_err(|_| Refusal::Stale("source unavailable"))? {
             return Err(Refusal::Stale("source identity or canonical path changed"));
         }
         let bytes = read_bounded(File::open(&path).map_err(|_| Refusal::Stale("source unreadable"))?, 4 * 1024 * 1024)
@@ -224,28 +270,53 @@ fn verify_inputs(job: &Job) -> Result<(), Refusal> {
 pub fn run_admitted(profile_path: &Path, job: Job, cancelled: &AtomicBool) -> Result<Verified, Refusal> {
     let (profile, fingerprint) = verify_profile(profile_path, &job)?;
     verify_inputs(&job)?;
-    #[cfg(not(target_os = "linux"))]
-    { let _ = (profile, fingerprint, cancelled); return Err(Refusal::Unsupported("Linux process supervision required")); }
-    #[cfg(target_os = "linux")]
+    #[cfg(not(any(target_os = "linux", windows)))]
+    { let _ = (profile, fingerprint, cancelled); return Err(Refusal::Unsupported("OS worker supervision unavailable")); }
+    #[cfg(any(target_os = "linux", windows))]
     {
-        use std::os::unix::fs::DirBuilderExt;
         if cancelled.load(Ordering::Acquire) { return Err(Refusal::WorkerStatus {
             status: protocol::Status::Cancelled, reasons: vec!["cancelled_before_admission".into()],
             omissions: vec!["not_launched".into()],
         }); }
         let artifact_dir = Path::new(&profile.artifacts_root).join(format!("{}-{}", job.identity.job_id, job.identity.attempt_id));
-        fs::DirBuilder::new().mode(0o700).create(&artifact_dir)
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(target_os = "linux")]
+        let directory = {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700)
+        };
+        #[cfg(windows)]
+        let directory = &mut builder;
+        directory.create(&artifact_dir)
             .map_err(|_| Refusal::Denied("attempt directory must be new and exclusive"))?;
-        // The fixed env tool establishes a clean locale for the admitted worker.
-        // It executes inside the same cgroup before any repository code can run.
-        let mut command = Command::new("/usr/bin/env");
-        command.args(["-i", "LC_ALL=C", "LANG=C"]).arg(&profile.worker.path)
-            .current_dir(&job.identity.root).arg("--migration-job-1").arg(&artifact_dir);
+        if open_private(&artifact_dir, true).is_err() {
+            let _ = fs::remove_dir(&artifact_dir);
+            return Err(Refusal::Denied("attempt directory inherited unsafe permissions"));
+        }
+        #[cfg(target_os = "linux")]
+        let run_scope = slophawk_worker_scope::run_guarded;
+        #[cfg(windows)]
+        let run_scope = slophawk_worker_scope::run_guarded_clean;
+        #[cfg(target_os = "linux")]
+        let mut command = {
+            // systemd starts the fixed environment tool inside the worker scope.
+            let mut command = Command::new("/usr/bin/env");
+            command.args(["-i", "LC_ALL=C", "LANG=C"]).arg(&profile.worker.path);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new(&profile.worker.path);
+            crate::runner::controlled_env(&mut command)
+                .map_err(|_| Refusal::Failed("Windows environment unavailable"))?;
+            command
+        };
+        command.current_dir(&job.identity.root).arg("--migration-job-1").arg(&artifact_dir);
         let mut request = Vec::new();
         protocol::write_frame(&mut request, &job).map_err(|_| Refusal::Failed("invalid worker request"))?;
         let started_ms = unix_ms();
         let current = || current_fingerprint(profile_path).as_deref() == Some(fingerprint.as_str());
-        let output = match slophawk_worker_scope::run_guarded(&command, &request,
+        let output = match run_scope(&command, &request,
             slophawk_worker_scope::Limits {
                 stdout: protocol::MAX_TOTAL,
                 stderr: 4096,

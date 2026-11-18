@@ -1,7 +1,7 @@
 //! Executor for the *already admitted* private worker process. No arbitrary argv,
 //! shell fragments, dependency installation, network or implicit Python plugins.
 use crate::admission::read_bounded;
-use crate::protocol::{self, Budget, CargoVariant, Executable, FluxrOperation, Job, Operation};
+use crate::protocol::{self, Budget, CargoVariant, Executable, FluxrOperation, Job, MsvcToolchain, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use slophawk_rust_project_context as cargo_context;
@@ -40,14 +40,35 @@ fn child_capture(mut command: Command, budget: &Budget) -> Result<Capture, Strin
     Ok(Capture { exit: status.code().unwrap_or(-1), stdout, stderr })
 }
 
-fn controlled_env(command: &mut Command) {
+pub(crate) fn controlled_env(command: &mut Command) -> Result<(), String> {
     command.env_clear().env("LC_ALL", "C").env("LANG", "C");
+    #[cfg(windows)]
+    command.env("SystemRoot", windows_directory()?);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_directory() -> Result<PathBuf, String> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
+    let mut text = [0u16; 32768];
+    let length = unsafe { GetSystemWindowsDirectoryW(text.as_mut_ptr(), text.len() as u32) } as usize;
+    if length == 0 || length >= text.len() {
+        return Err("Windows system directory could not be determined".into());
+    }
+    Ok(OsString::from_wide(&text[..length]).into())
 }
 
 /// Exact controlled Cargo environment recipe. Per-attempt scratch paths are
 /// represented by fixed tokens; no inherited variables or network are used.
 pub fn cargo_environment_digest(cargo: &Executable, rustc: &Executable, rustdoc: &Executable) -> String {
-    let representation = serde_json::json!({
+    let representation = cargo_environment(cargo, rustc, rustdoc);
+    protocol::sha256(&serde_json::to_vec(&representation).expect("static cargo environment schema"))
+}
+
+fn cargo_environment(cargo: &Executable, rustc: &Executable, rustdoc: &Executable) -> Value {
+    serde_json::json!({
         "schema": "slophawk/cargo-controlled-environment/2",
         "cargo": cargo,
         "rustc": rustc,
@@ -56,8 +77,24 @@ pub fn cargo_environment_digest(cargo: &Executable, rustc: &Executable, rustdoc:
         "RUSTC": &rustc.path, "RUSTDOC": &rustdoc.path, "CARGO_HOME": "$ATTEMPT/cargo-home",
         "CARGO_TARGET_DIR": "$ATTEMPT/target", "CARGO_NET_OFFLINE": "true",
         "CARGO_INCREMENTAL": "0", "stdin": "null",
-    });
+    })
+}
+
+pub fn cargo_msvc_environment_digest(cargo: &Executable, rustc: &Executable, rustdoc: &Executable,
+    msvc: &MsvcToolchain, target: &str) -> String {
+    let mut representation = cargo_environment(cargo, rustc, rustdoc);
+    representation["schema"] = "slophawk/cargo-controlled-environment/3-msvc".into();
+    representation["PATH"] = "$SYSTEMROOT/System32".into();
+    representation["SystemRoot"] = "$OS_SYSTEM_WINDOWS_DIRECTORY".into();
+    representation["TEMP"] = "$ATTEMPT/temp".into();
+    representation["TMP"] = "$ATTEMPT/temp".into();
+    representation["msvc"] = serde_json::to_value(msvc).expect("MSVC toolchain schema");
+    representation["linker_variable"] = msvc_linker_variable(target).into();
     protocol::sha256(&serde_json::to_vec(&representation).expect("static cargo environment schema"))
+}
+
+fn msvc_linker_variable(target: &str) -> String {
+    format!("CARGO_TARGET_{}_LINKER", target.replace('-', "_").to_ascii_uppercase())
 }
 
 pub fn cargo_binding(root: &str, tool: &Executable, variant: &CargoVariant) -> Result<cargo_context::Binding, String> {
@@ -85,12 +122,21 @@ fn run_cargo(job: &Job, directory: &Path, cargo: &Executable, variant: &CargoVar
     if job.identity.source_sha256 != ledger_digest || job.identity.input_sha256 != ledger_digest {
         return Err("Cargo input ledger differs from source and input binding".into());
     }
-    if !variant.rustc.valid() || !variant.rustdoc.valid() ||
-        variant.environment_sha256 != cargo_environment_digest(cargo, &variant.rustc, &variant.rustdoc) {
+    let environment = match &variant.msvc {
+        None if !cfg!(windows) => cargo_environment_digest(cargo, &variant.rustc, &variant.rustdoc),
+        Some(msvc) if cfg!(windows) && msvc.linker.valid()
+            && matches!(variant.target_triple.as_str(), "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc")
+            && (1..=8).contains(&msvc.library_paths.len())
+            && msvc.library_paths.iter().all(|path|
+                cargo_context::valid_absolute_path(path) && !path.contains(';')) =>
+            cargo_msvc_environment_digest(cargo, &variant.rustc, &variant.rustdoc, msvc, &variant.target_triple),
+        _ => return Err("Cargo toolchain does not match the supported platform".into()),
+    };
+    if !variant.rustc.valid() || !variant.rustdoc.valid() || variant.environment_sha256 != environment {
         return Err("Cargo controlled environment differs from admitted identity".into());
     }
     let mut probe = Command::new(&variant.rustc.path);
-    controlled_env(&mut probe);
+    controlled_env(&mut probe)?;
     probe.arg("-Vv").current_dir(&job.identity.root);
     let report = child_capture(probe, &job.budget)?;
     if report.exit != 0 || protocol::sha256(&report.stdout) != variant.rustc_vv_sha256 {
@@ -118,15 +164,27 @@ fn run_cargo(job: &Job, directory: &Path, cargo: &Executable, variant: &CargoVar
         }
     }
     let mut command = Command::new(&cargo.path);
-    controlled_env(&mut command);
+    controlled_env(&mut command)?;
     command.args(&argv).current_dir(&job.identity.root)
         .env("RUSTC", &variant.rustc.path)
         .env("RUSTDOC", &variant.rustdoc.path)
-        .env("PATH", "/usr/bin:/bin")
         .env("CARGO_NET_OFFLINE", "true")
         .env("CARGO_HOME", directory.join("cargo-home"))
         .env("CARGO_TARGET_DIR", directory.join("target"))
         .env("CARGO_INCREMENTAL", "0");
+    #[cfg(not(windows))]
+    command.env("PATH", "/usr/bin:/bin");
+    #[cfg(windows)]
+    {
+        let msvc = variant.msvc.as_ref().ok_or("MSVC toolchain not admitted")?;
+        let scratch = directory.join("temp");
+        fs::create_dir(&scratch).map_err(|_| "MSVC scratch allocation failed")?;
+        command.env("PATH", windows_directory()?.join("System32"))
+            .env("TEMP", &scratch)
+            .env("TMP", &scratch)
+            .env("LIB", std::env::join_paths(&msvc.library_paths).map_err(|_| "invalid MSVC library paths")?)
+            .env(msvc_linker_variable(&variant.target_triple), &msvc.linker.path);
+    }
     fs::create_dir(directory.join("cargo-home")).map_err(|_| "Cargo scratch allocation failed")?;
     let capture = child_capture(command, &job.budget)?;
     if package.is_none() && (capture.stdout.len() > cargo_context::MAX_METADATA_BYTES
@@ -142,7 +200,7 @@ fn read_declared_source(root: &str, relative: &str, sha: &str) -> Result<PathBuf
         || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..")
         || !protocol::is_sha(sha) { return Err("invalid declared FluxR source path or digest".into()); }
     let path = Path::new(root).join(relative);
-    if fs::canonicalize(&path).map_err(|_| "declared source missing")? != path {
+    if !crate::admission::physical(&path).map_err(|_| "declared source missing")? {
         return Err("FluxR source path is not canonical inside checkout".into());
     }
     let meta = fs::symlink_metadata(&path).map_err(|_| "source unreadable")?;
@@ -252,7 +310,7 @@ pub fn execute(job: &Job, directory: &Path) -> Result<Value, String> {
 pub fn invoke_python(interpreter: &Executable, cwd: &Path, args: &[String],
     budget: &Budget) -> Result<Capture, String> {
     let mut command = Command::new(&interpreter.path);
-    controlled_env(&mut command);
+    controlled_env(&mut command)?;
     command.current_dir(cwd).args(args)
         .env("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
         .env("PYTHONNOUSERSITE", "1")
@@ -262,7 +320,7 @@ pub fn invoke_python(interpreter: &Executable, cwd: &Path, args: &[String],
 }
 
 pub fn python_args(path: &Path, collect: bool) -> Vec<String> {
-    let mut args = vec!["-I", "-m", "pytest", "-p", "pytest_jsonreport",
+    let mut args = vec!["-I", "-B", "-m", "pytest", "-p", "pytest_jsonreport",
         "-p", "no:cacheprovider", "--json-report",
         "--disable-warnings", "--color=no", "--tb=short", "-q"]
         .into_iter().map(str::to_owned).collect::<Vec<_>>();
