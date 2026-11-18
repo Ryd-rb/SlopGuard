@@ -6,6 +6,7 @@
 //! discovery hints, never evidence that no tests exist.
 
 mod digest;
+pub mod import_layers;
 mod project;
 mod receipt;
 
