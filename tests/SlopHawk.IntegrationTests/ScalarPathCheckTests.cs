@@ -127,7 +127,8 @@ public sealed class ScalarPathCheckTests
         Assert.Equal(JsonValueKind.Undefined, stale.Json.ValueKind);
         var plan = await Run("plan", fixture.Spec, fixture.Scratch, build, "graph-on");
         Assert.Equal(1, plan.Exit);
-        Assert.Equal(0, plan.Json.GetProperty("Cases").GetInt32());
+        Assert.StartsWith("path_check_failed:", plan.Error);
+        Assert.Equal(JsonValueKind.Undefined, plan.Json.ValueKind);
     }
 
     [NativeCliFact(scalarWorker: true)]

@@ -130,3 +130,58 @@ fn installed_rust_daemon_starts_reconciles_restarts_and_serves_mcp() {
     assert_eq!(current["committedRevision"], restarted["committedRevision"]);
     assert_ne!(current["epoch"], restarted["epoch"]);
 }
+
+#[test]
+fn installed_rust_daemon_recovers_the_writer_after_process_exit() {
+    let fixture = Fixture::new();
+    let mut first = fixture.command("serve").stdin(Stdio::null()).stdout(Stdio::null())
+        .stderr(Stdio::null()).spawn().unwrap();
+    let before = fixture.await_state("results", |report| report["fileCount"] == 1);
+    first.kill().unwrap();
+    first.wait().unwrap();
+    assert!(!fixture.command("status").output().unwrap().status.success());
+    fixture.request("start");
+    let recovered = fixture.await_state("results", |report| report["fileCount"] == 1);
+    assert_eq!(before["committedRevision"], recovered["committedRevision"]);
+    assert_ne!(before["epoch"], recovered["epoch"]);
+}
+
+#[test]
+fn installed_rust_daemon_publishes_roslyn_findings_through_cli_and_mcp() {
+    let (Ok(host), Ok(worker), Ok(pack)) = (std::env::var("VARO_DOTNET"),
+        std::env::var("VARO_WORKER_DLL"), std::env::var("VARO_REFERENCE_PACK")) else {
+        assert!(std::env::var_os("VARO_REQUIRE_REAL_WORKER").is_none(), "Roslyn fixture needs all three pins");
+        return;
+    };
+    use sha2::{Digest, Sha256};
+    let fixture = Fixture::new();
+    let source = "partial class A { static int F(int x) => x + 1; }";
+    fs::write(fixture.root.join("Source.cs"), source).unwrap();
+    fs::write(fixture.root.join("Duplicate.cs"), source).unwrap();
+    let status = fixture.request("start");
+    let execution = &status["executionProfile"];
+    let policy = PathBuf::from(execution["path"].as_str().unwrap()).with_file_name("native-checkers.json");
+    let pin = |path: &str| json!({"path":path, "sha256":format!("{:X}", Sha256::digest(fs::read(path).unwrap()))});
+    let registration = json!({"version":1,"rootIdentity":execution["rootIdentity"],
+        "context":{"key":"net10-fixture","pythonMinor":12,"rustEdition":"2024","fluxrModule":"fixture",
+            "targetFramework":"net10.0","assemblyName":"Fixture","languageVersion":"CSharp14",
+            "referencePack":pack,"referenceClosureComplete":true,"sourceClosureComplete":true},
+        "worker":{"dotnet":pin(&host),"assembly":pin(&worker)}});
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    serde_json::to_writer(options.open(&policy).unwrap(), &registration).unwrap();
+    let current = fixture.await_state("results", |report| report["checkerReport"]["pairs"]
+        .as_array().is_some_and(|pairs| pairs.iter().any(|pair| pair["classification"] == "exact")));
+    assert_eq!(current["checkerReport"]["workerInvocations"], 2);
+    assert_eq!(tool_result(&fixture.mcp(), 3)["payload"]["checkerReport"], current["checkerReport"]);
+    fs::write(fixture.root.join("Duplicate.cs"), source.replace("+ 1", "+ 2")).unwrap();
+    let replaced = fixture.await_state("results", |report|
+        report["committedRevision"].as_i64() > current["committedRevision"].as_i64() &&
+        report["checkerReport"]["pairs"].as_array().is_some_and(Vec::is_empty));
+    assert!(replaced["checkerReport"]["documents"].as_array().is_some_and(|docs| docs.len() == 2));
+}

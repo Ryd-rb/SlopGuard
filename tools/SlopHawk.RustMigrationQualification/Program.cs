@@ -23,6 +23,8 @@ internal static class Program
             }
             if (args is ["benchmark-resident" or "benchmark-resident-events", var legacy, var native, var scratch])
                 return await ResidentBenchmark.RunAsync(legacy, native, scratch, includeSoak: args[0] == "benchmark-resident");
+            if (args is ["benchmark-rust", var installed, var rustScratch])
+                return await ResidentBenchmark.RunAsync(null, installed, rustScratch, includeSoak: true);
             if (args is ["--measure-managed-handoff", var transitionSpec])
             {
                 var request = Read<ResidentBenchmark.HandoffSpec>(transitionSpec);
@@ -35,6 +37,8 @@ internal static class Program
             }
             if (args is ["benchmark-checker", var oldEngine, var newEngine, var adapter, var checkerScratch])
                 return await CheckerBenchmark.RunAsync(oldEngine, newEngine, adapter, checkerScratch);
+            if (args is ["benchmark-rust-checker", var checker, var worker, var rustCheckerScratch])
+                return await CheckerBenchmark.RunAsync(null, checker, worker, rustCheckerScratch);
             if (args is ["--measure-checker", var checkerSpec])
             {
                 var request = Read<CheckerBenchmark.Work>(checkerSpec);
@@ -55,7 +59,8 @@ internal static class Program
             Console.Error.WriteLine("Usage: qualification sample <spec.json> <capture.json> | " +
                 "qualify <evidence.json> <receipt.json> <report.json> | " +
                 "benchmark-resident|benchmark-resident-events <legacy> <native> <new-scratch> | " +
-                "benchmark-checker <legacy> <native> <fixture-dll> <new-scratch>");
+                "benchmark-rust <slophawk> <new-scratch> | " +
+                "benchmark-rust-checker <slophawk> <fixture-dll> <new-scratch>");
             return 2;
         }
         catch (Exception ex) when (ex is IOException or JsonException or ArgumentException or

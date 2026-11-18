@@ -6,7 +6,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::{
-    GENERIC_ALL, GENERIC_WRITE, LocalFree,
+    GENERIC_ALL, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{ConvertSidToStringSidW,
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT};
@@ -17,7 +17,8 @@ use windows_sys::Win32::Security::{
     WinBuiltinAdministratorsSid, WinCreatorOwnerRightsSid, WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateDirectoryW, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+    CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
     FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
@@ -75,7 +76,7 @@ fn current_user() -> io::Result<Vec<usize>> {
     Ok(buffer)
 }
 
-pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
+fn with_owner_security<T>(directory: bool, action: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>) -> io::Result<T> {
     let buffer = current_user()?;
     // The token SID points into the live, aligned token-information buffer.
     let user = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
@@ -88,7 +89,8 @@ pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
     let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, length) });
     unsafe { LocalFree(sid_text.cast()); }
     let sid = sid.map_err(io::Error::other)?;
-    let sddl: Vec<u16> = format!("O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+    let inheritance = if directory { "OICI" } else { "" };
+    let sddl: Vec<u16> = format!("O:{sid}D:P(A;{inheritance};FA;;;{sid})(A;{inheritance};FA;;;SY)(A;{inheritance};FA;;;BA)")
         .encode_utf16().chain([0]).collect();
     let mut descriptor = Descriptor(null_mut());
     if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(),
@@ -97,11 +99,31 @@ pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
     }
     let attributes = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor.0, bInheritHandle: 0 };
+    action(&attributes)
+}
+
+pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
     let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
-    if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    with_owner_security(true, |attributes| {
+        if unsafe { CreateDirectoryW(name.as_ptr(), attributes) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    })
+}
+
+pub(super) fn create_private_file(path: &Path) -> io::Result<File> {
+    let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?.canonicalize()?;
+    let physical = parent.join(path.file_name().ok_or(io::ErrorKind::InvalidInput)?);
+    let name: Vec<u16> = physical.as_os_str().encode_wide().chain([0]).collect();
+    with_owner_security(false, |attributes| {
+        let handle = unsafe { CreateFileW(name.as_ptr(), GENERIC_WRITE, 0, attributes,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, null_mut()) };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { File::from_raw_handle(handle) })
+    })
 }
 
 fn owner_and_dacl(file: &File, private: bool) -> io::Result<()> {

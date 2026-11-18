@@ -131,6 +131,10 @@ jobs:
           set -euo pipefail
           exec > >(tee "$RUNNER_TEMP/slophawk-linux-release.log") 2>&1
           artifacts="$RUNNER_TEMP/voda-dotnet"
+          export VARO_DOTNET="$(readlink -f "$(command -v dotnet)")"
+          export VARO_WORKER_DLL="$artifacts/bin/SlopHawk.Providers.CSharp.Worker/debug/SlopHawk.Providers.CSharp.Worker.dll"
+          export VARO_REFERENCE_PACK="$(find "$(dirname "$VARO_DOTNET")/packs/Microsoft.NETCore.App.Ref" -path '*/ref/net10.0' -type d | sort -V | tail -n 1)"
+          export VARO_REQUIRE_REAL_WORKER=1
           cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml -- --test-threads=1
           cargo +1.99.1 build --release --locked --manifest-path rust/frontends/public-shell/Cargo.toml
           dotnet build SlopHawk.slnx --artifacts-path "$artifacts"
@@ -146,6 +150,24 @@ jobs:
         with:
           name: linux-rust-release
           path: ${{ runner.temp }}/slophawk-linux-release.log
+          if-no-files-found: ignore
+      - name: Measure the installed Rust process trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/voda-dotnet"
+          dotnet build tools/SlopHawk.RustMigrationQualification/SlopHawk.RustMigrationQualification.csproj -c Release --artifacts-path "$artifacts"
+          tool="$artifacts/bin/SlopHawk.RustMigrationQualification/release/SlopHawk.RustMigrationQualification"
+          "$tool" benchmark-rust-checker "$CARGO_TARGET_DIR/release/slophawk" "$artifacts/bin/SlopHawk.WorkerFixture/debug/SlopHawk.WorkerFixture.dll" "$RUNNER_TEMP/rust-checker"
+          "$tool" benchmark-rust "$CARGO_TARGET_DIR/release/slophawk" "$RUNNER_TEMP/rust-resident"
+      - name: Retain Rust process-tree measurements
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: linux-rust-process-trees
+          path: |
+            ${{ runner.temp }}/rust-checker/*.json
+            ${{ runner.temp }}/rust-resident/*.json
           if-no-files-found: ignore
 
   windows:
@@ -167,8 +189,6 @@ jobs:
           $artifacts = Join-Path $env:RUNNER_TEMP 'slophawk-dotnet'
           rustup toolchain install 1.99.1 --profile minimal
           Check
-          cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml -- --test-threads=1
-          Check
           cargo +1.99.1 build --release --locked --manifest-path rust/frontends/public-shell/Cargo.toml
           Check
           dotnet build SlopHawk.slnx --artifacts-path $artifacts
@@ -181,9 +201,35 @@ jobs:
               Where-Object { $_.Name -like '10.*' } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
           $env:VARO_REFERENCE_PACK = Join-Path $ref.FullName 'ref/net10.0'
           $env:VARO_REQUIRE_REAL_WORKER = '1'
+          cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml -- --test-threads=1
+          Check
           cargo +1.99.1 test --locked --manifest-path rust/native-checks/Cargo.toml -- --test-threads=1
           Check
           cargo +1.99.1 test --locked --manifest-path rust/runtime/worker-scope/Cargo.toml -- --test-threads=1
           Check
           dotnet test SlopHawk.slnx --no-build --artifacts-path $artifacts --logger 'console;verbosity=normal' -- xUnit.MaxParallelThreads=2
           Check
+      - name: Measure the installed Rust process trees
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Check { if ($LASTEXITCODE -ne 0) { throw "Failed with exit code $LASTEXITCODE" } }
+          $artifacts = Join-Path $env:RUNNER_TEMP 'slophawk-dotnet'
+          $binary = Join-Path $env:RUNNER_TEMP 'slophawk-target/release/slophawk.exe'
+          dotnet build tools/SlopHawk.RustMigrationQualification/SlopHawk.RustMigrationQualification.csproj -c Release --artifacts-path $artifacts
+          Check
+          $tool = Join-Path $artifacts 'bin/SlopHawk.RustMigrationQualification/release/SlopHawk.RustMigrationQualification.exe'
+          $adapter = Join-Path $artifacts 'bin/SlopHawk.WorkerFixture/debug/SlopHawk.WorkerFixture.dll'
+          & $tool benchmark-rust-checker $binary $adapter (Join-Path $env:RUNNER_TEMP 'rust-checker')
+          Check
+          & $tool benchmark-rust $binary (Join-Path $env:RUNNER_TEMP 'rust-resident')
+          Check
+      - name: Retain Rust process-tree measurements
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: windows-rust-process-trees
+          path: |
+            ${{ runner.temp }}/rust-checker/*.json
+            ${{ runner.temp }}/rust-resident/*.json
+          if-no-files-found: ignore

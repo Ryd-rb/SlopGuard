@@ -11,7 +11,7 @@ internal static class CheckerBenchmark
     internal sealed record Work(string Binary, string BinaryDigest, string Adapter, string AdapterDigest,
         string Input, string InputDigest, string Workspace, string Receipt);
 
-    internal static async Task<int> RunAsync(string managed, string native, string adapter, string scratch)
+    internal static async Task<int> RunAsync(string? managed, string native, string adapter, string scratch)
     {
         scratch = Path.GetFullPath(scratch);
         if (Path.Exists(scratch)) throw new IOException("Checker benchmark requires a new evidence directory.");
@@ -23,7 +23,8 @@ internal static class CheckerBenchmark
         var platform = OperatingSystem.IsWindows() ? "windows" : "linux";
         var controller = ResidentBenchmark.ControllerPath();
         var complete = true;
-        foreach (var (engine, executable) in new[] { ("legacy", managed), ("native", native) })
+        (string, string)[] engines = managed is null ? [("native", native)] : [("legacy", managed), ("native", native)];
+        foreach (var (engine, executable) in engines)
         {
             var binary = Path.GetFullPath(executable);
             var root = Directory.CreateDirectory(Path.Combine(scratch, engine)).FullName;

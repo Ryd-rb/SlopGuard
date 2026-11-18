@@ -352,14 +352,13 @@ fn validate_snapshot(value: &Snapshot, root: &str, minimum_revision: i64, policy
 }
 
 pub(crate) fn create_bound(path: &Path, data: &[u8]) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
     #[cfg(unix)]
-    {
+    let mut file = {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
+        OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?
+    };
+    #[cfg(windows)]
+    let mut file = slophawk_language_execution::create_owner_file(path)?;
     file.write_all(data)?;
     file.sync_all()?;
     #[cfg(unix)]

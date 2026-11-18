@@ -13,11 +13,11 @@ internal static class ResidentBenchmark
     private sealed record HandoffReceipt(double ElapsedMilliseconds, string BeforeEpoch, string AfterEpoch,
         long BeforeCommittedRevision, long AfterCommittedRevision);
 
-    internal static async Task<int> RunAsync(string legacy, string native, string scratch, bool includeSoak)
+    internal static async Task<int> RunAsync(string? legacy, string native, string scratch, bool includeSoak)
     {
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
             throw new IOException("Resident process-tree measurement requires Windows or Linux.");
-        legacy = Path.GetFullPath(legacy);
+        legacy = legacy is null ? null : Path.GetFullPath(legacy);
         native = Path.GetFullPath(native);
         scratch = Path.GetFullPath(scratch);
         if (Directory.Exists(scratch) || File.Exists(scratch))
@@ -35,33 +35,40 @@ internal static class ResidentBenchmark
         var commit = (await Git("rev-parse", "HEAD")).Trim();
         var report = Path.Combine(root, ".slophawk", "results.json");
         var platform = OperatingSystem.IsWindows() ? "windows" : "linux";
-        var managedDigest = Digest(legacy);
+        var managedDigest = legacy is null ? null : Digest(legacy);
         var nativeDigest = Digest(native);
         var profile = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         var captures = new List<SampleCapture>();
-        // Seed the equivalent existing inventory before timing a cold daemon launch.
-        var seed = new SampleSpec(1, platform, "legacy", "seed", legacy, managedDigest,
-            ["serve", "--root", root], root, 1500, 60, null, null);
-        var seeded = await Sampler.CaptureAsync(seed, ready: async () => _ = await WaitForReport(report, item => Ready(item, null, "baseline")));
-        if (!seeded.ScopeComplete) throw new IOException("Could not establish the baseline inventory in an authenticated scope.");
-
-        await Measure("legacy", legacy, managedDigest, ["serve", "--root", root], []);
-        await MeasureHandoff("legacy", legacy, managedDigest);
-        MigrationStateBridge.TransferToNative(workspace, native, nativeDigest, profile, "resident-benchmark");
-        var nativeAuthorityReturned = false;
-        try
+        if (legacy is null)
         {
-            var state = MigrationStateBridge.ReadNativeStateDirectory(workspace, nativeDigest, profile);
-            await Measure("native", native, nativeDigest, ["--native-resident-v1", root, state, profile],
-                ["--native-workspace-v1", root, state, profile]);
-            await MeasureHandoff("native", native, nativeDigest);
-            MigrationStateBridge.RequireLegacyWriter(workspace);
-            nativeAuthorityReturned = true;
+            await Measure("native", native, nativeDigest, ["serve", "--root", root], []);
         }
-        finally
+        else
         {
-            if (!nativeAuthorityReturned && HasNativeAuthority(workspace))
-                MigrationStateBridge.RollbackToLegacy(workspace, native, nativeDigest, profile, "resident-benchmark");
+            // Seed the previous inventory for the historical transfer workload.
+            var seed = new SampleSpec(1, platform, "legacy", "seed", legacy, managedDigest!,
+                ["serve", "--root", root], root, 1500, 60, null, null);
+            var seeded = await Sampler.CaptureAsync(seed, ready: async () => _ = await WaitForReport(report, item => Ready(item, null, "baseline")));
+            if (!seeded.ScopeComplete) throw new IOException("Could not establish the baseline inventory in an authenticated scope.");
+
+            await Measure("legacy", legacy, managedDigest!, ["serve", "--root", root], []);
+            await MeasureHandoff("legacy", legacy, managedDigest!);
+            MigrationStateBridge.TransferToNative(workspace, native, nativeDigest, profile, "resident-benchmark");
+            var nativeAuthorityReturned = false;
+            try
+            {
+                var state = MigrationStateBridge.ReadNativeStateDirectory(workspace, nativeDigest, profile);
+                await Measure("native", native, nativeDigest, ["--native-resident-v1", root, state, profile],
+                    ["--native-workspace-v1", root, state, profile]);
+                await MeasureHandoff("native", native, nativeDigest);
+                MigrationStateBridge.RequireLegacyWriter(workspace);
+                nativeAuthorityReturned = true;
+            }
+            finally
+            {
+                if (!nativeAuthorityReturned && HasNativeAuthority(workspace))
+                    MigrationStateBridge.RollbackToLegacy(workspace, native, nativeDigest, profile, "resident-benchmark");
+            }
         }
 
         Program.Write(Path.Combine(scratch, "resident-summary.json"), new
@@ -79,7 +86,7 @@ internal static class ResidentBenchmark
             var controller = ControllerPath();
             var receipt = Path.Combine(scratch, $"{platform}-{engine}-handoff.json");
             var request = Path.Combine(scratch, $"{platform}-{engine}-handoff-spec.json");
-            Program.Write(request, new HandoffSpec(engine, root, legacy, managedDigest, native, nativeDigest, profile, commit, count, receipt));
+            Program.Write(request, new HandoffSpec(engine, root, legacy!, managedDigest!, native, nativeDigest, profile, commit, count, receipt));
             var sample = new SampleSpec(1, platform, engine, "rollback", executable, digest, [], root, 12_000, 100, null, null);
             var capture = await Sampler.CaptureAsync(sample, workload: AwaitReceipt,
                 controller: new SampleController(controller, Digest(controller), ["--measure-managed-handoff", request]));

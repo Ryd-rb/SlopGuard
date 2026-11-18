@@ -112,6 +112,15 @@ fn authorized_marker(state: &Path, root: &Path) -> io::Result<Marker> {
     ordinary_marker(state, root)?.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "run slophawk start first"))
 }
 
+pub fn writer_is_available(root: &Path, state: &Path) -> io::Result<bool> {
+    let marker = authorized_marker(state, &directory(root)?)?;
+    match writer_lock(state, &marker.epoch, Duration::ZERO) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 fn adopt(path: &Path, state: &Path, root: &Path, previous: Marker) -> io::Result<()> {
     // An already running Rust daemon retains its writer. With no holder,
     // validate the old snapshot before allowing future binary upgrades.

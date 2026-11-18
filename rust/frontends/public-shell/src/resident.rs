@@ -411,6 +411,11 @@ fn start(
     match client.command(Command::Status) {
         Ok(reply) => return Ok(reply),
         Err(error) if error.code == "daemon_unavailable" => (),
+        Err(error) if error.code == "daemon_io" => {
+            let available = crate::migration::native_start::writer_is_available(root, state)
+                .map_err(|e| failure("invalid_state", e))?;
+            if !available { return Err(error); }
+        }
         Err(error) => return Err(error),
     }
     let mut child =
@@ -419,7 +424,7 @@ fn start(
     loop {
         match client.command(Command::Status) {
             Ok(reply) => return Ok(reply),
-            Err(error) if error.code == "daemon_unavailable" => (),
+            Err(error) if matches!(error.code.as_str(), "daemon_unavailable" | "daemon_io") => (),
             Err(error) => return Err(error),
         }
         if child.exited().map_err(|e| failure("failed_launch", e))? {

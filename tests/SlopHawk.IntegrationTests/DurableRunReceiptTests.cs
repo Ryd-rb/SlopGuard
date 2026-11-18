@@ -1,7 +1,9 @@
 using Microsoft.Data.Sqlite;
 using SlopHawk.Daemon;
 using System.Diagnostics;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text.Json;
 using Xunit;
 
@@ -13,6 +15,19 @@ public sealed partial class WorkspaceTests
     public async Task RustImportRetainsPendingIntentsAndReceiptsWithoutChangingSqlite()
     {
         await using var fixture = new Fixture(useDefaultState: true);
+        if (OperatingSystem.IsWindows())
+        {
+            // Elevated Windows runners can default the directory owner to Administrators.
+            // This fixture represents a user-owned inventory.
+            using var user = WindowsIdentity.GetCurrent();
+            var acl = new DirectorySecurity();
+            acl.SetOwner(user.User!);
+            acl.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            acl.AddAccessRule(new FileSystemAccessRule(user.User!, FileSystemRights.FullControl,
+                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                PropagationFlags.None, AccessControlType.Allow));
+            new DirectoryInfo(fixture.Workspace.StateDirectory).Create(acl);
+        }
         var (store, attempt, work, selection) = PrepareReceiptAttempt(fixture);
         store.Finish(attempt, TestOutcome.Passed, work, selection, DateTimeOffset.UtcNow,
             () => false, Receipt(attempt));
