@@ -2,8 +2,11 @@
 
 This standalone library ports the pretokenized `TokenCloneIndex.Upsert`, `Delete`, and
 `Query` behavioral surface at pinned SlopHawk commit
-`978a6464a6e5013fb1ad3a56c4e2877e62c18ac4`. It does **not** parse code, search
-near clones, persist indexes, launch providers, or integrate with the daemon. The
+`978a6464a6e5013fb1ad3a56c4e2877e62c18ac4`. The current native checker calls the
+v1 index; the historical pilot description is not its current wiring status.
+The separate `query_near_misses` API below is opt-in and has no native report or
+scheduler wiring. This crate does not parse code, persist indexes or launch
+providers. The
 reference is the [C# implementation and harness at commit `7196845`](https://github.com/Ryd-rb/SlopHawk/tree/71968455a60a716bd4cc46ecf4e210b0410f9860).
 
 ## Surface and identity
@@ -27,6 +30,122 @@ reference is the [C# implementation and harness at commit `7196845`](https://git
   query scratch are bounded by supplied document count, per-block token maximum,
   bucket caps, candidate/output limits, and the compared-token budget. A wholly
   in-memory map remains part of the pilot; no resident-memory guarantee is implied.
+
+## Opt-in bounded near misses
+
+`TokenCloneIndex::query_near_misses(NearMissOptions, NearMissLimits)` returns a
+`NearMissQueryResult`; the new public types live in `near_miss`. It borrows the
+existing index and rebuilds temporary candidates for each call. The existing
+`query`, match classes, IDs, fingerprints, defaults, budgets, ordering, parity
+adapter and replacement/deletion logic are unchanged. A near query consumes
+only its own limits and never updates the index.
+
+This is a whole-block syntactic predicate over the **existing v1 normalized
+typed tokens**. Let `m,n` be the block lengths and `L` their longest common
+subsequence length. Insertion/deletion distance is `D = m+n-2L`; insertion and
+deletion cost one, replacement costs two, and transposition is not a primitive.
+Similarity is `2L/(m+n)`, matching the aligned-token score in `docs/checkers.md`.
+Acceptance uses integer arithmetic:
+
+```text
+0 < D <= min(maximum_edits, floor((100 - minimum_similarity_percent) * (m+n) / 100))
+```
+
+The default near profile is 80 percent and at most 64 edits. These are tuning
+choices, not measured accuracy or latency guarantees. Distance-zero exact or
+renamed pairs stay in v1's domain, even when a v1 posting cap hid them. Changing
+a bound identifier, literal, operator or token kind is never normalized away;
+it can still be an accepted nonzero edit. A near match does not prove equivalent
+behavior, safe refactoring, a shared defect or actionable duplication.
+
+Only locals normalize to first-occurrence ordinals. Inserting an earlier new
+local can shift other ordinals and cause a miss. The result explicitly lists
+unsupported semantic equivalence, provider classification validation, renaming
+invariance across edits, sub-block source locations and language/context
+partitioning. The caller must partition inputs and preserve provider frontiers.
+
+### Candidates and ordered confirmation
+
+Admit metadata-bounded blocks in .NET UTF-16 ordinal `(document_id, block_id)`
+order. Token and token-byte budgets stop at the first block that will not fit;
+they do not partially index that block. Intern typed atoms across this admitted
+snapshot, preserving exact text and local ordinals as separate values. Rank
+normalized atoms by increasing admitted-block document frequency, then by their
+deterministic atom ID. Rebuild frequencies and rank on each query.
+
+For integer threshold `theta`, nonempty block length `m` and edit bound `E`, use
+`r = max(m.saturating_sub(E), ceil(theta*m/(200-theta)))`. Sort token occurrences
+by the shared rank and index their first `m-r+1` occurrences. Preserve
+multiplicity until after prefix selection, then deduplicate each block's posting.
+Any accepted pair has multiset overlap at least its LCS, and its LCS is at least
+each block's `r`; disjoint prefixes would contradict that bound. This is a
+necessary candidate condition before caps, not a score or final match decision.
+
+Suppress an entire prefix posting when it exceeds its cap; other shared prefix
+atoms may still retrieve the pair. Enumerate postings by `(frequency, atom ID)`,
+bound all posting-pair visits including duplicates, and retain bounded distinct
+candidate key pairs. Verification visits those pairs in source-key order.
+Length difference is a necessary distance filter. Compact two-row diagonal-band
+DP then computes the exact minimum distance within the cutoff, maximizing exact
+token matches among equally short normalized alignments. Boundary/initialized
+cells consume the cell budget; exhaustion is distinct from proven rejection.
+
+Each accepted pair reports both original whole-block locations, versions and
+lengths, distance, normalized aligned count, maximum exact aligned count and
+score. No token-to-source edit mapping is inferred. The pair namespace is
+`sg10.token-near-misses.v1`; UTF-16 length framing and endpoint ordering match
+v1's conventions. The result separately names the unchanged v1 normalization.
+Same-document overlapping half-open spans are excluded and counted; disjoint
+same-document blocks are allowed. Other nested duplicates are not collapsed.
+
+### Bounds and incomplete results
+
+| Limit | Default | What is bounded |
+| --- | ---: | --- |
+| `maximum_blocks` | 4096 | Retained/admitted eligible block references |
+| `maximum_tokens` | 262144 | Copied token occurrences across admitted blocks |
+| `maximum_token_bytes` | 16777216 | Exact UTF-8 token bytes, counting repeated occurrences |
+| `maximum_metadata_bytes_per_block` | 16384 | Document ID, version and block ID bytes combined |
+| `maximum_postings_per_token` | 64 | Prefix posting membership before whole-bucket suppression |
+| `maximum_posting_visits` | 100000 | Posting pair visits, including duplicates |
+| `maximum_candidate_pairs` | 20000 | Stored distinct nominated pairs, before other exclusions |
+| `maximum_alignment_cells` | 2000000 | Total active DP cells, including initialization |
+| `maximum_output_pairs` | 1000 | Returned pairs |
+
+Every limit must be positive; zero returns `InvalidLimits`. Percentages outside
+1..=100 or zero maximum edits return `InvalidSettings`. A 100-percent query is
+valid and returns no positive-distance matches. Whole-block oversized metadata
+and index-oversized blocks are summarized separately. Generated, excluded and
+below-minimum inputs are policy exclusions with visible counts.
+
+`is_truncated()` means a recorded scope/budget gap exists. Gap counts for
+oversized blocks, metadata exclusions, unselected blocks and suppressed buckets
+are exact counts of those objects. Other counts denote an encountered frontier,
+not an estimate of all missed pairs. Suppression can be conservative: another
+seed may recover a pair, or unvisited work may only duplicate known candidates.
+An empty truncated result is not evidence that no qualifying pair exists.
+
+Selection still scans all stored document/block metadata. `maximum_blocks`
+bounds retained references, not catalog-scan time or the pre-existing index.
+After admission, scratch memory is linear in the admitted tokens/blocks plus
+capped candidates, output and a band of at most `2*cutoff+1` cells per row.
+Token bytes bound string comparisons during interning; metadata bytes bound
+key comparisons and owned result strings. DP uses integer atom IDs. Initialization
+clears only the active band. These are finite input/operation bounds, not a
+wall-clock deadline, allocation-success promise or resident-memory measurement.
+
+Returned pairs sort by decreasing exact rational similarity, then decreasing
+combined token length, then UTF-16 pair ID. The output cap applies during source
+pair visitation, before this final sort: results are **not a global top-K**.
+Caps can change which pairs are admitted; increasing one cap does not guarantee
+a result superset under other fixed caps. Repeated queries, input permutations
+and cold reconstruction with identical contents and limits are deterministic.
+
+Provider/report/scheduler opt-in wiring, literal bucketing, sub-block refinement,
+maximal-span collapse, cancellation and durable posting maintenance are separate
+integration work. The native checker currently still reports near support as
+unsupported. Draft regressions are in `tests/near_miss.rs`; semantic validation
+and performance measurements are owner-side work.
 
 ## Run with Rust 1.99.1
 
@@ -105,10 +224,10 @@ median and p95, phase and PSS, and separate toolchain/measurement gaps.
 The Rust type system excludes C# `null`, undefined `CloneTokenKind` enum integers
 and ill-formed UTF-16 strings; malformed UTF-16 `.NET string` serialization is
 not represented by a Rust `String`. The integer settings accept Rust `usize`
-counts; the API validates all values that have C# equivalents. This pilot
-intentionally has no persistence, IPC, providers, overlap/near-match search,
-or daemon integration. Whole-block parity and native measurements must be
-verified before promoting it beyond this proof of concept.
+counts; the API validates all values that have C# equivalents. This crate has no
+persistence, IPC or providers. The opt-in near API operates on whole supplied
+blocks; it does not implement sub-block search or add native reporting.
+Whole-block parity and native measurements remain owner validation gates.
 
 ### Golden reference trace
 

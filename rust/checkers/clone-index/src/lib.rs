@@ -1,9 +1,11 @@
 //! A typed, in-memory SG-10 pretokenized whole-block index.
 //!
-//! This crate intentionally does not tokenize source, discover near clones, persist indexes,
-//! or start language providers. Writers and readers must be serialized by the caller.
+//! The separate opt-in `near_miss` query adds bounded whole-block Type-3 candidates.
+//! This crate does not tokenize source, persist indexes, or start language providers.
+//! Writers and readers must be serialized by the caller.
 //! Locations retain the provider's zero-based half-open offset convention.
 
+pub mod near_miss;
 mod sha256;
 
 use sha256::Sha256;
