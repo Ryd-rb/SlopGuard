@@ -14,7 +14,8 @@ internal sealed record SampleSpec(int SchemaVersion, string Platform, string Eng
     string? LatencyEventsPath);
 internal sealed record SamplePoint(long SinceStartMilliseconds, int Processes,
     double? PrivateWorkingSetBytes, double? CommitBytes, double? JobPeakBytes,
-    double? PssBytes, double? CgroupPeakBytes, double? LatencyMilliseconds);
+    double? PssBytes, double? CgroupPeakBytes, double? LatencyMilliseconds,
+    double? ControllerResidentBytes = null);
 internal sealed record SampleCapture(string Platform, string Engine, string Scenario, string BinarySha256,
     int ElapsedMilliseconds, bool ScopeComplete, string[] ScopeOmissions, SamplePoint[] Samples,
     string? ScopeControllerSha256 = null);
@@ -57,6 +58,7 @@ internal static partial class Sampler
                     ? ((WindowsJobScope)scope).Members()
                     : LinuxMembers(scope.CgroupPath);
                 double? privateBytes = null, commitBytes = null, jobBytes = null, pssBytes = null, cgroupBytes = null;
+                double? controllerBytes = null;
                 if (OperatingSystem.IsWindows())
                 {
                     privateBytes = 0;
@@ -67,6 +69,8 @@ internal static partial class Sampler
                         var counters = WindowsMetrics(pid);
                         if (counters is null) { countersComplete = false; break; }
                         privateBytes += counters.Value.PrivateWorkingSet;
+                        if (controller is not null && pid == scope.RootPid)
+                            controllerBytes = counters.Value.PrivateWorkingSet;
                         commitBytes += counters.Value.Commit;
                     }
                     jobBytes = scope.ReadJobPeak();
@@ -89,6 +93,7 @@ internal static partial class Sampler
                         var pss = LinuxPss(pid);
                         if (pss is null) { countersComplete = false; break; }
                         pssBytes += pss.Value;
+                        if (controller is not null && pid == scope.RootPid) controllerBytes = pss;
                     }
                     cgroupBytes = LinuxCgroupPeak(scope.CgroupPath);
                     var descendants = LinuxDescendants(scope.RootPid);
@@ -106,7 +111,7 @@ internal static partial class Sampler
                     errors.Add("root_process_or_tree_missing");
                 samples.Add(new SamplePoint(timer.ElapsedMilliseconds, roots.Count,
                     privateBytes, commitBytes, jobBytes, pssBytes, cgroupBytes,
-                    recordedLatencies.Count > samples.Count ? recordedLatencies[samples.Count] : null));
+                    recordedLatencies.Count > samples.Count ? recordedLatencies[samples.Count] : null, controllerBytes));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception or FormatException)
             {

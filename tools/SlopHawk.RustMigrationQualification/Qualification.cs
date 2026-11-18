@@ -254,6 +254,9 @@ internal static class Qualification
                 (engine == "legacy" && c.BinarySha256 != legacyBinarySha256) ||
                 (scenario == "idle-5m" && c.ElapsedMilliseconds < 300_000) ||
                 c.Samples.Any(s => s is null || s.Processes < 1 || s.LatencyMilliseconds is < 0 ||
+                    (scenario == "checker" && c.ScopeControllerSha256 is not null &&
+                        (!Digest(c.ScopeControllerSha256) || s.ControllerResidentBytes is null or < 0 ||
+                         s.ControllerResidentBytes > (s.PrivateWorkingSetBytes ?? s.PssBytes))) ||
                     (platform == "windows" && (s.PrivateWorkingSetBytes is null || s.CommitBytes is null || s.JobPeakBytes is null)) ||
                     (platform == "linux" && (s.PssBytes is null || s.CgroupPeakBytes is null)))) )
             {
@@ -262,6 +265,12 @@ internal static class Qualification
             }
         }
         if (!all) return false;
+        var checkerCaptures = captures.Where(c => c.Platform == platform && c.Scenario == "checker").ToArray();
+        if (checkerCaptures[0].ScopeControllerSha256 != checkerCaptures[1].ScopeControllerSha256)
+        {
+            reasons.Add("The two checker captures used different measurement controllers.");
+            return false;
+        }
         foreach (var engine in new[] { "legacy", "native" })
         {
             var latencyCount = captures.Where(c => c.Engine == engine && c.Platform == platform)
@@ -283,7 +292,9 @@ internal static class Qualification
             var idle = captures.Single(c => c.Scenario == "idle-5m" && c.Engine == engine && c.Platform == platform);
             metrics[engine + ".idle.bytes"] = Median(idle.Samples.Select(Resident));
             var checker = captures.Single(c => c.Engine == engine && c.Platform == platform && c.Scenario == "checker");
-            metrics[engine + ".checkerPeak.bytes"] = checker.Samples.Max(Resident);
+            metrics[engine + ".checkerScopePeak.bytes"] = checker.Samples.Max(Resident);
+            metrics[engine + ".checkerPeak.bytes"] = checker.Samples.Max(point => Resident(point) -
+                (checker.ScopeControllerSha256 is null ? 0 : point.ControllerResidentBytes!.Value));
             var events = captures.Where(c => c.Engine == engine && c.Platform == platform).SelectMany(c => c.Samples)
                 .Where(s => s.LatencyMilliseconds is not null).Select(s => s.LatencyMilliseconds!.Value).ToArray();
             metrics[engine + ".p95.ms"] = Percentile(events, 0.95);

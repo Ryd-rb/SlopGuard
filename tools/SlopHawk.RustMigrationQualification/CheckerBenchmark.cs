@@ -34,12 +34,13 @@ internal static class CheckerBenchmark
             var spec = new SampleSpec(1, platform, engine, "checker", binary, work.BinaryDigest, [], root, 18_000, 40, null, null);
             var sample = await Sampler.CaptureAsync(spec, workload: ReadRuns,
                 controller: new SampleController(controller, Digest(controller), ["--measure-checker", request]));
-            if (!sample.Samples.Any(item => item.Processes >= 3))
-                sample = sample with { ScopeComplete = false, ScopeOmissions = [.. sample.ScopeOmissions, "checker_processes_not_observed"] };
+            if (!sample.Samples.Any(item => item.Processes >= 3) || sample.Samples.Any(item => item.ControllerResidentBytes is null))
+                sample = sample with { ScopeComplete = false, ScopeOmissions = [.. sample.ScopeOmissions, "checker_or_controller_not_observed"] };
             Program.Write(Path.Combine(scratch, $"{platform}-{engine}-checker.json"), sample);
             complete &= sample.ScopeComplete;
             var peak = sample.Samples.Max(item => item.PrivateWorkingSetBytes ?? item.PssBytes);
-            Console.WriteLine($"{engine}/checker scopeComplete={sample.ScopeComplete} peakResidentBytes={peak}");
+            var appPeak = sample.Samples.Max(item => (item.PrivateWorkingSetBytes ?? item.PssBytes) - item.ControllerResidentBytes);
+            Console.WriteLine($"{engine}/checker scopeComplete={sample.ScopeComplete} checkerPeakBytes={appPeak} scopePeakResidentBytes={peak}");
 
             async Task<IReadOnlyList<double>> ReadRuns()
             {

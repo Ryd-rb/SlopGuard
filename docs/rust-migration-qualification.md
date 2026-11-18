@@ -190,6 +190,10 @@ engines and include their worker scopes.
 the same managed batch adapter through each public foreground `check` route.
 Windows samples nested Job membership. Linux places the checker and the
 independently supervised adapter service in one measured user slice.
+Samples retain the raw scope total and the resident bytes of the separately
+pinned measurement controller. The checker peak compares the application
+tree with that controller's bytes excluded. Adapter processes and their
+descendants remain in scope. Job and cgroup peaks cover the full scope.
 Owner harnesses must prepare a stable checkout/rule/policy/toolchain/fixture
 closure and run matched cold, warm, **five-minute idle**, single edits,
 **100-file burst**, branch switches and native-to-managed rollback, on **both
