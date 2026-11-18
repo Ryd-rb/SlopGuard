@@ -149,7 +149,8 @@ owner-built exact binaries. Every matrix cell has a distinct `id`, command,
 provider, workflow, format, legacy/native artifact paths and explicit statuses.
 Both statuses must be `complete` and results must compare exactly after removing
 only `$.timing.startedUtc`, `$.timing.elapsedMs`, `$.telemetry.pid`, and
-`$.telemetry.sampleUtc`; in TRX the `Times` element's run-level
+`$.telemetry.sampleUtc`. MCP comparisons decode JSON returned as tool text so
+key order and escaping do not affect the comparison. In TRX the `Times` element's run-level
 `creation`, `queuing`, `start` and `finish` attributes are the only XML
 normalizations. All other XML content is compared structurally. The normalizer
 **never** drops durable run IDs, receipt
@@ -178,10 +179,13 @@ qualifier consumes all evidence as
 `benchmark-resident <managed-executable> <native-executable> <new-scratch>`
 captures paired cold startup, single edit, 100-file burst, same-commit branch
 switch, five-minute active idle and warm reconciliation measurements against
-a 100-source Git fixture. `benchmark-resident-events` runs the first four
-scenarios. These commands retain process-scope evidence and end-to-end
-latencies. Rollback and checker-process peak measurements require evidence
-that covers the transition and worker scopes as well.
+a 100-source Git fixture. Both `benchmark-resident` and
+`benchmark-resident-events` also capture a scoped native-to-managed rollback
+and a managed-to-managed restart on the same fixture. The scope includes the
+old writer, migration peer and replacement writer. These commands retain
+process-scope evidence and end-to-end latencies. Checker-process peaks require
+captures named `checker` that admit comparable checker workloads in both
+engines and include their worker scopes.
 Owner harnesses must prepare a stable checkout/rule/policy/toolchain/fixture
 closure and run matched cold, warm, **five-minute idle**, single edits,
 **100-file burst**, branch switches and native-to-managed rollback, on **both

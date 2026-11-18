@@ -134,6 +134,7 @@ fn real_daemon_mcp_projection_is_schema_v2_and_list_checkers_is_empty() {
     let tools: Vec<_> = messages[1]["result"]["tools"].as_array().unwrap()
         .iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(tools, ["workspace_status", "get_findings", "run_checks", "list_checkers"]);
-    assert_eq!(messages[2]["result"]["structuredContent"]["result"], json!([]));
-    assert_eq!(messages[3]["result"]["structuredContent"]["result"]["payload"]["reportSchemaVersion"], 2);
+    assert_eq!(messages[2]["result"], json!({"content":[{"type":"text","text":"[]"}]}));
+    let text = messages[3]["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap()["payload"]["reportSchemaVersion"], 2);
 }

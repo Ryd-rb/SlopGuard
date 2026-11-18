@@ -165,6 +165,8 @@ internal static class Qualification
             {
                 var l = JsonNode.Parse(left) ?? throw new JsonException("Missing legacy JSON.");
                 var r = JsonNode.Parse(right) ?? throw new JsonException("Missing native JSON.");
+                if (format == "mcp.jsonrpc")
+                    DecodeMcpJson(l, r);
                 foreach (var path in MetadataPaths)
                 {
                     RemovePath(l, path);
@@ -179,6 +181,31 @@ internal static class Qualification
             reason = "unsupported or missing artifact: " + ex.Message;
             return false;
         }
+    }
+
+    private static void DecodeMcpJson(JsonNode legacy, JsonNode native)
+    {
+        if (legacy is not JsonObject l || l["result"] is not JsonObject lr || lr["content"] is not JsonArray lc ||
+            native is not JsonObject n || n["result"] is not JsonObject nr || nr["content"] is not JsonArray nc ||
+            lc.Count != nc.Count) return;
+        foreach (var (left, right) in lc.Zip(nc))
+        {
+            if (left is not JsonObject lo || right is not JsonObject ro || JsonText(lo) is not { } ls || JsonText(ro) is not { } rs) continue;
+            try
+            {
+                // Compare the nested JSON independently of harmless object ordering and escaping.
+                // Keep its type, content, array order, and all durable metadata.
+                var leftJson = JsonNode.Parse(ls);
+                var rightJson = JsonNode.Parse(rs);
+                lo["text"] = leftJson;
+                ro["text"] = rightJson;
+            }
+            catch (JsonException) { /* This text was not a JSON-encoded daemon result. */ }
+        }
+
+        static string? JsonText(JsonObject item) => item["type"]?.GetValue<string>() == "text" &&
+            item["text"] is JsonValue value && value.TryGetValue<string>(out var text) &&
+            (text.StartsWith('{') || text.StartsWith('[')) ? text : null;
     }
 
     private static XDocument ReadTrx(byte[] payload)
@@ -217,7 +244,7 @@ internal static class Qualification
         string legacyBinarySha256, Dictionary<string, double> metrics, List<string> reasons)
     {
         var all = true;
-        foreach (var scenario in new[] { "cold", "warm", "idle-5m", "edit", "burst-100", "branch-switch", "rollback" })
+        foreach (var scenario in new[] { "cold", "warm", "idle-5m", "edit", "burst-100", "branch-switch", "rollback", "checker" })
         foreach (var engine in new[] { "legacy", "native" })
         {
             var matches = captures.Where(c => c.Scenario == scenario && c.Engine == engine && c.Platform == platform).ToArray();
@@ -255,9 +282,8 @@ internal static class Qualification
         {
             var idle = captures.Single(c => c.Scenario == "idle-5m" && c.Engine == engine && c.Platform == platform);
             metrics[engine + ".idle.bytes"] = Median(idle.Samples.Select(Resident));
-            var checkers = captures.Where(c => c.Engine == engine && c.Platform == platform &&
-                (c.Scenario is "cold" or "warm" or "edit" or "burst-100" or "branch-switch"));
-            metrics[engine + ".checkerPeak.bytes"] = checkers.Max(c => c.Samples.Max(Resident));
+            var checker = captures.Single(c => c.Engine == engine && c.Platform == platform && c.Scenario == "checker");
+            metrics[engine + ".checkerPeak.bytes"] = checker.Samples.Max(Resident);
             var events = captures.Where(c => c.Engine == engine && c.Platform == platform).SelectMany(c => c.Samples)
                 .Where(s => s.LatencyMilliseconds is not null).Select(s => s.LatencyMilliseconds!.Value).ToArray();
             metrics[engine + ".p95.ms"] = Percentile(events, 0.95);

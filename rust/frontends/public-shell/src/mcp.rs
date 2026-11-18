@@ -57,6 +57,14 @@ pub fn serve<T: Transport, R: BufRead, W: Write>(
         let answer = match method {
             "initialize" => initialize(&mut session, daemon, params, &id),
             "ping" => Ok(json!({"jsonrpc":"2.0","id":id,"result":{}})),
+            "logging/setLevel" if session.ready => {
+                if matches!(params.get("level").and_then(Value::as_str), Some("debug" | "info" |
+                    "notice" | "warning" | "error" | "critical" | "alert" | "emergency")) {
+                    Ok(json!({"jsonrpc":"2.0","id":id,"result":{}}))
+                } else {
+                    Ok(rpc_error(id.clone(), -32602, "Invalid logging level", None))
+                }
+            }
             "tools/list" | "tools/call" if !session.ready =>
                 Ok(rpc_error(id.clone(), -32002, "Server not initialized", None)),
             "tools/list" => {
@@ -91,7 +99,7 @@ fn initialize<T: Transport>(session: &mut Session, daemon: &DaemonClient<T>,
     session.initialized = true;
     Ok(json!({"jsonrpc":"2.0","id":id,"result":{
         "protocolVersion":VERSION,
-        "capabilities":{"tools":{"listChanged":true}},
+        "capabilities":{"logging":{},"tools":{"listChanged":true}},
         "serverInfo":{"name":SERVER_NAME,"version":SERVER_VERSION}
     }}))
 }
@@ -123,13 +131,13 @@ fn projected_tools(handshake: &Handshake) -> Vec<&'static str> {
 fn tool_spec(name: &str) -> Value {
     let (description, read_only) = match name {
         "workspace_status" => ("Read source reconciliation and test scheduling status.", true),
-        "get_findings" => ("Read the current validated schema-v2 source inventory.", true),
+        "get_findings" => ("Read the validated source inventory report.", true),
         "run_checks" => ("Queue a full source inventory reconciliation.", false),
-        "list_checkers" => ("List registered checkers (empty in the published preview).", true),
+        "list_checkers" => ("List inspection checkers registered in this version of SlopHawk.", true),
         _ => unreachable!(),
     };
     json!({"name":name,"description":description,
-        "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
+        "inputSchema":{"type":"object","properties":{}},
         "annotations":{"readOnlyHint":read_only}})
 }
 
@@ -149,26 +157,23 @@ fn call<T: Transport, W: Write>(session: &mut Session, daemon: &DaemonClient<T>,
         "workspace_status" => from_daemon(daemon.command(Command::Status)),
         "get_findings" => from_daemon(daemon.command(Command::Results)),
         "run_checks" => from_daemon(daemon.command(Command::Recheck)),
-        "list_checkers" => (json!([]), false), // Published wire 1 has no checker listing command.
+        "list_checkers" => json!([]), // Published wire 1 has no checker listing command.
         _ => unreachable!(),
     };
-    let text = serde_json::to_string(&payload.0).map_err(|e| failure("serialization", e))?;
+    let text = serde_json::to_string(&payload).map_err(|e| failure("serialization", e))?;
     Ok(json!({"jsonrpc":"2.0","id":id,"result":{
-        "content":[{"type":"text","text":text}],
-        "structuredContent":{"result":payload.0},
-        "isError":payload.1
+        "content":[{"type":"text","text":text}]
     }}))
 }
 
-fn from_daemon(reply: Result<DaemonReply>) -> (Value, bool) {
-    match reply {
-        Ok(reply) => {
-            let failed = !reply.ok;
-            (serde_json::to_value(reply).expect("DaemonReply is always JSON serializable"), failed)
-        }
-        Err(error) => (json!({"ok":false,"payload":null,
-            "error":error.message,"code":error.code}), true),
-    }
+fn from_daemon(reply: Result<DaemonReply>) -> Value {
+    let reply = reply.unwrap_or_else(|error| DaemonReply { ok:false, payload:None,
+        error:Some(error.message), code:Some(error.code) });
+    let mut value = json!({"ok":reply.ok});
+    if let Some(payload) = reply.payload { value["payload"] = payload; }
+    if let Some(error) = reply.error { value["error"] = json!(error); }
+    if let Some(code) = reply.code { value["code"] = json!(code); }
+    value
 }
 
 fn rpc_error(id: Value, code: i64, message: &str, tag: Option<&str>) -> Value {
@@ -245,8 +250,7 @@ mod tests {
             .map(|x| serde_json::from_slice(x).unwrap()).collect();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 2);
-        assert_eq!(lines[2]["result"]["structuredContent"]["result"], json!([]));
-        assert_eq!(lines[2]["result"]["isError"], false);
+        assert_eq!(lines[2]["result"], json!({"content":[{"type":"text","text":"[]"}]}));
     }
     #[test]
     fn replaced_daemon_renegotiates_and_notifies_list_changes() {
@@ -287,7 +291,7 @@ mod tests {
         assert_eq!(read_line(&mut input).unwrap_err().code, "mcp_oversize");
     }
     #[test]
-    fn daemon_reply_maps_to_structured_mcp_content_not_stdout_diagnostics() {
+    fn daemon_reply_maps_to_managed_mcp_text_content() {
         let status = json!({"root":"C:\\work","epoch":"e","revision":1,
             "committedRevision":1,"reportSchemaVersion":2,"state":"ready"});
         let wire = Wire(RefCell::new(VecDeque::from(vec![
@@ -305,6 +309,7 @@ mod tests {
         let lines: Vec<Value> = out.split(|b| *b == b'\n').filter(|x| !x.is_empty())
             .map(|x| serde_json::from_slice(x).unwrap()).collect();
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[1]["result"]["structuredContent"]["result"]["payload"]["revision"], 1);
+        let text = lines[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(text).unwrap(), json!({"ok":true,"payload":status}));
     }
 }

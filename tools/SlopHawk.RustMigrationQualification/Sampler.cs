@@ -16,12 +16,14 @@ internal sealed record SamplePoint(long SinceStartMilliseconds, int Processes,
     double? PrivateWorkingSetBytes, double? CommitBytes, double? JobPeakBytes,
     double? PssBytes, double? CgroupPeakBytes, double? LatencyMilliseconds);
 internal sealed record SampleCapture(string Platform, string Engine, string Scenario, string BinarySha256,
-    int ElapsedMilliseconds, bool ScopeComplete, string[] ScopeOmissions, SamplePoint[] Samples);
+    int ElapsedMilliseconds, bool ScopeComplete, string[] ScopeOmissions, SamplePoint[] Samples,
+    string? ScopeControllerSha256 = null);
+internal sealed record SampleController(string Path, string Sha256, string[] Arguments);
 
 internal static partial class Sampler
 {
     internal static async Task<SampleCapture> CaptureAsync(SampleSpec spec, Func<Task>? ready = null,
-        Func<Task<IReadOnlyList<double>>>? workload = null, Action? launching = null)
+        Func<Task<IReadOnlyList<double>>>? workload = null, Action? launching = null, SampleController? controller = null)
     {
         if (spec.SchemaVersion != 1 || (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) ||
             spec.Platform != (OperatingSystem.IsWindows() ? "windows" : "linux") ||
@@ -31,14 +33,18 @@ internal static partial class Sampler
             spec.Arguments is null || spec.Arguments.Length > 64 ||
             (File.GetAttributes(spec.BinaryPath) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
             throw new IOException("The requested sampler scope, paths, platform or duration are invalid.");
-        using (var stream = File.OpenRead(spec.BinaryPath))
-            if (Convert.ToHexString(SHA256.HashData(stream)) != spec.BinarySha256)
-                throw new IOException("Sampler executable differs from the exact release-binary digest.");
+        VerifyExecutable(spec.BinaryPath, spec.BinarySha256);
+        var launch = spec;
+        if (controller is not null)
+        {
+            VerifyExecutable(controller.Path, controller.Sha256);
+            launch = spec with { BinaryPath = controller.Path, BinarySha256 = controller.Sha256, Arguments = controller.Arguments };
+        }
 
         var errors = new HashSet<string>(StringComparer.Ordinal);
         var samples = new List<SamplePoint>();
         launching?.Invoke();
-        using var scope = StartSampleProcess(spec);
+        using var scope = StartSampleProcess(launch);
         if (ready is not null) await ready();
         var timer = Stopwatch.StartNew();
         var execution = workload?.Invoke();
@@ -123,7 +129,17 @@ internal static partial class Sampler
                 samples[index] = samples[index] with { LatencyMilliseconds = events[index] };
         }
         return new SampleCapture(spec.Platform, spec.Engine, spec.Scenario, spec.BinarySha256,
-            (int)timer.ElapsedMilliseconds, errors.Count == 0, errors.Order().ToArray(), samples.ToArray());
+            (int)timer.ElapsedMilliseconds, errors.Count == 0, errors.Order().ToArray(), samples.ToArray(), controller?.Sha256);
+    }
+
+    internal static void VerifyExecutable(string path, string digest)
+    {
+        if (!Path.IsPathFullyQualified(path) || (File.GetAttributes(path) &
+            (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+            throw new IOException("Measurement executable must be a physical absolute file.");
+        using var stream = File.OpenRead(path);
+        if (Convert.ToHexString(SHA256.HashData(stream)) != digest)
+            throw new IOException("Measurement executable differs from its pinned binary digest.");
     }
 
     private static IReadOnlyList<double> ReadLatencies(string? path)

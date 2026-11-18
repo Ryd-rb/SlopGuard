@@ -23,6 +23,16 @@ internal static class Program
             }
             if (args is ["benchmark-resident" or "benchmark-resident-events", var legacy, var native, var scratch])
                 return await ResidentBenchmark.RunAsync(legacy, native, scratch, includeSoak: args[0] == "benchmark-resident");
+            if (args is ["--measure-managed-handoff", var transitionSpec])
+            {
+                var request = Read<ResidentBenchmark.HandoffSpec>(transitionSpec);
+                try { return await ResidentBenchmark.RunHandoffAsync(request); }
+                catch (Exception error) when (error is IOException or OperationCanceledException or InvalidOperationException)
+                {
+                    Write(request.Receipt + ".failed", error.Message);
+                    throw new IOException("Measured writer handoff failed.", error);
+                }
+            }
             if (args is ["qualify", var input, var receipt, var report])
             {
                 var result = Qualification.Evaluate(Read<QualificationInput>(input));

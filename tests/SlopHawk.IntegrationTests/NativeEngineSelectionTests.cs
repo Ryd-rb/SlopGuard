@@ -149,6 +149,7 @@ public sealed class NativeEngineSelectionTests
         var profile = new string('D', 64);
         var source = Path.Combine(home.Workspace.Root, "Source.cs");
         File.WriteAllText(source, "class Before {}\n");
+        var managedMcp = await ManagedMcpDiscovery();
         MigrationStateBridge.TransferToNative(home.Workspace, binary, digest, profile, "native-resident-test");
         try
         {
@@ -166,17 +167,19 @@ public sealed class NativeEngineSelectionTests
                 await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"resident-test","version":"1"}}}""");
                 var ready = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
                 Assert.Equal("2025-11-25", ready["result"]!["protocolVersion"]!.GetValue<string>());
+                Assert.True(JsonNode.DeepEquals(managedMcp.Initialize, ready));
                 await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
                 await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}""");
                 var tools = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
-                Assert.Contains(tools["result"]!["tools"]!.AsArray(), tool => tool!["name"]!.GetValue<string>() == "get_findings");
+                Assert.True(JsonNode.DeepEquals(managedMcp.List, tools));
                 await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_status","arguments":{}}}""");
                 var status = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
-                Assert.False(status["result"]!["isError"]!.GetValue<bool>());
+                Assert.True(ReadToolPayload(status)["ok"]!.GetValue<bool>());
                 await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_checks","arguments":{}}}""");
                 var recheck = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
-                Assert.False(recheck["result"]!["isError"]!.GetValue<bool>());
-                var requested = recheck["result"]!["structuredContent"]!["result"]!["payload"]!["revision"]!.GetValue<long>();
+                var response = ReadToolPayload(recheck);
+                Assert.True(response["ok"]!.GetValue<bool>());
+                var requested = response["payload"]!["revision"]!.GetValue<long>();
                 while (true)
                 {
                     var current = JsonNode.Parse(await Run("status"))!;
@@ -186,8 +189,9 @@ public sealed class NativeEngineSelectionTests
                 }
                 await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_findings","arguments":{}}}""");
                 var findings = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(deadline.Token))!)!;
-                Assert.False(findings["result"]!["isError"]!.GetValue<bool>());
-                Assert.Equal("SlopHawk", findings["result"]!["structuredContent"]!["result"]!["payload"]!["producer"]!.GetValue<string>());
+                var result = ReadToolPayload(findings);
+                Assert.True(result["ok"]!.GetValue<bool>());
+                Assert.Equal("SlopHawk", result["payload"]!["producer"]!.GetValue<string>());
                 mcp.StandardInput.Close();
                 await mcp.WaitForExitAsync(deadline.Token);
                 Assert.Equal(0, mcp.ExitCode);
@@ -214,6 +218,42 @@ public sealed class NativeEngineSelectionTests
         Assert.False(File.Exists(Path.Combine(home.Workspace.Root, ".slophawk", "results.json")));
         using var restored = Open(home.Workspace);
         Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))), Text(restored, "SELECT digest FROM source"));
+
+        static JsonNode ReadToolPayload(JsonNode response) =>
+            JsonNode.Parse(response["result"]!["content"]![0]!["text"]!.GetValue<string>())!;
+
+        async Task<(JsonNode Initialize, JsonNode List)> ManagedMcpDiscovery()
+        {
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var daemon = Task.Factory.StartNew(() => DaemonHost.Run(home.Workspace, stop.Token),
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            try
+            {
+                var connection = new DaemonConnection(home.Workspace);
+                while ((await connection.NegotiateAsync(stop.Token)).Handshake is null)
+                    await Task.Delay(50, stop.Token);
+                var apphost = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "slophawk.exe" : "slophawk");
+                var info = new ProcessStartInfo(apphost) { UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                foreach (var arg in new[] { "mcp", "--root", home.Workspace.Root }) info.ArgumentList.Add(arg);
+                using var mcp = Process.Start(info)!;
+                var errors = mcp.StandardError.ReadToEndAsync(stop.Token);
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"resident-test","version":"1"}}}""");
+                var initialize = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(stop.Token))!)!;
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
+                await mcp.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}""");
+                var list = JsonNode.Parse((await mcp.StandardOutput.ReadLineAsync(stop.Token))!)!;
+                mcp.StandardInput.Close();
+                await mcp.WaitForExitAsync(stop.Token);
+                Assert.True(mcp.ExitCode == 0, await errors);
+                return (initialize, list);
+            }
+            finally
+            {
+                await stop.CancelAsync();
+                await daemon.WaitAsync(TimeSpan.FromSeconds(8));
+            }
+        }
 
         Process Launch(string verb, bool input = false)
         {
