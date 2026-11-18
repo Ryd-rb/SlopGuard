@@ -109,7 +109,7 @@ jobs:
           export SLOPHAWK_CHECKER_TEST_REFERENCE_PACK="$(find "$(dirname "$SLOPHAWK_PROJECT_TEST_DOTNET")/packs/Microsoft.NETCore.App.Ref" -path '*/ref/net10.0' -type d | sort -V | tail -n 1)"
           test -f "$SLOPHAWK_CHECKER_TEST_REFERENCE_PACK/System.Runtime.dll"
           test -x "$SLOPHAWK_NATIVE_TEST_PEER_BINARY"
-          dotnet test SlopHawk.slnx --artifacts-path "$artifacts" --logger 'console;verbosity=normal'
+          dotnet test SlopHawk.slnx --artifacts-path "$artifacts" --logger 'console;verbosity=normal' -- xUnit.MaxParallelThreads=2
       - name: Reject incomplete release evidence
         shell: bash
         run: |

@@ -114,6 +114,9 @@ current attempt and report through `status` or MCP `workspace_status` under
 `checkerScheduler`. The latest receipt in `native-<epoch>.checks.json` is
 retained after rollback. Managed executable-test data continues to use its
 schema-v5 intent and receipt tables.
+On Linux, a bounded Git HEAD probe can wake the reconciliation loop on a
+branch switch between full source scans. The full observation still validates
+the Git context and source digests before publishing.
 
 This scheduler covers the existing shadow checker's bounded source syntax
 and clone rules. Larger or incomplete source closures are explicitly blocked.

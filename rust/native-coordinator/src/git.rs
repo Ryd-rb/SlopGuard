@@ -77,6 +77,13 @@ fn git_dir(root: &Path) -> io::Result<Option<PathBuf>> {
     if !meta.file_type().is_dir() { return Err(invalid("Git directory is not physical")); }
     Ok(Some(actual))
 }
+
+#[cfg(target_os = "linux")]
+pub fn read_head_for_poll(root: &Path) -> io::Result<Option<String>> {
+    git_dir(root)?
+        .map(|directory| text(&directory.join("HEAD"), MAX_HEAD))
+        .transpose()
+}
 fn common_dir(git: &Path) -> io::Result<PathBuf> {
     let path = git.join("commondir");
     let raw = match text(&path, MAX_HEAD) {

@@ -15,6 +15,8 @@ pub struct Workspace {
     report: Option<Vec<u8>>,
     error: Option<String>,
     scheduler: Scheduler,
+    #[cfg(target_os = "linux")]
+    observed_head: Option<String>,
 }
 
 impl Workspace {
@@ -76,6 +78,10 @@ impl Workspace {
             state_directory: state_dir,
         };
         let snapshot = snapshot(&bytes(&state, CAP)?, &identity)?;
+        #[cfg(target_os = "linux")]
+        let observed_head = slophawk_native_coordinator::read_head_for_poll(&root)
+            .ok()
+            .flatten();
         let mut window = Self {
             identity,
             marker,
@@ -88,6 +94,8 @@ impl Workspace {
             report: None,
             error: None,
             scheduler,
+            #[cfg(target_os = "linux")]
+            observed_head,
         };
         window.authorized()?;
         window.refresh();
@@ -119,6 +127,18 @@ impl Workspace {
             self.error = Some(error.to_string());
             self.withdraw();
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn head_changed(&mut self) -> bool {
+        let Ok(head) = slophawk_native_coordinator::read_head_for_poll(&self.root) else {
+            return false;
+        };
+        if head == self.observed_head {
+            return false;
+        }
+        self.observed_head = head;
+        true
     }
 
     fn reconcile(&mut self) -> io::Result<()> {

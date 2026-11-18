@@ -11,6 +11,8 @@ mod supervisor;
 pub mod ipc;
 
 pub use git::GitSnapshot;
+#[cfg(target_os = "linux")]
+pub use git::read_head_for_poll;
 pub use protocol::{JobIdentity, JobRequest, Outcome, WorkerFrame, JOB_PROTOCOL,
     MAX_FRAME as MAX_JOB_FRAME, checked_output, checked_request, read_frame, write_frame};
 

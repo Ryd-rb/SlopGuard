@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 
 type Auth = Hmac<Sha256>;
 const POLL: Duration = Duration::from_millis(500);
+#[cfg(target_os = "linux")]
+const GIT_POLL: Duration = Duration::from_millis(100);
 const CONCURRENT: usize = 8;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -294,6 +296,8 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
     let result = std::thread::scope(|threads| -> io::Result<()> {
         let mut active = Vec::<std::thread::ScopedJoinHandle<'_, ()>>::new();
         let mut next_scan = Instant::now() + POLL;
+        #[cfg(target_os = "linux")]
+        let mut next_git_probe = Instant::now() + GIT_POLL;
         while !stopping.load(Ordering::Acquire) {
             active.retain(|handle| !handle.is_finished());
             {
@@ -307,7 +311,16 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
                     state.finish_checks(finished);
                     checker = None;
                 }
-                if recheck.swap(false, Ordering::AcqRel) || Instant::now() >= next_scan {
+                let refresh = recheck.swap(false, Ordering::AcqRel) || Instant::now() >= next_scan;
+                #[cfg(target_os = "linux")]
+                let refresh = refresh
+                    || if Instant::now() >= next_git_probe {
+                        next_git_probe = Instant::now() + GIT_POLL;
+                        state.head_changed()
+                    } else {
+                        false
+                    };
+                if refresh {
                     state.refresh();
                     if checker.is_none() {
                         checker = state.schedule_checks();
