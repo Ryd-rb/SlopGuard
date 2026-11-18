@@ -8,6 +8,7 @@ mod adapter;
 mod evidence;
 mod io;
 mod model;
+pub mod paired_regression;
 mod retest;
 mod review;
 
