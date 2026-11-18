@@ -1017,6 +1017,7 @@ dependencies = [
  "slophawk-python-project-context",
  "slophawk-rust-project-context",
  "slophawk-scalar-foreground",
+ "slophawk-scalar-paths",
  "slophawk-worker-scope",
  "windows-sys",
 ]

@@ -259,3 +259,26 @@ fn opt_in_short_circuit_keeps_an_opaque_rhs_unvisited_until_required() {
     let result = search_with_policy(&problem, SearchPolicy::CorrelatedEqualitiesV1);
     assert!(result.unknown.iter().any(|u| u.contains("Divide")));
 }
+
+
+// The interactive transport accepts supplied facts, including malformed or costly
+// graphs that the pinned Roslyn exporter never needs to produce.
+#[test]
+fn interactive_planning_rejects_large_requested_work_and_expanded_expressions() {
+    use slophawk_scalar_paths::plan_correlations;
+    let large = fixture(257, 1, &[0, 0, 0], &[0, 0], 1, 3);
+    assert!(plan_correlations(&large).unwrap_err().contains("Interactive scalar limits"));
+
+    let mut repeated = String::from(concat!(
+        "scalar-path-facts\t1\nlimits\t1\t1\nbound\t1\t1\t-\n",
+        "block\t0\tEntry\tNone\nbranch\t0\t-\n",
+        "edge\t0\tfallThrough\t1\tRegular\t0\t-\t-\n",
+        "block\t1\tBlock\tNone\n"
+    ));
+    for id in 0..14 {
+        node(&mut repeated, 1, id, "binary\tint\t-\t-\tAdd", &format!("{0},{0}", id + 1));
+    }
+    node(&mut repeated, 1, 14, "constant\tint\t-\t1\t-", "");
+    repeated.push_str("stmt\t1\t0\nbranch\t1\t-\nend\n");
+    assert!(plan_correlations(&repeated).unwrap_err().contains("expanded expression budget"));
+}

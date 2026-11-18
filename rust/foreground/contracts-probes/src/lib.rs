@@ -96,6 +96,19 @@ pub fn qualify(rules: &[u8], published: &[u8]) -> Result<ContractCases> {
     ContractCases::new(&parsed, &cases).map_err(|error| error.to_string())
 }
 
+/// Qualify supplied rules against their examples and select cases without executing an adapter.
+pub fn diversify_cases(rules: &[u8], published: &[u8], pool: &[u8], budget: usize) -> Result<Value> {
+    let catalog = qualify(rules, published)?;
+    let inputs = slophawk_probe_replay::parse_inputs(pool).map_err(|error| error.to_string())?;
+    let cases = catalog.select_diverse(&inputs, budget).map_err(|error| error.to_string())?;
+    let cases: Value = serde_json::from_str(&expectations_json(&cases)?)
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "qualification": qualifications_json(catalog.qualification()),
+        "cases": cases,
+    }))
+}
+
 pub fn sha256_hex(source: &[u8]) -> String {
     format!("{:X}", Sha256::digest(source))
 }
@@ -253,11 +266,23 @@ struct SearchState {
     candidate: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaseSelection {
+    Legacy,
+    DiverseV1,
+}
+
 /// Search and replay are kept separate even for a clean first result. In
 /// particular, *new* discrepancies, vanished discrepancies and changed null
 /// support in replay always survive in `ReplayChanges` verbatim.
 pub fn search(catalog: &ContractCases, per_operation: usize, hints: &[(String, Vec<i64>)],
     peer: &mut impl CheckPeer) -> Result<SearchOutcome> {
+    search_with_selection(catalog, per_operation, hints, peer, CaseSelection::Legacy)
+}
+
+pub fn search_with_selection(catalog: &ContractCases, per_operation: usize,
+    hints: &[(String, Vec<i64>)], peer: &mut impl CheckPeer,
+    selection: CaseSelection) -> Result<SearchOutcome> {
     if !(1..=8192).contains(&per_operation) {
         return Err("The per-operation budget must be between 1 and 8192.".into());
     }
@@ -270,9 +295,9 @@ pub fn search(catalog: &ContractCases, per_operation: usize, hints: &[(String, V
         selected: Vec::new(), matched: Vec::new(), seen: HashSet::new(),
         remaining, compared: 0, unsupported: 0, candidate: None,
     };
-    pass(catalog, per_operation.min(64), 0, &[], peer, &mut state)?;
+    pass(catalog, per_operation.min(64), 0, &[], peer, &mut state, selection)?;
     if per_operation > 64 && !state.remaining.is_empty() {
-        pass(catalog, per_operation - 64, 1, hints, peer, &mut state)?;
+        pass(catalog, per_operation - 64, 1, hints, peer, &mut state, selection)?;
     }
     let mut witnesses: Vec<Witness> = state.selected.iter().map(|(_, witness)| witness.clone()).collect();
     witnesses.extend(state.matched.iter().filter(|(op, _)|
@@ -318,7 +343,7 @@ pub fn search(catalog: &ContractCases, per_operation: usize, hints: &[(String, V
 }
 
 fn pass(catalog: &ContractCases, limit: usize, seed: i32, hints: &[(String, Vec<i64>)],
-    peer: &mut impl CheckPeer, state: &mut SearchState) -> Result<()> {
+    peer: &mut impl CheckPeer, state: &mut SearchState, selection: CaseSelection) -> Result<()> {
     let mut batch = Vec::new();
     // The C# generator constructs a fresh Random(seed) for *each* rule. A
     // one-operation filter avoids the Rust planner's 65536 total-plan cap
@@ -326,9 +351,24 @@ fn pass(catalog: &ContractCases, limit: usize, seed: i32, hints: &[(String, Vec<
     for (operation, _) in catalog.parameter_counts() {
         if !state.remaining.contains(operation) { continue; }
         let only = HashSet::from([operation.clone()]);
-        let generated = catalog.generate(limit, seed, Some(&only), seed != 0, hints)
+        let pool_limit = match selection {
+            CaseSelection::Legacy => limit,
+            CaseSelection::DiverseV1 => (limit * 4).min(8192),
+        };
+        let generated = catalog.generate(pool_limit, seed, Some(&only), seed != 0, hints)
             .map_err(|error| error.to_string())?;
-        for test in generated {
+        let selected = if selection == CaseSelection::DiverseV1 {
+            let pool = generated.into_iter().filter_map(|test| {
+                let key = (test.operation.clone(), test.args.clone());
+                (!state.seen.contains(&key)).then_some(ProbeInput {
+                    operation: test.operation, args: test.args,
+                })
+            }).collect::<Vec<_>>();
+            catalog.select_diverse(&pool, limit).map_err(|error| error.to_string())?
+        } else {
+            generated
+        };
+        for test in selected {
             batch.push(test);
             if batch.len() == BATCH_SIZE {
                 flush(&mut batch, peer, state)?;

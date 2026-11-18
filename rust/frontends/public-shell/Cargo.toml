@@ -25,6 +25,7 @@ slophawk-worker-scope = { path = '../../runtime/worker-scope' }
 slophawk-native-coordinator = { path = "../../native-coordinator" }
 slophawk-foreground-checks = { path = "../../foreground/checks" }
 slophawk-scalar-foreground = { path = "../../foreground/paths" }
+slophawk-scalar-paths = { path = "../../checkers/scalar-paths" }
 slophawk-contracts-probes = { path = "../../foreground/contracts-probes" }
 slophawk-native-checks = { path = "../../native-checks" }
 slophawk-language-execution = { path = "../../workers/language-execution" }

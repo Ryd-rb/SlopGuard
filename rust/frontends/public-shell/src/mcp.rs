@@ -121,6 +121,7 @@ fn projected_tools(handshake: &Handshake) -> Vec<&'static str> {
         ("get_findings", "results"),
         ("run_checks", "recheck"),
         ("list_checkers", "list_checkers"),
+        ("plan_checker", "checker_planning"),
     ] {
         if handshake.capabilities.iter().any(|c| c == feature) { result.push(name); }
     }
@@ -128,6 +129,14 @@ fn projected_tools(handshake: &Handshake) -> Vec<&'static str> {
 }
 
 fn tool_spec(name: &str) -> Value {
+    if name == "plan_checker" {
+        return json!({
+            "name": name,
+            "description": "Opt into correlated scalar or diverse contract planning over supplied evidence. Does not execute code.",
+            "inputSchema": crate::checker_plan::schema(),
+            "annotations": {"readOnlyHint": true}
+        });
+    }
     let (description, read_only) = match name {
         "workspace_status" => ("Read source reconciliation and test scheduling status.", true),
         "get_findings" => ("Read the validated source inventory report.", true),
@@ -145,7 +154,8 @@ fn call<T: Transport, W: Write>(session: &mut Session, daemon: &DaemonClient<T>,
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return Ok(rpc_error(id.clone(), -32602, "Missing tool name", None));
     };
-    if !params.get("arguments").is_none_or(|v| v.as_object().is_some_and(|m| m.is_empty())) {
+    if name != "plan_checker" &&
+        !params.get("arguments").is_none_or(|v| v.as_object().is_some_and(|m| m.is_empty())) {
         return Ok(rpc_error(id.clone(), -32602, "Tool arguments must be an empty object", None));
     }
     refresh(session, daemon, output)?;
@@ -153,6 +163,7 @@ fn call<T: Transport, W: Write>(session: &mut Session, daemon: &DaemonClient<T>,
         return Ok(rpc_error(id.clone(), -32602, "Tool not advertised by the connected daemon", Some("unsupported_feature")));
     }
     let payload = match name {
+        "plan_checker" => crate::checker_plan::evaluate(params.get("arguments").unwrap_or(&Value::Null))?,
         "workspace_status" => from_daemon(daemon.command(Command::Status)),
         "get_findings" => from_daemon(daemon.command(Command::Results)),
         "run_checks" => from_daemon(daemon.command(Command::Recheck)),

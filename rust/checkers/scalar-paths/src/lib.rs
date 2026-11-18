@@ -1374,6 +1374,32 @@ pub fn search_with_policy(problem: &Problem, policy: SearchPolicy) -> SearchResu
     search.run()
 }
 
+/// Run a small interactive search on caller-supplied facts. Bound expanded
+/// expression work as well as ordinary search work because the wire format
+/// permits multiple references to the same child node.
+pub fn plan_correlations(input: &str) -> Result<SearchResult, String> {
+    let problem = parse_wire(input)?;
+    if problem.work_limit > 256 || problem.case_limit > 128 || problem.params.len() > 32 {
+        return Err("Interactive scalar limits exceeded (256 work, 128 cases, 32 parameters).".into());
+    }
+    let mut expanded = 0usize;
+    for block in &problem.blocks {
+        let mut costs = vec![0usize; block.nodes.len()];
+        for (id, node) in block.nodes.iter().enumerate().rev() {
+            costs[id] = node.children.iter().fold(1usize, |cost, &child| {
+                cost.saturating_add(costs[child])
+            });
+        }
+        for &root in block.statements.iter().chain(block.branch.iter()) {
+            expanded = expanded.saturating_add(costs[root]);
+            if expanded > 8192 {
+                return Err("Interactive scalar facts exceed the expanded expression budget.".into());
+            }
+        }
+    }
+    Ok(search_with_policy(&problem, SearchPolicy::CorrelatedEqualitiesV1))
+}
+
 /// Machine-readable output; the wire type `candidate` means predicted, not measured.
 pub fn result_to_wire(result: &SearchResult) -> String {
     let mut text = format!(

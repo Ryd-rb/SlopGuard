@@ -49,6 +49,7 @@ pub struct ScopeRequest {
     pub sources: Vec<Source>,
     #[serde(default)] pub worker: Option<Worker>,
     #[serde(default)] pub limits: Limits,
+    #[serde(default)] pub near_miss_clones: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -383,6 +384,8 @@ pub struct Report {
     pub context_key: String, pub status: Status, pub documents: Vec<DocumentReport>,
     pub pairs: Vec<Pair>, pub gaps: Vec<Gap>, pub limits: Limits,
     pub clone_queries: Vec<CloneQueryReport>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub near_miss_clones: Vec<crate::near::Query>,
     pub worker_invocations: usize, pub elapsed_ms: u128,
 }
 

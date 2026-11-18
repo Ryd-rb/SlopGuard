@@ -89,7 +89,7 @@ not a filesystem sandbox or source loading instruction.
 | FluxR / `FluxR-lang` `e089fa301668c0d28821f72b08f6e4086a06ef27` | **Whole canonical checked document** only when there are no opaque native items | Yes using source-whitespace tokens | **Unsupported**: declaration byte ranges and binding IDs are not provided |
 
 The actual clone index implements whole-block Type-1 (exact) and Type-2
-(proven-local-renamed) matching. Near matching, cross-language matching,
+(proven-local-renamed) matching. Cross-language matching,
 spelling/dictionary findings, semantic call graphs, runner execution, generated
 macro output, and declaration-level FluxR matching are **not** implemented.
 For Python, the response advertises `sg10.python-layout-clones.v2/exact` and
@@ -98,7 +98,8 @@ v2 prefix. These rules require equal relative indentation and logical-line
 boundaries in addition to the shared index's lexical comparison. Other
 languages retain `sg10.token-clones.v1/exact` and
 `sg10.token-clones.v1/renamed-proven-local`. The unsupported
-`sg10.token-clones.v1/near` remains visible for every language.
+`sg10.token-clones.v1/near` remains visible by default. The optional
+`nearMissClones` request field enables [bounded near-miss alignment](../../docs/checkers.md#opt-in-analysis-and-planning) over admitted C#, Rust and FluxR blocks.
 See [Python clone qualification](../../docs/python-clone-layout.md) for the
 current profile-backed resident caller and receipt-version invalidation.
 Unavailable FluxR declaration spans and opaque native item spans appear as

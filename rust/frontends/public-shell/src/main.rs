@@ -10,7 +10,7 @@ mod detached;
 
 const HELP: &str = "SlopHawk (wire 1, report schema 2)\n\
 Lifecycle     slophawk start|status|results|recheck|stop [--root <checkout>]\n\
-Checkers      slophawk list-checkers [--root <checkout>]\n\
+Checkers      slophawk list-checkers [--root <checkout>] | checker-plan --request <request.json>\n\
 MCP           slophawk mcp [--root <checkout>]\n\
 Foreground    slophawk projects|check|check-contracts|check-observe|check-retest|check-review|contracts|probes|paths ...\n\
 Source checks slophawk shadow --request <request.json>\n\
@@ -50,6 +50,16 @@ fn run(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     let verb = args[0].as_str();
+    if verb == "checker-plan" {
+        return match args {
+            [_, flag, path] if flag == "--request" => {
+                let plan = slophawk_public_shell::checker_plan::read(Path::new(path))?;
+                println!("{plan}");
+                Ok(0)
+            }
+            _ => Err(failure("invalid_arguments", "Expected checker-plan --request <request.json>.")),
+        };
+    }
     if verb == "shadow" {
         return match args {
             [_, flag, path] if flag == "--request" =>

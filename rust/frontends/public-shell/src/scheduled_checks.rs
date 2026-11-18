@@ -24,6 +24,8 @@ struct Profile {
     root_identity: String,
     context: Context,
     worker: Option<PinnedWorker>,
+    #[serde(default)]
+    near_miss_clones: bool,
 }
 
 #[derive(Deserialize)]
@@ -282,6 +284,7 @@ impl Scheduler {
             sources,
             worker,
             limits: Limits::default(),
+            near_miss_clones: observed.profile.near_miss_clones,
         };
         let record = Record {
             attempt: attempt.clone(),

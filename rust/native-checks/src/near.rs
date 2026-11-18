@@ -1,0 +1,169 @@
+//! Project the opt-in token alignment query onto admitted source bytes.
+use crate::contract::{ByteSpan, Language, NEAR, Status};
+use crate::providers::Projection;
+use serde::Serialize;
+use slophawk_clone_index::{
+    CloneMatchLocation, TokenCloneIndex,
+    near_miss::{NEAR_MISS_RULE_VERSION, NearMissLimits, NearMissOptions},
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+type Locations = BTreeMap<(Language, String, String), ByteSpan>;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Query {
+    language: Language,
+    rule_version: &'static str,
+    pub(crate) status: Status,
+    reason: Option<&'static str>,
+    pub(crate) gaps: Vec<String>,
+    pub(crate) pairs: Vec<Match>,
+    minimum_similarity_percent: u8,
+    maximum_edits: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Match {
+    pair_id: String,
+    left: Endpoint,
+    right: Endpoint,
+    edit_distance: usize,
+    normalized_matched_tokens: usize,
+    exact_matched_tokens: usize,
+    score: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Endpoint {
+    document_id: String,
+    block_id: String,
+    bytes: ByteSpan,
+    utf16: [i32; 2],
+    token_count: usize,
+}
+
+fn endpoint(
+    language: Language,
+    location: CloneMatchLocation,
+    locations: &Locations,
+) -> Result<Endpoint, String> {
+    let bytes = locations
+        .get(&(
+            language,
+            location.document_id.clone(),
+            location.block_id.clone(),
+        ))
+        .ok_or("near-miss query returned an unbound source span")?
+        .clone();
+    Ok(Endpoint {
+        document_id: location.document_id,
+        block_id: location.block_id,
+        bytes,
+        utf16: [location.span.start_offset, location.span.end_offset],
+        token_count: location.token_count,
+    })
+}
+
+pub(crate) fn collect(
+    projections: &mut [Projection],
+    indices: &BTreeMap<Language, TokenCloneIndex>,
+    locations: &Locations,
+    failed_batch: bool,
+    cancel: &AtomicBool,
+) -> Result<Vec<Query>, String> {
+    let languages = projections
+        .iter()
+        .map(|doc| doc.report.language)
+        .collect::<BTreeSet<_>>();
+    let options = NearMissOptions::default();
+    let limits = NearMissLimits {
+        maximum_output_pairs: 32,
+        ..NearMissLimits::default()
+    };
+    let mut rows = Vec::new();
+    for language in languages {
+        if cancel.load(Ordering::Acquire) {
+            return Err("near-miss query cancelled before publication".into());
+        }
+        let mut row = Query {
+            language,
+            rule_version: NEAR_MISS_RULE_VERSION,
+            status: Status::Unsupported,
+            reason: None,
+            gaps: Vec::new(),
+            pairs: Vec::new(),
+            minimum_similarity_percent: options.minimum_similarity_percent,
+            maximum_edits: options.maximum_edits,
+        };
+        if failed_batch {
+            row.reason = Some("failed_batch");
+        } else if language == Language::Python {
+            row.reason = Some("layout_aware_alignment_required");
+        } else if let Some(index) = indices.get(&language) {
+            let result = index
+                .query_near_misses(options, limits)
+                .map_err(|e| e.to_string())?;
+            if result.is_truncated() {
+                row.status = Status::Partial;
+            } else if result.statistics.admitted_blocks == 0 {
+                row.reason = Some("no_eligible_blocks");
+            } else {
+                row.status = Status::Complete;
+            }
+            row.gaps = result
+                .gaps
+                .iter()
+                .map(|gap| format!("{:?}:{}", gap.reason, gap.affected_count))
+                .collect();
+            for pair in result.pairs {
+                row.pairs.push(Match {
+                    pair_id: pair.pair_id,
+                    left: endpoint(language, pair.left, locations)?,
+                    right: endpoint(language, pair.right, locations)?,
+                    edit_distance: pair.edit_distance,
+                    normalized_matched_tokens: pair.normalized_matched_tokens,
+                    exact_matched_tokens: pair.exact_matched_tokens,
+                    score: pair.score,
+                });
+            }
+        } else {
+            row.reason = Some("no_admitted_blocks");
+        }
+        for projection in projections
+            .iter_mut()
+            .filter(|doc| doc.report.language == language)
+        {
+            if let Some(rule) = projection
+                .report
+                .rules
+                .iter_mut()
+                .find(|rule| rule.id == NEAR)
+            {
+                rule.id = NEAR_MISS_RULE_VERSION.into();
+                rule.scope = "bounded, same-language whole-block token alignment".into();
+                rule.status = if projection.blocks.is_empty() {
+                    Status::Unsupported
+                } else if row.status == Status::Complete
+                    && projection.report.status != Status::Complete
+                {
+                    Status::Partial
+                } else {
+                    row.status
+                };
+                rule.reason = row
+                    .reason
+                    .unwrap_or("insertions and deletions over admitted token blocks")
+                    .into();
+            }
+        }
+        rows.push(row);
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Err("near-miss query cancelled before publication".into());
+    }
+    Ok(rows)
+}

@@ -16,7 +16,22 @@ public sealed class ScalarPathCheckTests
         var output = await Native("build", fixture.Spec, fixture.Scratch);
         Assert.Equal(new[] { "Build", "Candidate" }, output.Json.EnumerateObject().Select(property => property.Name));
         var build = PathOf(output, "Build");
-        var plan = PathOf(await Native("plan", fixture.Spec, fixture.Scratch, build, "graph-on"), "Plan");
+        var planned = await Native("plan", fixture.Spec, fixture.Scratch, build, "graph-correlated-v1");
+        var plan = PathOf(planned, "Plan");
+        Assert.Equal("graph-correlated-v1", planned.Json.GetProperty("Mode").GetString());
+        using var candidates = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(Path.GetDirectoryName(plan)!, "candidates.json")));
+        var request = Path.Combine(fixture.Scratch, "checker-plan.json");
+        await File.WriteAllTextAsync(request, JsonSerializer.Serialize(new
+        {
+            checker = "scalar_correlated",
+            facts = candidates.RootElement.GetProperty("ScalarFacts").GetProperty("rate").GetString()
+        }));
+        var preview = await NativeTool("checker-plan", "--request", request);
+        Assert.Equal(0, preview.Exit);
+        Assert.Equal("graph-correlated-v1", preview.Json.GetProperty("policy").GetString());
+        Assert.True(preview.Json.GetProperty("result").GetProperty("bound").GetBoolean());
+        Assert.NotEmpty(preview.Json.GetProperty("result").GetProperty("candidates").EnumerateArray());
         var checkedRun = await Native("check", plan);
         var review = await Native("review", PathOf(checkedRun, "Review", 1));
         Assert.True(review.Json.GetProperty("Current").GetBoolean());
@@ -33,10 +48,13 @@ public sealed class ScalarPathCheckTests
         Assert.Equal("daemon sentinel", File.ReadAllText(fixture.DaemonReport));
 
         var source = Path.GetDirectoryName(fixture.Spec)!;
-        var contracts = await NativeTool("check-contracts", PathOf(output, "Candidate"),
+        var contracts = await NativeTool("check-contracts", "--diverse", PathOf(output, "Candidate"),
             Path.Combine(source, "rules.json"), Path.Combine(source, "published.json"), fixture.Scratch, "24");
         Assert.InRange(contracts.Exit, 0, 1);
-        Assert.True(contracts.Json.GetProperty("Compared").GetInt32() > 0);
+        Assert.InRange(contracts.Json.GetProperty("Compared").GetInt32(), 1, 24);
+        using var contractSummary = JsonDocument.Parse(await File.ReadAllTextAsync(
+            contracts.Json.GetProperty("Summary").GetString()!));
+        Assert.Equal("diverse-v1", contractSummary.RootElement.GetProperty("CaseSelection").GetString());
         var reviewPath = PathOf(checkedRun, "Review", 1);
         await File.AppendAllTextAsync(Path.Combine(source, "Rates.cs"), "\n// changed");
         var historical = await Native("review", reviewPath);

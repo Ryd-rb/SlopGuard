@@ -3,7 +3,7 @@ use crate::passive::{self, positive_count, read_limited};
 use crate::{
     CheckPeer, FORMAT, Observation, Publication, Result, SearchOutcome, inputs_json,
     operations_json, qualifications_json, qualify, raw, read_literal_hints, replay_changes_json,
-    search, sha256_hex, values_json,
+    CaseSelection, search_with_selection, sha256_hex, values_json,
 };
 use serde::Serialize;
 use serde_json::{Value, json, value::RawValue};
@@ -19,6 +19,13 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub fn run(args: &[String]) -> Result<u8> {
     let parts = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let (parts, selection) = match parts.as_slice() {
+        ["check-contracts", "--diverse", rest @ ..] => {
+            let command = std::iter::once("check-contracts").chain(rest.iter().copied()).collect::<Vec<_>>();
+            (command, CaseSelection::DiverseV1)
+        }
+        _ => (parts, CaseSelection::Legacy),
+    };
     match parts.as_slice() {
         ["contracts" | "probes", ..] => {
             let (output, code) = passive::run(args)?;
@@ -31,9 +38,9 @@ pub fn run(args: &[String]) -> Result<u8> {
             let run_verb = rest.get(1).map(|s| (*s).to_owned());
             let prepare_verb = rest.get(2).map(|s| (*s).to_owned());
             check_contracts(Path::new(assembly), Path::new(rules), Path::new(published),
-                Path::new(workspace), count, run_verb, prepare_verb)
+                Path::new(workspace), count, run_verb, prepare_verb, selection)
         }
-        _ => Err("Usage: contracts qualify <rules.json> <published.json> | probes plan <seeds.json> <count> [seed [scales.json]] | probes compare <inputs.json> <candidate.json> <reference.json> | probes methods <candidate.dll> <reference.dll> | check-contracts <assembly.dll> <rules.json> <published.json> <workspace> [per-operation [run-verb [prepare-verb]]]".into()),
+        _ => Err("Usage: contracts qualify <rules.json> <published.json> | probes plan <seeds.json> <count> [seed [scales.json]] | probes compare <inputs.json> <candidate.json> <reference.json> | probes methods <candidate.dll> <reference.dll> | check-contracts [--diverse] <assembly.dll> <rules.json> <published.json> <workspace> [per-operation [run-verb [prepare-verb]]]".into()),
     }
 }
 
@@ -251,6 +258,8 @@ struct Summary<'a> {
     Run: &'a Option<String>,
     Compared: usize,
     PerOperation: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    CaseSelection: Option<&'static str>,
     ElapsedMilliseconds: u128,
     Unsupported: usize,
     Findings: usize,
@@ -288,6 +297,7 @@ fn check_contracts(
     per_operation: usize,
     run_verb: Option<String>,
     prepare_verb: Option<String>,
+    selection: CaseSelection,
 ) -> Result<u8> {
     let started = Instant::now();
     let rules_bytes = read_limited(rules)?;
@@ -366,7 +376,7 @@ fn check_contracts(
         run_verb: run_verb.clone(),
         prepare_verb: prepare_verb.clone(),
     };
-    let outcome = search(&catalog, per_operation, &hints, &mut peer)?;
+    let outcome = search_with_selection(&catalog, per_operation, &hints, &mut peer, selection)?;
     let evidence = publish_replay(
         &workspace,
         &outcome,
@@ -402,6 +412,7 @@ fn check_contracts(
         Run: &evidence.run,
         Compared: outcome.compared,
         PerOperation: per_operation,
+        CaseSelection: (selection == CaseSelection::DiverseV1).then_some("diverse-v1"),
         ElapsedMilliseconds: started.elapsed().as_millis(),
         Unsupported: outcome.unsupported,
         Findings: findings.len(),

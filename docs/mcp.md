@@ -54,6 +54,8 @@ Return structured domain failures with stable codes such as `stale_revision`, `c
 
 Results should separate inspection findings, test failures and tool failures. Expose coverage with a scope and reason for each partial, deferred or blocked context. Attribute stale evidence to its historical revision. Keep responses compact and offer follow-up queries for individual results. Prefer paths, line and column ranges, diagnostic IDs and bounded excerpts over large logs. Tool cancellation, timeouts and precondition failures need stable machine-readable codes. [MCP tools reference](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 
+The implemented `plan_checker` tool provides [opt-in analysis and planning](checkers.md#opt-in-analysis-and-planning) over supplied scalar facts or contract rules and a candidate pool. Its output is planning evidence and execution or publication uses the corresponding owner-granted CLI workflow.
+
 ## Configuration and whitelist
 
 Keep versioned team settings in the checkout and per-user preferences outside it. Resolve checker settings in order from defaults to user preferences, repository settings and session overrides, subject to owner-granted capabilities and machine resource limits. Resolve analyzer severities using each provider's own applicable settings. Keep execution permissions, approved tool paths, external read paths, outbound services and resource ceilings in owner-controlled configuration.

@@ -1,5 +1,6 @@
 //! CLI and MCP projections for the native SlopHawk daemon.
 
+pub mod checker_plan;
 pub mod cli;
 pub mod identity;
 pub mod mcp;

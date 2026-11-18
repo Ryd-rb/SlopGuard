@@ -222,7 +222,7 @@ fn request(
         match command {
             [5] => (
                 success(json!({"wireVersion":1,"reportSchemaVersion":2,
-                "capabilities":["status","results","recheck","stop","list_checkers","checker_catalog"]})),
+                "capabilities":["status","results","recheck","stop","list_checkers","checker_catalog","checker_planning"]})),
                 false,
             ),
             [6, 1, 1] => (success(state.status()), false),

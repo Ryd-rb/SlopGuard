@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 pub mod contract;
 pub mod base64;
+mod near;
 mod providers;
 mod worker;
 mod supervisor;
@@ -14,7 +15,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 /// Included in resident receipt identity whenever native checker semantics change.
-pub const SEMANTICS_VERSION: &str = "slophawk.native-checks/2";
+pub const SEMANTICS_VERSION: &str = "slophawk.native-checks/3";
 
 pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, String> {
     let started = Instant::now();
@@ -180,6 +181,11 @@ pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, Stri
             });
         }
     }
+    let near_miss_clones = if job.near_miss_clones {
+        near::collect(&mut projections, &indices, &locations, failed_batch, cancel)?
+    } else {
+        Vec::new()
+    };
     pairs.sort_by(|a,b| (a.language, &a.pair_id).cmp(&(b.language,&b.pair_id)));
     all_gaps.sort_by(|a,b| (&a.document_id, &a.reason, a.span.as_ref().map(|s| s.start))
         .cmp(&(&b.document_id,&b.reason,b.span.as_ref().map(|s|s.start))));
@@ -194,6 +200,7 @@ pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, Stri
         committed_revision: job.committed_revision, context_key: job.context.key,
         status, documents, pairs, gaps: all_gaps,
         clone_queries: clone_queries.into_values().collect(),
+        near_miss_clones,
         limits: job.limits, worker_invocations: attempted_workers,
         elapsed_ms: started.elapsed().as_millis(),
     })
@@ -205,6 +212,15 @@ pub fn bounded_report(mut report: Report) -> Result<Vec<u8>, String> {
     loop {
         let encoded = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
         if encoded.len() <= maximum { return Ok(encoded); }
+        if let Some(query) = report.near_miss_clones.iter_mut().rev().find(|query| !query.pairs.is_empty()) {
+            query.pairs.pop();
+            query.status = Status::Partial;
+            if !query.gaps.iter().any(|gap| gap == "report_byte_limit") {
+                query.gaps.push("report_byte_limit".into());
+            }
+            report.status = Status::Partial;
+            continue;
+        }
         if let Some(pair) = report.pairs.pop() {
             let row = report.clone_queries.iter_mut().find(|row| row.language == pair.language)
                 .ok_or("report pair has no clone query receipt")?;

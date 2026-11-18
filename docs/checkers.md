@@ -33,6 +33,33 @@ Hash sliding token shingles and select sparse fingerprints via winnowing. Look u
 
 Update postings for changed files and remove deleted postings and affected result pairs transactionally. Recompute peers of removed or changed pairs so stale matches disappear. Prefer maximal spans and collapse nested overlapping results. Order ties by score, span size and path. Save only compact fingerprints, offsets and lookup metadata on disk. Heavy solution scans can expand limits under explicit request. Keep this checker independent of JetBrains tooling. [JetBrains dupFinder retirement](https://blog.jetbrains.com/dotnet/2021/08/12/sunsetting-dupfinder-command-line-tool/), [Winnowing paper](https://theory.stanford.edu/~aiken/publications/papers/sigmod03.pdf)
 
+## Opt-in analysis and planning
+
+SlopHawk exposes these optional checks through the installed CLI and MCP. Each uses the same existing input admission and evidence scope as its underlying producer.
+
+| Check | CLI | MCP | Evidence |
+| --- | --- | --- | --- |
+| Near-miss token clones | Set `nearMissClones` to `true` in an explicit `shadow --request` request or in the owner’s [resident source-check profile](rust-migration-qualification.md#scheduled-source-checks). Read resident results with `results`. | Read the current `checkerReport.nearMissClones` via `get_findings` after the owner enables it. | Same-language admitted blocks for C#, Rust and FluxR with SHA-256-bound source coordinates. Python reports that layout-aware alignment is required. |
+| Correlated scalar planning | Use `paths plan <spec> <scratch> <build-manifest> graph-correlated-v1`, then use the normal `paths check` and `paths review` flow. | Call `plan_checker` with `checker: "scalar_correlated"` and the scalar wire text in `facts`. | The CLI binds the mode and the Roslyn projections to the sealed plan. Its `candidates.json` includes `ScalarFacts` keyed by operation for the opt-in mode. Interactive results are predictions over the supplied facts. |
+| Diverse contract cases | Use `check-contracts --diverse <assembly.dll> <rules.json> <published.json> <workspace> [per-operation [run-verb [prepare-verb]]]`. The summary records `CaseSelection: "diverse-v1"`. | Call `plan_checker` with `checker: "contract_diversity"`, arrays `rules`, `published`, and `pool`, and a `perOperation` budget. | Both paths qualify rules against published examples and select from an ordered input pool. The CLI generates a pool of up to four times each existing pass budget, capped at 8192 per operation, and executes only cases admitted by the original per-operation budget. MCP returns selected inputs and rule-derived expectations. |
+
+The CLI `checker-plan --request <request.json>` accepts the same JSON as the MCP tool arguments. These two interactive entry points read only the supplied evidence and report it as `caller_supplied`. Planning runs in memory over inline evidence. Adapter execution and workspace publication use the separate owner-granted CLI or resident workflows. Both bound JSON input and output to 256 KiB. Interactive scalar requests allow at most 256 work units, 128 cases and 32 parameters, with a separate expanded expression budget. Interactive contract requests allow 16 rules, 256 published examples, 1024 pool rows and 128 cases per operation.
+
+Near-miss matches live in a separate report field. Each result includes the two block spans, edit distance and similarity. A replacement counts as two edits. The query uses an 80 percent similarity floor and at most 64 edits, with other work limits enforced by the index and at most 32 returned pairs per language. A report byte limit can trim near-miss pairs and leaves a visible gap. Findings describe token alignment, with provider coverage and unknown frontiers recorded separately.
+
+The remaining TAVO checks require producers for additional evidence.
+
+| Check | Required evidence outside the live producer |
+| --- | --- |
+| Lost test routes | Two revision-bound, evaluation-sufficient project graphs with complete configured test groups and surviving-source observations. |
+| Deferred publication freshness | Typed validation, invalidation and effect facts for the scheduled Rust code. |
+| Paired regression evidence | Matched test case and assertion observations across two qualified builds. |
+| AdditionalFiles identity audit | An attributed file observation and a verified settings witness for the same build. |
+| C# resource lifetime regressions | Matched analyzed methods and use sites across two certified compiler snapshots. |
+| Python import-layer regressions | Two admitted resolved import graphs with complete roots and edges for the configured policy. |
+| Rust cancellation advisories | Resolved macro, callee and version evidence for specific select arms. |
+
+
 ## Related test discovery and execution
 
 Discover candidate test projects under the workspace from solution membership, evaluated project properties, project references and installed adapters. Support projects outside solutions. Group test IDs by target framework and adapter. Treat naming conventions and framework attributes as discovery hints. Obtain runnable test identities from the runner for the corresponding build, and store them in the shared index against test assembly and configuration inputs. Honor repository settings and distinguish unit projects from integration and end-to-end projects through project policy and test metadata. Surface unclassified or intentionally excluded coverage.

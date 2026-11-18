@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use slophawk_scalar_paths::{parse_wire, search};
+use slophawk_scalar_paths::{SearchPolicy, parse_wire, search, search_with_policy};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
@@ -14,6 +14,12 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use slophawk_worker_scope::{Limits, find_on_path};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub const CORRELATED_MODE: &str = "graph-correlated-v1";
+
+fn valid_mode(mode: &str) -> bool {
+    matches!(mode, "graph-off" | "graph-on" | CORRELATED_MODE)
+}
 
 const PROTOCOL: &str = "slophawk.migration-job/1";
 const FORMAT: &str = "slophawk-scalar-run-v1";
@@ -647,7 +653,7 @@ fn read_plan(manifest: &Path) -> Result<(PathBuf, PathPlan)> {
         return Err(plan.blocker.clone().unwrap_or_else(|| "No runnable sealed path cases".into()));
     }
     if plan.build_sha256 != hash(&read_file(Path::new(&plan.build), MAX_SOURCE)?) ||
-        plan.mode != "graph-on" && plan.mode != "graph-off" {
+        !valid_mode(&plan.mode) {
         return Err("Referenced build or path mode changed".into());
     }
     Ok((directory, plan))
@@ -680,7 +686,7 @@ pub fn build(spec: &Path, scratch: &Path, worker: &Path) -> Result<Value> {
 }
 
 pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path) -> Result<Value> {
-    if mode != "graph-on" && mode != "graph-off" { return Err("Use graph-on or graph-off".into()); }
+    if !valid_mode(mode) { return Err("Use graph-on, graph-off or graph-correlated-v1".into()); }
     let source = Source::open(spec, scratch)?;
     let identity = source.identity("inspect", worker)?;
     if build == Path::new("-") {
@@ -688,7 +694,7 @@ pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path
     }
     let (build_dir, receipt) = attested_build(build, &identity, &source.scratch)?;
     let candidate = build_dir.join("candidate.dll");
-    let inspected = inspect(worker, &source, &identity, Some(&candidate), mode == "graph-on")?;
+    let inspected = inspect(worker, &source, &identity, Some(&candidate), mode != "graph-off")?;
     if inspected.compiler_sha256 != receipt.compiler_sha256 ||
         inspected.compiler_inputs != receipt.compiler_inputs ||
         inspected.runtime_version != receipt.runtime_version ||
@@ -705,9 +711,13 @@ pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path
     for target in &inspected.targets {
         graphs.insert(target.operation.clone(), target.graph.clone().unwrap_or(Value::Null));
         let parsed = parse_wire(&target.facts).map_err(|e| format!("{}: {e}", target.operation))?;
-        let searched = search(&parsed);
+        let searched = if mode == CORRELATED_MODE {
+            search_with_policy(&parsed, SearchPolicy::CorrelatedEqualitiesV1)
+        } else {
+            search(&parsed)
+        };
         let eligible = target.eligible && target.bound;
-        let candidates = if eligible && mode == "graph-on" { searched.candidates } else { Vec::new() };
+        let candidates = if eligible && mode != "graph-off" { searched.candidates } else { Vec::new() };
         let candidate_count = candidates.len();
         for candidate in candidates {
             if candidate_compatible(&candidate.args, &target.parameters) {
@@ -774,7 +784,13 @@ pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path
     let (stage, final_dir) = staging(&source.scratch, "plan", &identity.job)?;
     let result = (|| {
         write_json(&stage.join("graph.json"), &json!({"BuildAttested": true, "Graphs": graphs}))?;
-        write_json(&stage.join("candidates.json"), &json!({"Baseline": baselines, "Graph": proposals}))?;
+        let mut candidates = json!({"Baseline": baselines, "Graph": proposals});
+        if mode == CORRELATED_MODE {
+            let facts: std::collections::BTreeMap<_, _> = inspected.targets.iter()
+                .map(|target| (&target.operation, &target.facts)).collect();
+            candidates["ScalarFacts"] = serde_json::to_value(facts).map_err(|e| e.to_string())?;
+        }
+        write_json(&stage.join("candidates.json"), &candidates)?;
         write_json(&stage.join("plan.json"), &plan)?;
         let manifest = publish(&stage, &final_dir, "plan", &identity)?;
         Ok(json!({"Plan": manifest, "Mode": mode, "Cases": plan.cases.len(),
@@ -847,7 +863,7 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
         return Err("The plan does not reference the exact original compilation".into());
     }
     let candidate = build_dir.join("candidate.dll");
-    let inspected = inspect(worker, &source, &current, Some(&candidate), plan.mode == "graph-on")?;
+    let inspected = inspect(worker, &source, &current, Some(&candidate), plan.mode != "graph-off")?;
     if inspected.compiler_sha256 != receipt.compiler_sha256 ||
         inspected.compiler_inputs != receipt.compiler_inputs {
         return Err("Compiler options, sources or reference closure changed".into());
@@ -903,7 +919,7 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
     let late = Source::open(&source.path, &source.scratch)?;
     let late_id = late.identity("inspect", worker)?;
     if !late_id.same_authority(&current) { return Err("Authority or policy changed during replay".into()); }
-    let final_inspect = inspect(worker, &late, &late_id, Some(&candidate), plan.mode == "graph-on")?;
+    let final_inspect = inspect(worker, &late, &late_id, Some(&candidate), plan.mode != "graph-off")?;
     if final_inspect.compiler_inputs != receipt.compiler_inputs ||
         final_inspect.candidate_sha256 != receipt.candidate_sha256 ||
         final_inspect.compiler_sha256 != receipt.compiler_sha256 {
@@ -956,7 +972,7 @@ pub fn review(review_manifest: &Path, worker: &Path) -> Result<Value> {
             return Err("Review authority is stale".into());
         }
         let (build_dir, receipt) = attested_build(Path::new(&plan.build), &identity, &source.scratch)?;
-        let inspected = inspect(worker, &source, &identity, Some(&build_dir.join("candidate.dll")), plan.mode == "graph-on")?;
+        let inspected = inspect(worker, &source, &identity, Some(&build_dir.join("candidate.dll")), plan.mode != "graph-off")?;
         if receipt.compiler_sha256 != inspected.compiler_sha256 ||
             receipt.candidate_sha256 != inspected.candidate_sha256 ||
             receipt.compiler_inputs != inspected.compiler_inputs ||
@@ -977,7 +993,7 @@ pub fn run(args: &[String]) -> Result<(Value, i32)> {
         Some("plan") if args.len() == 6 => plan(path(1)?, path(2)?, path(3)?, &args[4], path(5)?)?,
         Some("check") if args.len() == 3 => check(path(1)?, path(2)?)?,
         Some("review") if args.len() == 3 => review(path(1)?, path(2)?)?,
-        _ => return Err("Usage: scalar-paths-foreground build <spec> <scratch> <worker.dll> | plan <spec> <scratch> <build-manifest> <graph-on|graph-off> <worker.dll> | check <plan-manifest> <worker.dll> | review <review-manifest> <worker.dll>".into()),
+        _ => return Err("Usage: scalar-paths-foreground build <spec> <scratch> <worker.dll> | plan <spec> <scratch> <build-manifest> <graph-on|graph-off|graph-correlated-v1> <worker.dll> | check <plan-manifest> <worker.dll> | review <review-manifest> <worker.dll>".into()),
     };
     let exit = if value.get("Current").and_then(Value::as_bool) == Some(false) ||
         value.get("Blocker").is_some_and(|v| !v.is_null()) ||

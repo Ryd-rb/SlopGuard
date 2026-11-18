@@ -26,7 +26,7 @@ Install the .NET host and worker files at physical paths outside the checkout. F
 To enable the bounded resident source checker, put `native-checkers.json` in
 the private state directory that contains `migration-engine.json`. The
 version-1 document has `version`, `rootIdentity`, `context` and optional
-`worker` members. Copy `rootIdentity` from the current writer marker and use
+`worker` and `nearMissClones` members. Set `nearMissClones` to `true` to opt into bounded near-miss alignment for eligible C#, Rust and FluxR blocks. Copy `rootIdentity` from the current writer marker and use
 the documented shadow checker context. If the source closure contains C#,
 provide `worker.dotnet` and `worker.assembly` as `{path, sha256}` pins and an
 external reference pack in `context.referencePack`. Keep the profile readable

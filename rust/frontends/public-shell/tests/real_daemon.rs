@@ -65,6 +65,10 @@ impl Fixture {
     }
 
     fn mcp(&self) -> Vec<Value> {
+        self.mcp_with(&[])
+    }
+
+    fn mcp_with(&self, extra: &[Value]) -> Vec<Value> {
         let mut child = self.command("mcp").stdin(Stdio::piped()).stdout(Stdio::piped())
             .stderr(Stdio::piped()).spawn().unwrap();
         let mut input = child.stdin.take().unwrap();
@@ -75,7 +79,7 @@ impl Fixture {
             json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_findings","arguments":{}}}),
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_checkers","arguments":{}}}),
         ];
-        for message in commands {
+        for message in commands.iter().chain(extra) {
             writeln!(input, "{message}").unwrap();
         }
         drop(input);
@@ -116,7 +120,7 @@ fn installed_rust_daemon_starts_reconciles_restarts_and_serves_mcp() {
     let current = fixture.await_state("results", |report| report["revision"] == revision);
 
     let messages = fixture.mcp();
-    assert_eq!(messages[1]["result"]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(messages[1]["result"]["tools"].as_array().unwrap().len(), 5);
     assert_eq!(tool_result(&messages, 3)["payload"], current);
     let listed = tool_result(&messages, 4);
     assert_eq!(listed, fixture.request("list-checkers"));
@@ -184,4 +188,109 @@ fn installed_rust_daemon_publishes_roslyn_findings_through_cli_and_mcp() {
         report["committedRevision"].as_i64() > current["committedRevision"].as_i64() &&
         report["checkerReport"]["pairs"].as_array().is_some_and(Vec::is_empty));
     assert!(replaced["checkerReport"]["documents"].as_array().is_some_and(|docs| docs.len() == 2));
+}
+
+#[test]
+fn near_miss_profile_is_opt_in_and_publishes_current_matches_to_cli_and_mcp() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.root.join("Source.cs")).unwrap();
+    let source = "fn compute(x: i32) -> i32 { let y = x + 1; y + 2 }";
+    fs::write(fixture.root.join("First.rs"), source).unwrap();
+    fs::write(fixture.root.join("Second.rs"), source.replace("+ 2", "+ 3")).unwrap();
+    fs::write(fixture.root.join("Empty.py"), "# A valid source with no clone tokens.\n").unwrap();
+    fixture.request("start");
+    let ready = fixture.await_state("status", |status| status["state"] == "ready");
+    let execution = &ready["executionProfile"];
+    let policy = PathBuf::from(execution["path"].as_str().unwrap()).with_file_name("native-checkers.json");
+    let mut registration = json!({
+        "version": 1, "rootIdentity": execution["rootIdentity"],
+        "context": {"key": "near-fixture", "rustEdition": "2024"}
+    });
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    serde_json::to_writer(options.open(&policy).unwrap(), &registration).unwrap();
+
+    let baseline = fixture.await_state("results", |report| report["checkerReport"].is_object());
+    assert!(baseline["checkerReport"].get("nearMissClones").is_none());
+    registration["nearMissClones"] = json!(true);
+    fs::write(&policy, serde_json::to_vec(&registration).unwrap()).unwrap();
+    let current = fixture.await_state("results", |report| {
+        report["checkerReport"]["nearMissClones"].is_array()
+    });
+    let report = &current["checkerReport"];
+    assert_eq!(report["pairs"], baseline["checkerReport"]["pairs"]);
+    let rows = report["nearMissClones"].as_array().unwrap();
+    let rust = rows.iter().find(|row| row["language"] == "rust").unwrap();
+    assert_eq!(rust["status"], "complete");
+    let pairs = rust["pairs"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1, "{rust}");
+    assert_eq!(pairs[0]["editDistance"], 2);
+    assert_ne!(pairs[0]["left"]["documentId"], pairs[0]["right"]["documentId"]);
+    let bytes = &pairs[0]["left"]["bytes"];
+    let start = bytes["start"].as_u64().unwrap() as usize;
+    let end = bytes["end"].as_u64().unwrap() as usize;
+    assert!(source[start..end].starts_with('{'));
+    let python = rows.iter().find(|row| row["language"] == "python").unwrap();
+    assert_eq!(python["reason"], "layout_aware_alignment_required");
+    assert_eq!(tool_result(&fixture.mcp(), 3)["payload"]["checkerReport"], *report);
+
+    registration["nearMissClones"] = json!(false);
+    fs::write(&policy, serde_json::to_vec(&registration).unwrap()).unwrap();
+    fixture.await_state("results", |report| {
+        report["checkerReport"].is_object() && report["checkerReport"].get("nearMissClones").is_none()
+    });
+}
+
+#[test]
+fn public_cli_and_mcp_share_opt_in_checker_plans() {
+    let fixture = Fixture::new();
+    fixture.request("start");
+    let scalar = json!({
+        "checker": "scalar_correlated",
+        "facts": include_str!("../../../checkers/scalar-paths/fixtures/trace.facts")
+    });
+    let input = |args: [i64; 3]| json!({"Operation": "Ordered", "Args": args});
+    let pool = [[1,10,20], [2,10,20], [3,10,20], [10,10,20]].map(input);
+    let contract = json!({
+        "checker": "contract_diversity",
+        "rules": [{
+            "Operation": "Ordered", "Parameters": ["a", "b", "c"], "Domain": "true",
+            "Expected": "a < b && b < c ? 1 : 0", "Source": "ordered.md"
+        }],
+        "published": [{"Operation": "Ordered", "Args": [0, 10, 20], "Expected": 1}],
+        "pool": pool,
+        "perOperation": 2
+    });
+    let invalid = json!({"checker": "scalar_correlated", "facts": "not a fact stream"});
+    let requests: Vec<_> = [&scalar, &contract, &invalid].into_iter().enumerate().map(|(i, args)|
+        json!({"jsonrpc":"2.0","id":i+5,"method":"tools/call",
+               "params":{"name":"plan_checker","arguments":args}})).collect();
+    let messages = fixture.mcp_with(&requests);
+    assert!(messages[1]["result"]["tools"].as_array().unwrap().iter()
+        .any(|tool| tool["name"] == "plan_checker"));
+    let from_mcp = [tool_result(&messages, 5), tool_result(&messages, 6)];
+    assert_eq!(from_mcp[0]["policy"], "graph-correlated-v1");
+    assert_eq!(from_mcp[0]["result"]["bound"], true);
+    assert!(!from_mcp[0]["result"]["candidates"].as_array().unwrap().is_empty());
+    assert_eq!(from_mcp[1]["policy"], "diverse-v1");
+    assert_eq!(from_mcp[1]["result"]["cases"], json!([
+        {"Operation":"Ordered","Args":[1,10,20],"Expected":1},
+        {"Operation":"Ordered","Args":[10,10,20],"Expected":0}
+    ]));
+    assert_eq!(messages.iter().find(|m| m["id"] == 7).unwrap()["error"]["data"]["code"],
+        "checker_plan_input");
+
+    let path = fixture.container.join("checker-plan.json");
+    for (request, mcp_plan) in [&scalar, &contract].into_iter().zip(from_mcp) {
+        fs::write(&path, serde_json::to_vec(request).unwrap()).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_slophawk"))
+            .args(["checker-plan", "--request"]).arg(&path).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap(), mcp_plan);
+    }
 }

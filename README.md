@@ -37,6 +37,8 @@ After an edit, the agent can ask these questions.
 - [Version 0.2 design](docs/version-0.2.md) specifies project-aware analysis, related tests and agent result control for the next release.
 - [Source reconciliation](docs/source-reconciliation.md) defines how a verified C# edit creates durable test work across saves, branch transitions and restart.
 
+See [opt-in analysis and planning](docs/checkers.md#opt-in-analysis-and-planning) for near-miss clones, correlated scalar search, and diverse contract cases.
+
 ## Build and run SlopHawk
 
 Install the Rust CLI with the pinned toolchain. Git workspaces require Git on `PATH`.
