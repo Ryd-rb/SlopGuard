@@ -7,6 +7,7 @@ using Xunit;
 
 namespace SlopHawk.IntegrationTests;
 
+[Collection(NativeCliCollection.Name)]
 public sealed class ForegroundEvidenceTests
 {
     [NativeCliFact]

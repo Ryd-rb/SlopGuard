@@ -9,6 +9,7 @@ using Xunit;
 
 namespace SlopHawk.IntegrationTests;
 
+[Collection(NativeCliCollection.Name)]
 public sealed partial class WorkspaceTests
 {
     [NativeCliFact]

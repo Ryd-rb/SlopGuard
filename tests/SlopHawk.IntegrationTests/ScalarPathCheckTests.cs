@@ -6,6 +6,7 @@ using Xunit;
 
 namespace SlopHawk.IntegrationTests;
 
+[Collection(NativeCliCollection.Name)]
 public sealed class ScalarPathCheckTests
 {
     [NativeCliFact(scalarWorker: true)]

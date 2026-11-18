@@ -3,6 +3,13 @@ using Xunit;
 
 namespace SlopHawk.IntegrationTests;
 
+// These tests use the production per-user worker slot through independent CLI processes.
+[CollectionDefinition(NativeCliCollection.Name, DisableParallelization = true)]
+public sealed class NativeCliCollection
+{
+    public const string Name = "SlopHawk CLI worker slot";
+}
+
 public sealed class NativeCliFactAttribute : FactAttribute
 {
     public NativeCliFactAttribute(bool scalarWorker = false)
