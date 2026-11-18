@@ -33,6 +33,18 @@ internal static class Program
                     throw new IOException("Measured writer handoff failed.", error);
                 }
             }
+            if (args is ["benchmark-checker", var oldEngine, var newEngine, var adapter, var checkerScratch])
+                return await CheckerBenchmark.RunAsync(oldEngine, newEngine, adapter, checkerScratch);
+            if (args is ["--measure-checker", var checkerSpec])
+            {
+                var request = Read<CheckerBenchmark.Work>(checkerSpec);
+                try { return await CheckerBenchmark.RunWorkAsync(request); }
+                catch (Exception error) when (error is IOException or OperationCanceledException or JsonException or KeyNotFoundException)
+                {
+                    Write(request.Receipt + ".failed", error.Message);
+                    throw new IOException("Measured checker failed.", error);
+                }
+            }
             if (args is ["qualify", var input, var receipt, var report])
             {
                 var result = Qualification.Evaluate(Read<QualificationInput>(input));
@@ -42,7 +54,8 @@ internal static class Program
             }
             Console.Error.WriteLine("Usage: qualification sample <spec.json> <capture.json> | " +
                 "qualify <evidence.json> <receipt.json> <report.json> | " +
-                "benchmark-resident|benchmark-resident-events <legacy> <native> <new-scratch>");
+                "benchmark-resident|benchmark-resident-events <legacy> <native> <new-scratch> | " +
+                "benchmark-checker <legacy> <native> <fixture-dll> <new-scratch>");
             return 2;
         }
         catch (Exception ex) when (ex is IOException or JsonException or ArgumentException or

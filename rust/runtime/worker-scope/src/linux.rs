@@ -533,6 +533,10 @@ fn run_service(
     let runtime = format!("--property=RuntimeMaxSec={seconds}s");
     let unit = format!("--unit={}", service.name);
     let mut command = user_manager(SYSTEMD_RUN)?;
+    let measurement_slice = measurement_slice();
+    if let Some(slice) = &measurement_slice {
+        command.arg(format!("--slice={slice}"));
+    }
     for name in &worker.env {
         let mut setting = OsString::from("--setenv=");
         setting.push(name);
@@ -582,6 +586,11 @@ fn run_service(
             if observation.load == "loaded" && observation.invocation.bytes().any(|b| b != b'0') {
                 let before = (service.invocation.clone(), service.group.clone());
                 verified(&mut service, &observation)?;
+                if let (Some(slice), Some(group)) = (&measurement_slice, &service.group)
+                    && Path::new(group).parent().and_then(Path::file_name) != Some(slice.as_ref())
+                {
+                    return Err("worker did not enter the measured user slice".into());
+                }
                 if before != (service.invocation.clone(), service.group.clone()) {
                     set_record(pending, &service)?;
                 }
@@ -645,6 +654,18 @@ fn run_service(
         ));
     }
     exchange
+}
+
+fn measurement_slice() -> Option<String> {
+    let group = fs::read_to_string("/proc/self/cgroup").ok()?;
+    let path = Path::new(group.lines().find_map(|line| line.strip_prefix("0::"))?);
+    let service = path.file_name()?.to_str()?;
+    let identity = service.strip_prefix("slophawk-measure-")?.strip_suffix(".service")?;
+    if identity.len() != 32 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let expected = format!("slophawkmeasure{identity}.slice");
+    (path.parent()?.file_name()?.to_str()? == expected).then_some(expected)
 }
 
 fn acquire(budget: &Budget, cancel: &AtomicBool) -> Result<(PathBuf, File), String> {

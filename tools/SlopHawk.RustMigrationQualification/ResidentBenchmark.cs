@@ -76,8 +76,7 @@ internal static class ResidentBenchmark
 
         async Task MeasureHandoff(string engine, string executable, string digest)
         {
-            var suffix = OperatingSystem.IsWindows() ? ".exe" : "";
-            var controller = Path.Combine(AppContext.BaseDirectory, "SlopHawk.RustMigrationQualification" + suffix);
+            var controller = ControllerPath();
             var receipt = Path.Combine(scratch, $"{platform}-{engine}-handoff.json");
             var request = Path.Combine(scratch, $"{platform}-{engine}-handoff-spec.json");
             Program.Write(request, new HandoffSpec(engine, root, legacy, managedDigest, native, nativeDigest, profile, commit, count, receipt));
@@ -256,7 +255,10 @@ internal static class ResidentBenchmark
         return response.RootElement.GetProperty("revision").GetInt64();
     }
 
-    private static async Task<string> RunProcess(string executable, string[] args)
+    internal static string ControllerPath() => Path.Combine(AppContext.BaseDirectory,
+        OperatingSystem.IsWindows() ? "SlopHawk.RustMigrationQualification.exe" : "SlopHawk.RustMigrationQualification");
+
+    internal static async Task<string> RunProcess(string executable, string[] args)
     {
         var info = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true };

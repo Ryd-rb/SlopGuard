@@ -186,6 +186,10 @@ old writer, migration peer and replacement writer. These commands retain
 process-scope evidence and end-to-end latencies. Checker-process peaks require
 captures named `checker` that admit comparable checker workloads in both
 engines and include their worker scopes.
+`benchmark-checker <legacy> <native> <fixture-dll> <new-scratch>` exercises
+the same managed batch adapter through each public foreground `check` route.
+Windows samples nested Job membership. Linux places the checker and the
+independently supervised adapter service in one measured user slice.
 Owner harnesses must prepare a stable checkout/rule/policy/toolchain/fixture
 closure and run matched cold, warm, **five-minute idle**, single edits,
 **100-file burst**, branch switches and native-to-managed rollback, on **both

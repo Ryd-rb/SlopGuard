@@ -142,3 +142,20 @@ jobs:
           name: linux-resident-measurements
           path: ${{ runner.temp }}/voda-resident/*.json
           if-no-files-found: ignore
+      - name: Measure matched checker and adapter process peaks
+        if: ${{ !cancelled() && steps.workers.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/voda-dotnet-release"
+          dotnet build tests/SlopHawk.WorkerFixture/SlopHawk.WorkerFixture.csproj -c Release --artifacts-path "$artifacts"
+          dotnet "$artifacts/bin/SlopHawk.RustMigrationQualification/release/SlopHawk.RustMigrationQualification.dll" \
+            benchmark-checker "$artifacts/bin/SlopHawk.Cli/release/slophawk" "$CARGO_TARGET_DIR/release/slophawk-native" \
+            "$artifacts/bin/SlopHawk.WorkerFixture/release/SlopHawk.WorkerFixture.dll" "$RUNNER_TEMP/voda-checker-peak"
+      - name: Retain checker peak evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: linux-checker-peak
+          path: ${{ runner.temp }}/voda-checker-peak/*.json
+          if-no-files-found: ignore

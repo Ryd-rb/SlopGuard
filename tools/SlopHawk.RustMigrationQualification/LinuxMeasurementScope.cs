@@ -11,16 +11,25 @@ internal static partial class Sampler
         private const string CgroupRoot = "/sys/fs/cgroup";
         private readonly string unit;
         private readonly Observation start;
+        private readonly string? slice;
         private bool stopped;
 
-        private LinuxMeasurementScope(string unit, Observation start)
+        private LinuxMeasurementScope(string unit, Observation start, string? slice)
         {
             this.unit = unit;
             this.start = start;
+            this.slice = slice;
         }
 
         internal override int RootPid => start.MainPid;
-        internal override string CgroupPath => Path.Combine(CgroupRoot, start.Group[1..]);
+        internal override string CgroupPath
+        {
+            get
+            {
+                var service = Path.Combine(CgroupRoot, start.Group[1..]);
+                return slice is null ? service : Path.GetDirectoryName(service)!;
+            }
+        }
         internal override bool HasExited => !File.Exists($"/proc/{RootPid}/cgroup");
         internal override bool EnrolledBeforeExecution => true;
 
@@ -28,19 +37,23 @@ internal static partial class Sampler
         {
             if (!File.Exists(Path.Combine(CgroupRoot, "cgroup.controllers")))
                 throw new IOException("Linux measurement needs a live user manager and cgroup v2.");
-            var unit = $"slophawk-measure-{Guid.NewGuid():N}.service";
+            var identity = Guid.NewGuid().ToString("N");
+            var unit = $"slophawk-measure-{identity}.service";
+            var slice = spec.Scenario == "checker" ? $"slophawkmeasure{identity}.slice" : null;
+            string[] placement = slice is null ? [] : ["--slice=" + slice];
             var seconds = (spec.ElapsedMilliseconds + 999) / 1000 + 15;
             Run("/usr/bin/systemd-run", ["--user", "--quiet", $"--unit={unit}",
                 "--expand-environment=no", "--service-type=exec", "--remain-after-exit",
                 "--property=ExitType=cgroup", "--property=KillMode=control-group",
                 "--property=SendSIGKILL=yes", "--property=TimeoutStopSec=3s",
                 $"--property=RuntimeMaxSec={seconds}s", $"--working-directory={spec.WorkingDirectory}",
-                "--", spec.BinaryPath, .. spec.Arguments]);
+                .. placement, "--", spec.BinaryPath, .. spec.Arguments]);
             var observed = Read(unit);
             if (!observed.Loaded || !observed.Managed || observed.MainPid < 1 || !observed.BelongsTo(unit) ||
-                observed.Terminal || !File.ReadLines($"/proc/{observed.MainPid}/cgroup").Contains("0::" + observed.Group))
+                observed.Terminal || !File.ReadLines($"/proc/{observed.MainPid}/cgroup").Contains("0::" + observed.Group) ||
+                slice is not null && Path.GetFileName(Path.GetDirectoryName(observed.Group)) != slice)
                 throw new IOException($"The measurement unit {unit} did not prove enrollment before sampling.");
-            return new(unit, observed);
+            return new(unit, observed, slice);
         }
 
         internal override bool Drain()
@@ -60,6 +73,8 @@ internal static partial class Sampler
                     if (observed.Terminal && Empty())
                     {
                         Run("/usr/bin/systemctl", ["--user", observed.Failed ? "reset-failed" : "stop", unit]);
+                        if (slice is not null)
+                            Run("/usr/bin/systemctl", ["--user", "stop", slice]);
                         stopped = true;
                         return true;
                     }
