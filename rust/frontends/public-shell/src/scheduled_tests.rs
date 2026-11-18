@@ -952,6 +952,10 @@ mod tests {
         results: &Path,
     ) -> (PathBuf, Value) {
         let root_path = PathBuf::from(path_text(root));
+        if let Ok(version) = std::env::var("VODA_CSHARP_SDK") {
+            let global = json!({"sdk":{"version":version,"rollForward":"disable"}});
+            fs::write(root_path.join("global.json"), json_bytes(&global).unwrap()).unwrap();
+        }
         let project_dir = root_path.join("csharp");
         fs::create_dir(&project_dir).unwrap();
         let project = project_dir.join("Fixture.csproj");
@@ -990,6 +994,21 @@ mod tests {
             .unwrap();
         assert!(version.status.success());
         let version = std::str::from_utf8(&version.stdout).unwrap().trim();
+        assert!(
+            version.starts_with("10."),
+            "C# fixture requires a .NET 10 SDK, got {version}"
+        );
+        let context = Command::new(&dotnet.path).current_dir(root).arg("msbuild").arg(&project)
+            .arg("-nologo").arg("-getProperty:UsingMicrosoftNETSdk,NETCoreSdkVersion,TargetFramework,TargetFrameworkMoniker,TargetPlatformIdentifier")
+            .output().unwrap();
+        assert!(
+            context.status.success(),
+            "C# MSBuild fixture properties were unavailable"
+        );
+        eprintln!(
+            "C# fixture MSBuild context {}",
+            String::from_utf8_lossy(&context.stdout)
+        );
         let runner_path = Path::new(&dotnet.path)
             .parent()
             .unwrap()
