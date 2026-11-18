@@ -1,6 +1,6 @@
 //! Explicit, conservative projections from the four pinned provider APIs.
 //! A lexical token never becomes a semantic local unless the provider proves it.
-use crate::contract::{ByteSpan, DocumentReport, EXACT, Gap, Language, Loaded, NEAR, RENAMED, Rule, ScopeRequest, Status};
+use crate::contract::{ByteSpan, DocumentReport, EXACT, Gap, Loaded, NEAR, PYTHON_EXACT, PYTHON_RENAMED, RENAMED, Rule, ScopeRequest, Status};
 use crate::worker;
 use slophawk_clone_index::{CloneSourceSpan, CloneToken, CloneTokenBlock, CloneTokenKind};
 use slophawk_fluxr_provider as fluxr;
@@ -13,6 +13,7 @@ pub struct Projection {
     pub report: DocumentReport,
     pub blocks: Vec<CloneTokenBlock>,
     pub original_byte_spans: BTreeMap<String, ByteSpan>,
+    pub python_layouts: BTreeMap<String, Vec<python::TokenLayout>>,
 }
 
 fn gap(out: &mut DocumentReport, reason: impl Into<String>, span: Option<ByteSpan>) {
@@ -38,11 +39,12 @@ fn finish(mut report: DocumentReport, mapped: Vec<(CloneTokenBlock, ByteSpan)>) 
     }
     report.blocks_indexed = blocks.len();
     report.tokens_indexed = blocks.iter().map(|b| b.tokens.len()).sum();
-    Projection { report, blocks, original_byte_spans }
+    Projection { report, blocks, original_byte_spans, python_layouts: BTreeMap::new() }
 }
 fn unsupported(report: &mut DocumentReport, reason: &str) {
-    rule(report, EXACT, Status::Unsupported, "original source byte block", reason);
-    rule(report, RENAMED, Status::Unsupported, "proven local bindings within a block", reason);
+    let (exact, renamed) = report.language.clone_rules();
+    rule(report, exact, Status::Unsupported, "original source byte block", reason);
+    rule(report, renamed, Status::Unsupported, "proven local bindings within a block", reason);
     rule(report, NEAR, Status::Unsupported, "near-clone edit distance", "clone-index v1 does not implement near-clone alignment");
 }
 fn no_near(report: &mut DocumentReport) {
@@ -101,6 +103,21 @@ pub fn python(job: &ScopeRequest, source: &Loaded) -> Projection {
         || facts.identity.document_id != source.source.document_id {
         return fail(source, job, "Python provider provenance, path or source digest mismatch", Status::Failed);
     }
+    // A valid source may contain only layout, a BOM, or comments. Preserve the
+    // provider's known-empty outcome instead of failing every peer in the job.
+    // Do not construct an empty clone block (a BOM-only unit has no UTF-16 span).
+    if matches!(facts.outcome, python::Outcome::Complete | python::Outcome::NoRelevantFacts)
+        && facts.coverage.clone_tokens == python::Coverage::Complete
+        && facts.tokens.is_empty() && facts.gaps.is_empty() {
+        let mut report = initial(job, source);
+        rule(&mut report, PYTHON_EXACT, Status::Complete,
+            "Python source unit without substantive tokens",
+            "Complete token extraction found no substantive clone tokens; no blocks submitted");
+        rule(&mut report, PYTHON_RENAMED, Status::Unsupported,
+            "AST-proven local occurrences only", "No local-binding occurrences to compare");
+        no_near(&mut report);
+        return finish(report, Vec::new());
+    }
     if !matches!(facts.outcome, python::Outcome::Complete | python::Outcome::Partial) {
         let status = match facts.outcome {
             python::Outcome::UnsupportedExtension | python::Outcome::UnsupportedGrammar | python::Outcome::UnsupportedEncoding => Status::Unsupported,
@@ -123,12 +140,26 @@ pub fn python(job: &ScopeRequest, source: &Loaded) -> Projection {
     for g in &facts.gaps { gap(&mut report, format!("python:{:?}:{}", g.kind, g.detail), Some(bytespan(g.span.start as usize, g.span.end as usize))); }
     let ranges = facts.regions.iter().filter(|r| matches!(r.kind, python::RegionKind::Function | python::RegionKind::Class)).collect::<Vec<_>>();
     let mut blocks = Vec::new();
+    let mut layouts = BTreeMap::new();
     if ranges.is_empty() {
-        if let Some(block) = block_from_tokens(source, "document", &bytespan(0,source.bytes.len()), &tokens) { blocks.push(block); }
+        if let Some(block) = block_from_tokens(source, "document", &bytespan(0,source.bytes.len()), &tokens) {
+            let Some(layout) = facts.clone_layout(0) else {
+                return fail(source, job, "Python document layout is invalid", Status::Failed);
+            };
+            layouts.insert("document".into(), layout);
+            blocks.push(block);
+        }
     } else {
         for region in ranges {
             let span = bytespan(region.span.start as usize, region.span.end as usize);
-            if let Some(block) = block_from_tokens(source, &format!("region:{}", region.id), &span, &tokens) { blocks.push(block); }
+            let block_id = format!("region:{}", region.id);
+            if let Some(block) = block_from_tokens(source, &block_id, &span, &tokens) {
+                let Some(layout) = facts.clone_layout(region.id) else {
+                    return fail(source, job, "Python region layout is invalid", Status::Failed);
+                };
+                layouts.insert(block_id, layout);
+                blocks.push(block);
+            }
         }
     }
     let token_complete = facts.coverage.clone_tokens == python::Coverage::Complete;
@@ -154,7 +185,7 @@ pub fn python(job: &ScopeRequest, source: &Loaded) -> Projection {
     }
     // A partial token stream can create false exact matches between only the
     // emitted prefixes. Do not publish *any* block from that stream.
-    if !token_complete { blocks.clear(); }
+    if !token_complete { blocks.clear(); layouts.clear(); }
     if !token_complete || blocks.is_empty() {
         report.status = Status::Partial;
         gap(&mut report, "python:missing_exact_block_or_token_capability", None);
@@ -162,14 +193,16 @@ pub fn python(job: &ScopeRequest, source: &Loaded) -> Projection {
     if !local_capable {
         gap(&mut report, "python:local_binding_frontier", None);
     }
-    rule(&mut report, EXACT, if token_complete && !blocks.is_empty() { Status::Complete } else { Status::Unsupported },
-        "Python function/class or complete source unit", "Ruff original-byte tokens and region ranges");
+    rule(&mut report, PYTHON_EXACT, if token_complete && !blocks.is_empty() { Status::Complete } else { Status::Unsupported },
+        "Python function/class or complete source unit", "Ruff original-byte tokens plus equal relative indentation and logical-line boundaries");
     let has_local_evidence = blocks.iter().flat_map(|(b, _)| b.tokens.iter())
         .any(|t| t.kind == CloneTokenKind::LocalIdentifier);
-    rule(&mut report, RENAMED, if token_complete && local_capable && has_local_evidence { Status::Complete } else { Status::Unsupported },
-        "AST-proven local occurrences only", "Unresolved and external-scope names remain exact; no semantic import binding is inferred; at least one proven local required");
+    rule(&mut report, PYTHON_RENAMED, if token_complete && local_capable && has_local_evidence { Status::Complete } else { Status::Unsupported },
+        "AST-proven local occurrences with equal Python layout", "Unresolved and external-scope names remain exact; no semantic import binding is inferred; at least one proven local required");
     no_near(&mut report);
-    finish(report, blocks)
+    let mut projection = finish(report, blocks);
+    projection.python_layouts = layouts;
+    projection
 }
 
 pub fn rust(job: &ScopeRequest, source: &Loaded) -> Projection {

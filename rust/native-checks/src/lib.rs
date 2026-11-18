@@ -7,11 +7,14 @@ mod providers;
 mod worker;
 mod supervisor;
 
-use contract::{DocumentReport, EXACT, Gap, Language, Loaded, Pair, RENAMED, Report, ScopeRequest, Status};
+use contract::{CloneQueryNotRunReason, CloneQueryReport, CloneQueryStatus, DocumentReport, Gap, Language, Loaded, Pair, PYTHON_CLONE_VERSION, Report, ScopeRequest, Status};
 use slophawk_clone_index::{CloneIndexSettings, CloneMatchClass, CloneQueryLimits, CloneTokenDocument, TokenCloneIndex};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
+
+/// Included in resident receipt identity whenever native checker semantics change.
+pub const SEMANTICS_VERSION: &str = "slophawk.native-checks/2";
 
 pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, String> {
     let started = Instant::now();
@@ -34,6 +37,7 @@ pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, Stri
         if source.source.byte_mapping == "unavailable" && source.source.language != Language::Csharp {
             p.blocks.clear();
             p.original_byte_spans.clear();
+            p.python_layouts.clear();
             p.report.status = Status::Partial;
             p.report.blocks_indexed = 0;
             p.report.tokens_indexed = 0;
@@ -42,7 +46,8 @@ pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, Stri
                 document_id: source.source.document_id.clone(), span: None,
             });
             for r in &mut p.report.rules {
-                if r.id == EXACT || r.id == RENAMED { r.status = Status::Unsupported; }
+                let (exact, renamed) = source.source.language.clone_rules();
+                if r.id == exact || r.id == renamed { r.status = Status::Unsupported; }
             }
         }
         projections.push(p);
@@ -50,10 +55,12 @@ pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, Stri
     // A failed worker, stale terminal, overflow, or source-provider failure
     // aborts the *whole* staged operation, not just the failing document.
     // The receipt retains failures/frontiers but publishes no clone pairs.
-    if projections.iter().any(|p| p.report.status == Status::Failed) {
+    let failed_batch = projections.iter().any(|p| p.report.status == Status::Failed);
+    if failed_batch {
         for p in &mut projections {
             p.blocks.clear();
             p.original_byte_spans.clear();
+            p.python_layouts.clear();
             p.report.blocks_indexed = 0;
             p.report.tokens_indexed = 0;
             if p.report.status != Status::Failed {
@@ -66,13 +73,33 @@ pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, Stri
             }
         }
     }
+    let mut clone_queries = BTreeMap::new();
+    for source in &sources {
+        clone_queries.entry(source.source.language).or_insert_with(|| CloneQueryReport {
+            language: source.source.language,
+            rule_version: slophawk_clone_index::RULE_VERSION,
+            requested_documents: 0,
+            status: CloneQueryStatus::NotRun,
+            not_run_reason: Some(if failed_batch { CloneQueryNotRunReason::FailedBatch }
+                else { CloneQueryNotRunReason::NoAdmittedBlocks }),
+            statistics: None,
+            gap_reasons: Vec::new(),
+            pairs_returned: 0,
+            pairs_accepted: 0,
+            pairs_retained: 0,
+        }).requested_documents += 1;
+    }
     let mut indices: BTreeMap<Language, TokenCloneIndex> = BTreeMap::new();
     let mut locations: BTreeMap<(Language, String, String), contract::ByteSpan> = BTreeMap::new();
+    let mut python_layouts = BTreeMap::new();
     let mut all_gaps = Vec::new();
     for p in &projections {
         all_gaps.extend(p.report.gaps.clone());
     }
-    for (source, projected) in sources.iter().zip(&projections) {
+    for (source, projected) in sources.iter().zip(&mut projections) {
+        for (block_id, layout) in std::mem::take(&mut projected.python_layouts) {
+            python_layouts.insert((source.source.document_id.clone(), block_id), layout);
+        }
         for (block_id, byte_span) in &projected.original_byte_spans {
             locations.insert((source.source.language, source.source.document_id.clone(), block_id.clone()), byte_span.clone());
         }
@@ -99,23 +126,50 @@ pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, Stri
             maximum_output_pairs: job.limits.max_output_pairs,
             maximum_compared_tokens: job.limits.max_compared_tokens,
         }).map_err(|e| format!("clone query: {e}"))?;
+        let row = clone_queries.get_mut(language).ok_or("clone query has no requested language")?;
+        row.status = if query.gaps.is_empty() { CloneQueryStatus::Complete } else { CloneQueryStatus::Partial };
+        row.not_run_reason = None;
+        row.gap_reasons = query.gaps.iter().map(|gap| contract::CloneQueryGapReason::from(gap.reason))
+            .collect::<BTreeSet<_>>().into_iter().collect();
+        row.statistics = Some(query.statistics.into());
+        row.pairs_returned = query.pairs.len();
         for g in query.gaps {
             all_gaps.push(Gap { reason: format!("clone-index:{:?}:{}:{}",g.reason,g.scope_key,g.affected_count),
                 document_id: "*".into(), span: None });
         }
         for p in query.pairs {
+            // The shared index nominates lexical matches. Python also requires
+            // suite/statement layout equality; never encode layout as fake text.
+            // Rejected pairs still consume the query's existing budgets.
+            if *language == Language::Python {
+                let left = python_layouts.get(&(p.left.document_id.clone(), p.left.block_id.clone()))
+                    .ok_or("Python clone candidate has no left layout")?;
+                let right = python_layouts.get(&(p.right.document_id.clone(), p.right.block_id.clone()))
+                    .ok_or("Python clone candidate has no right layout")?;
+                if left.len() != p.left.token_count || right.len() != p.right.token_count {
+                    return Err("Python layout length does not match clone candidate".into());
+                }
+                if left != right { continue; }
+            }
+            let pair_id = if *language == Language::Python {
+                let suffix = p.pair_id.strip_prefix(slophawk_clone_index::RULE_VERSION)
+                    .ok_or("clone index returned an unexpected rule version")?;
+                format!("{PYTHON_CLONE_VERSION}{suffix}")
+            } else { p.pair_id };
             let classification = match p.match_class {
                 CloneMatchClass::Exact => "exact",
                 CloneMatchClass::RenamedLocalIdentifiers => "renamed_proven_local",
             };
-            let key = (*language, p.pair_id.clone());
+            let key = (*language, pair_id.clone());
             if !seen.insert(key) { return Err("clone checker produced duplicate pair identity".into()); }
             let left_bytes = locations.get(&(*language, p.left.document_id.clone(), p.left.block_id.clone()))
                 .ok_or("clone index returned unknown left block identity")?;
             let right_bytes = locations.get(&(*language, p.right.document_id.clone(), p.right.block_id.clone()))
                 .ok_or("clone index returned unknown right block identity")?;
+            row.pairs_accepted += 1;
+            row.pairs_retained += 1;
             pairs.push(Pair {
-                pair_id: p.pair_id, language: *language, classification: classification.into(),
+                pair_id, language: *language, classification: classification.into(),
                 left_bytes: [left_bytes.start, left_bytes.end],
                 right_bytes: [right_bytes.start, right_bytes.end],
                 left_document: p.left.document_id, right_document: p.right.document_id,
@@ -139,6 +193,7 @@ pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, Stri
         schema: "slophawk.native-shadow/1", workspace_epoch: job.workspace_epoch,
         committed_revision: job.committed_revision, context_key: job.context.key,
         status, documents, pairs, gaps: all_gaps,
+        clone_queries: clone_queries.into_values().collect(),
         limits: job.limits, worker_invocations: attempted_workers,
         elapsed_ms: started.elapsed().as_millis(),
     })
@@ -150,7 +205,11 @@ pub fn bounded_report(mut report: Report) -> Result<Vec<u8>, String> {
     loop {
         let encoded = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
         if encoded.len() <= maximum { return Ok(encoded); }
-        if report.pairs.pop().is_some() {
+        if let Some(pair) = report.pairs.pop() {
+            let row = report.clone_queries.iter_mut().find(|row| row.language == pair.language)
+                .ok_or("report pair has no clone query receipt")?;
+            row.pairs_retained = row.pairs_retained.checked_sub(1)
+                .ok_or("report pair count exceeds clone query receipt")?;
             if !report.gaps.iter().any(|g| g.reason == "report:pair_budget") {
                 report.gaps.push(Gap { reason: "report:pair_budget".into(), document_id: "*".into(), span: None });
             }

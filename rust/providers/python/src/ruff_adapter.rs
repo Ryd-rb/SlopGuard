@@ -12,7 +12,7 @@ use ruff_text_size::{Ranged, TextRange};
 use crate::{
     ByteSpan, Capabilities, CommentFact, Coverage, Encoding, FileKind, Gap, GapKind,
     IdentifierFact, IdentifierRole, Limits, LocalBinding, Outcome, Region, RegionKind, SourceFacts,
-    SourceIdentity, TokenCategory, TokenFact,
+    SourceIdentity, TokenCategory, TokenFact, TokenLayout,
 };
 
 fn bytespan(range: TextRange, prefix: u32) -> ByteSpan {
@@ -595,18 +595,34 @@ pub(super) fn extract(
     let mut tokens = Vec::new();
     let mut identifiers = Vec::new();
     let mut comments = Vec::new();
+    let mut indent_depth = 0u32;
+    let mut starts_logical_line = true;
 
     for token in parsed.tokens() {
         let kind = token.kind();
-        if matches!(
-            kind,
-            TokenKind::Newline
-                | TokenKind::NonLogicalNewline
-                | TokenKind::Indent
-                | TokenKind::Dedent
-                | TokenKind::EndOfFile
-        ) {
-            continue;
+        match kind {
+            TokenKind::Newline => {
+                starts_logical_line = true;
+                continue;
+            }
+            TokenKind::Indent => {
+                // The admitted parser token count is at most 131,072.
+                indent_depth += 1;
+                continue;
+            }
+            TokenKind::Dedent => {
+                let Some(depth) = indent_depth.checked_sub(1) else {
+                    return SourceFacts::empty(
+                        facts.identity,
+                        Outcome::InvalidSyntax,
+                        Some("parser returned an unbalanced indentation stream".into()),
+                    );
+                };
+                indent_depth = depth;
+                continue;
+            }
+            TokenKind::NonLogicalNewline | TokenKind::EndOfFile => continue,
+            _ => {}
         }
         let span = bytespan(token.range(), prefix);
         let token_text =
@@ -694,9 +710,11 @@ pub(super) fn extract(
             span,
             region_id,
             category,
+            layout: TokenLayout { indent_depth, starts_logical_line },
             exact: token_text.to_owned(),
             renamed_local,
         });
+        starts_logical_line = false;
     }
 
     if tokens.len()

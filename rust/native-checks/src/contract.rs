@@ -12,11 +12,18 @@ pub const MAX_SOURCES: usize = 24;
 pub const EXACT: &str = "sg10.token-clones.v1/exact";
 pub const RENAMED: &str = "sg10.token-clones.v1/renamed-proven-local";
 pub const NEAR: &str = "sg10.token-clones.v1/near";
+pub const PYTHON_CLONE_VERSION: &str = "sg10.python-layout-clones.v2";
+pub const PYTHON_EXACT: &str = "sg10.python-layout-clones.v2/exact";
+pub const PYTHON_RENAMED: &str = "sg10.python-layout-clones.v2/renamed-proven-local";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Language { Csharp, Python, Rust, Fluxr }
 impl Language {
+    pub fn clone_rules(self) -> (&'static str, &'static str) {
+        if self == Self::Python { (PYTHON_EXACT, PYTHON_RENAMED) } else { (EXACT, RENAMED) }
+    }
+
     pub fn provider(self) -> &'static str {
         match self {
             Self::Csharp => "slophawk.csharp.roslyn.experimental",
@@ -285,12 +292,97 @@ pub struct Pair {
     pub token_count: usize,
 }
 
+/// Search coverage of eligible indexed blocks, separate from provider coverage.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneQueryStatus { NotRun, Complete, Partial }
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneQueryNotRunReason { NoAdmittedBlocks, FailedBatch }
+
+/// Distinct query gap kinds only; detailed scope/count evidence stays in Report.gaps.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneQueryGapReason {
+    OversizedBlock,
+    BoilerplatePostingLimit,
+    CandidatePairLimit,
+    ComparedTokenLimit,
+    OutputPairLimit,
+}
+
+impl From<slophawk_clone_index::CloneScopeGapReason> for CloneQueryGapReason {
+    fn from(reason: slophawk_clone_index::CloneScopeGapReason) -> Self {
+        use slophawk_clone_index::CloneScopeGapReason as Source;
+        match reason {
+            Source::OversizedBlock => Self::OversizedBlock,
+            Source::BoilerplatePostingLimit => Self::BoilerplatePostingLimit,
+            Source::CandidatePairLimit => Self::CandidatePairLimit,
+            Source::ComparedTokenLimit => Self::ComparedTokenLimit,
+            Source::OutputPairLimit => Self::OutputPairLimit,
+        }
+    }
+}
+
+/// A field-for-field copy of the clone index's accounting, without reanalysis.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneQueryStatistics {
+    pub document_count: usize,
+    pub indexed_block_count: usize,
+    pub generated_documents: usize,
+    pub excluded_documents: usize,
+    pub below_minimum_blocks: usize,
+    pub oversized_blocks: usize,
+    pub candidate_pairs_examined: usize,
+    pub compared_tokens_charged: i64,
+}
+
+impl From<slophawk_clone_index::CloneQueryStatistics> for CloneQueryStatistics {
+    fn from(stats: slophawk_clone_index::CloneQueryStatistics) -> Self {
+        Self {
+            document_count: stats.document_count,
+            indexed_block_count: stats.indexed_block_count,
+            generated_documents: stats.generated_documents,
+            excluded_documents: stats.excluded_documents,
+            below_minimum_blocks: stats.below_minimum_blocks,
+            oversized_blocks: stats.oversized_blocks,
+            candidate_pairs_examined: stats.candidate_pairs_examined,
+            compared_tokens_charged: stats.compared_tokens_charged,
+        }
+    }
+}
+
+/// One row per requested language (at most four), ordered by Language.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneQueryReport {
+    pub language: Language,
+    pub rule_version: &'static str,
+    pub requested_documents: usize,
+    pub status: CloneQueryStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_run_reason: Option<CloneQueryNotRunReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics: Option<CloneQueryStatistics>,
+    /// At most five distinct reasons, ordered by enum declaration.
+    pub gap_reasons: Vec<CloneQueryGapReason>,
+    /// Pairs returned by the bounded index query, not all possible true matches.
+    pub pairs_returned: usize,
+    /// Pairs accepted after any language-specific comparison.
+    pub pairs_accepted: usize,
+    /// Pairs remaining after the separate serialized-report byte budget.
+    pub pairs_retained: usize,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     pub schema: &'static str, pub workspace_epoch: String, pub committed_revision: String,
     pub context_key: String, pub status: Status, pub documents: Vec<DocumentReport>,
     pub pairs: Vec<Pair>, pub gaps: Vec<Gap>, pub limits: Limits,
+    pub clone_queries: Vec<CloneQueryReport>,
     pub worker_invocations: usize, pub elapsed_ms: u128,
 }
 

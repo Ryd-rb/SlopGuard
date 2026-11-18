@@ -92,11 +92,33 @@ The actual clone index implements whole-block Type-1 (exact) and Type-2
 (proven-local-renamed) matching. Near matching, cross-language matching,
 spelling/dictionary findings, semantic call graphs, runner execution, generated
 macro output, and declaration-level FluxR matching are **not** implemented.
-The response advertises `sg10.token-clones.v1/exact`,
-`sg10.token-clones.v1/renamed-proven-local`, and
-`sg10.token-clones.v1/near` with per-document statuses and explanations.
+For Python, the response advertises `sg10.python-layout-clones.v2/exact` and
+`sg10.python-layout-clones.v2/renamed-proven-local`; accepted pairs use the same
+v2 prefix. These rules require equal relative indentation and logical-line
+boundaries in addition to the shared index's lexical comparison. Other
+languages retain `sg10.token-clones.v1/exact` and
+`sg10.token-clones.v1/renamed-proven-local`. The unsupported
+`sg10.token-clones.v1/near` remains visible for every language.
+See [Python clone qualification](../../docs/python-clone-layout.md) for the
+current profile-backed resident caller and receipt-version invalidation.
 Unavailable FluxR declaration spans and opaque native item spans appear as
 concrete gaps. A lexical occurrence cannot turn into a semantic local binding.
+
+### Valid Python sources without clone tokens
+
+A nonempty Python source containing only whitespace, a UTF-8 BOM, or comments
+can have a complete, empty substantive token stream. When the provider confirms
+that outcome with complete token coverage and no gaps, the projection reports
+the exact rule as complete over that empty token scope and submits zero blocks.
+It does not fail the job or discard clone pairs from other source documents.
+The renamed-local and near rules remain unsupported for that document, so the
+aggregate report can still be partial. This is not a claim of repository safety.
+
+Zero-byte source requests are still rejected by admission. Invalid syntax,
+invalid encodings, resource failures, unsupported grammar or encoding, and an
+unavailable original-byte mapping retain their existing dispositions. A
+comment-only file is a complete provider result, whereas whitespace-only input
+can be `NoRelevantFacts`; both can legitimately have zero clone tokens.
 
 ## Framing, input admission, and bounded reporting
 

@@ -62,6 +62,66 @@ fn python_exact_renamed_and_near_miss_are_separate() {
     assert!(!p.pairs.iter().any(|pair| pair.left_document == "d" || pair.right_document == "d"));
     assert_eq!(p.worker_invocations, 0);
     assert!(p.documents.iter().all(|d| d.rules.iter().any(|r| r.id.ends_with("/near") && r.status==Status::Unsupported)));
+    assert!(p.pairs.iter().all(|pair| pair.pair_id.starts_with("sg10.python-layout-clones.v2:")));
+    assert!(p.documents.iter().all(|d| d.rules.iter().any(|r|
+        r.id == slophawk_native_checks::contract::PYTHON_EXACT && r.status == Status::Complete)));
+}
+
+#[test]
+fn python_layout_rejects_outdented_returns_in_exact_and_renamed_candidates() {
+    let a = "def f(flag):\n    value = 0\n    if flag:\n        value = 1\n        return value\n";
+    let b = "def f(flag):\n    value = 0\n    if flag:\n        value = 1\n    return value\n";
+    let renamed = "def f(flag):\n    result = 0\n    if flag:\n        result = 1\n    return result\n";
+    for other in [b, renamed] {
+        let report = run(request(vec![source("python", "a", a), source("python", "b", other)]));
+        assert!(report.pairs.is_empty(), "{:#?}", report.pairs);
+        assert_eq!(report.worker_invocations, 0);
+        assert!(report.documents.iter().all(|d| d.rules.iter().any(|r|
+            r.id == slophawk_native_checks::contract::PYTHON_RENAMED && r.status == Status::Complete)));
+    }
+}
+
+#[test]
+fn python_layout_rejects_changed_logical_newlines_without_changed_nesting() {
+    let a = "def f():\n    value = 1\n    + 2\n    return value\n";
+    let b = "def f():\n    value = 1 + 2\n    return value\n";
+    let report = run(request(vec![source("python", "a", a), source("python", "b", b)]));
+    assert!(report.pairs.is_empty(), "{:#?}", report.pairs);
+}
+
+#[test]
+fn python_layout_keeps_formatting_clones_and_original_byte_spans() {
+    let a = "def f():\n    value = (1 + 2)\n    return value\n";
+    let b = b"\xef\xbb\xbfdef f():\r\n\t# comment\r\n\tvalue = (\r\n\t    1 + 2\r\n\t)\r\n\r\n\treturn value";
+    let report = run(request(vec![source("python", "a", a), source_bytes("python", "b", b)]));
+    assert_eq!(matching(&report, "exact"), 1, "{:#?}", report.pairs);
+    let pair = &report.pairs[0];
+    assert_eq!(pair.left_bytes, [0, a.trim_end().len()]);
+    assert_eq!(pair.right_bytes, [3, b.len()]);
+}
+
+#[test]
+fn python_layout_keeps_query_caps_visible_after_rejecting_a_candidate() {
+    let a = "def f(flag):\n    value = 0\n    if flag:\n        value = 1\n        return value\n";
+    let b = "def f(flag):\n    value = 0\n    if flag:\n        value = 1\n    return value\n";
+    let mut input = request(vec![source("python", "a", a), source("python", "b", b), source("python", "c", a)]);
+    input["limits"]["maxOutputPairs"] = json!(1);
+    let report = run(input);
+    // The lexical a/b candidate consumes the cap before layout rejects it.
+    // The valid a/c pair is deliberately not recovered by an unbounded retry.
+    assert!(report.pairs.is_empty(), "{:#?}", report.pairs);
+    assert_eq!(report.status, Status::Partial);
+    assert!(report.gaps.iter().any(|g| g.reason.contains("OutputPairLimit")));
+}
+
+#[test]
+fn python_layout_failure_rules_use_the_new_identity() {
+    let report = run(request(vec![source("python", "broken", "def broken(")]));
+    assert_eq!(report.status, Status::Failed);
+    assert!(report.pairs.is_empty());
+    assert!(report.documents[0].rules.iter().any(|r|
+        r.id == slophawk_native_checks::contract::PYTHON_EXACT && r.status == Status::Unsupported));
+    assert!(!report.documents[0].rules.iter().any(|r| r.id == slophawk_native_checks::contract::EXACT));
 }
 
 #[test]
@@ -72,6 +132,7 @@ fn rust_simple_local_renaming_and_near_miss() {
     let p = run(request(vec![source("rust","r1",a),source("rust","r2",a),source("rust","r3",b),source("rust","r4",c)]));
     assert!(matching(&p, "exact") >= 1, "{:#?}",p.pairs);
     assert!(matching(&p, "renamed_proven_local") >= 1, "{:#?}",p.pairs);
+    assert!(p.pairs.iter().all(|pair| pair.pair_id.starts_with("sg10.token-clones.v1:")));
     assert!(!p.pairs.iter().any(|pair| pair.left_document == "r4" || pair.right_document == "r4"));
 }
 
@@ -117,6 +178,8 @@ fn untrusted_byte_mapping_cannot_produce_pairs() {
     let p = run(request(vec![a,b]));
     assert!(p.pairs.is_empty());
     assert!(p.documents.iter().all(|d| d.status == Status::Partial && d.blocks_indexed == 0));
+    assert!(p.documents.iter().all(|d| d.rules.iter().any(|r|
+        r.id == slophawk_native_checks::contract::PYTHON_EXACT && r.status == Status::Unsupported)));
 }
 
 #[test]
@@ -329,4 +392,131 @@ fn report_size_cap_never_silently_elides_scope_gaps() {
     let p = run(request(vec![source("python","a","def a():\n    return 1\n")]));
     let bytes = bounded_report(p).unwrap();
     assert!(bytes.len() < 1024*1024);
+}
+
+#[test]
+fn python_empty_token_sources_preserve_other_language_and_python_pairs() {
+    let cases: &[(&str, &[u8])] = &[
+        ("py", b" \r\n"),
+        ("py", b"\t\n \n"),
+        ("py", b"\xef\xbb\xbf"),
+        ("py", b"\xef\xbb\xbf \r\n"),
+        ("py", b"# package marker\n"),
+        ("pyi", b" \r\n"),
+    ];
+    for (extension, content) in cases {
+        let mut empty = source_bytes("python", "empty", content);
+        empty["logicalPath"] = json!(format!("src/empty.{extension}"));
+        empty["physicalPath"] = json!(format!("{}/src/empty.{extension}", root()));
+        let mut sources = vec![
+            empty,
+            source("python", "p1", "def f():\n    return 1\n"),
+            source("python", "p2", "def f():\n    return 1\n"),
+            source("rust", "r1", "fn f() { 1 + 2; }"),
+            source("rust", "r2", "fn f() { 1 + 2; }"),
+        ];
+        let report = run(request(sources.clone()));
+        // Independently specified: one same-language exact pair for each pair
+        // of identical functions, and no cross-language or empty-source pair.
+        assert_eq!(report.status, Status::Partial);
+        assert_eq!(report.pairs.len(), 2, "{content:?}: {:?}", report.documents);
+        assert!(report.pairs.iter().all(|pair| pair.classification == "exact"));
+        assert!(report.pairs.iter().any(|pair|
+            pair.left_document == "p1" && pair.right_document == "p2"));
+        assert!(report.pairs.iter().any(|pair|
+            pair.left_document == "r1" && pair.right_document == "r2"));
+        let empty_report = report.documents.iter().find(|d| d.document_id == "empty").unwrap();
+        assert_eq!(empty_report.status, Status::Complete);
+        assert_eq!((empty_report.blocks_indexed, empty_report.tokens_indexed), (0, 0));
+        assert!(empty_report.gaps.is_empty());
+        assert!(empty_report.rules.iter().any(|r|
+            r.id.ends_with("/exact") && r.status == Status::Complete));
+        assert!(empty_report.rules.iter().filter(|r| !r.id.ends_with("/exact"))
+            .all(|r| r.status == Status::Unsupported));
+        assert!(!report.gaps.iter().any(|g| g.reason.contains("peer_failed")));
+        assert_eq!(report.worker_invocations, 0);
+        sources.reverse();
+        let reversed = run(request(sources));
+        assert_eq!(serde_json::to_value(&report.pairs).unwrap(),
+            serde_json::to_value(&reversed.pairs).unwrap());
+    }
+}
+
+#[test]
+fn python_empty_only_is_an_explicit_empty_exact_scope() {
+    let report = run(request(vec![source("python", "empty", " \r\n")]));
+    assert_eq!(report.status, Status::Partial); // Renamed and near remain unsupported.
+    assert!(report.pairs.is_empty());
+    assert!(report.gaps.is_empty());
+    let document = &report.documents[0];
+    assert_eq!(document.status, Status::Complete);
+    assert_eq!((document.blocks_indexed, document.tokens_indexed), (0, 0));
+    assert!(document.rules.iter().any(|r| r.id.ends_with("/exact")
+        && r.status == Status::Complete && r.reason.contains("no substantive clone tokens")));
+}
+
+#[test]
+fn python_empty_token_handling_does_not_hide_failed_or_unsupported_inputs() {
+    let cases: &[(&[u8], u8, Status)] = &[
+        (b"def broken(:\n", 12, Status::Failed),
+        (b"\xff", 12, Status::Failed),
+        (b"# coding: latin-1\n", 12, Status::Unsupported),
+        (b" \n", 6, Status::Unsupported),
+    ];
+    for (content, minor, expected) in cases {
+        let mut input = request(vec![
+            source_bytes("python", "subject", content),
+            source("rust", "r1", "fn f() { 1 + 2; }"),
+            source("rust", "r2", "fn f() { 1 + 2; }"),
+        ]);
+        input["context"]["pythonMinor"] = json!(minor);
+        let report = run(input);
+        let subject = report.documents.iter().find(|d| d.document_id == "subject").unwrap();
+        assert_eq!(subject.status, *expected);
+        assert!(!subject.gaps.is_empty());
+        if *expected == Status::Failed {
+            assert_eq!(report.status, Status::Failed);
+            assert!(report.pairs.is_empty());
+        } else {
+            assert_eq!(report.status, Status::Partial);
+            assert_eq!(report.pairs.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn python_empty_token_handling_preserves_resource_failure() {
+    // At least 66,000 substantive tokens exceed the provider's 65,536-token
+    // quota, while 88,000 source bytes remain below the admission byte cap.
+    let over_budget = "x=1\n".repeat(22_000);
+    let report = run(request(vec![
+        source("python", "over_budget", &over_budget),
+        source("rust", "r1", "fn f() { 1 + 2; }"),
+        source("rust", "r2", "fn f() { 1 + 2; }"),
+    ]));
+    assert_eq!(report.status, Status::Failed);
+    assert!(report.pairs.is_empty());
+    assert!(report.gaps.iter().any(|g| g.reason.contains("token quota")));
+}
+
+#[test]
+fn python_empty_token_handling_preserves_byte_admission_and_mapping() {
+    let zero = request(vec![source_bytes("python", "zero", b"")]);
+    let parsed: ScopeRequest = serde_json::from_value(zero).unwrap();
+    assert!(shadow(parsed, &AtomicBool::new(false)).unwrap_err().contains("per-source byte cap"));
+
+    let mut unmapped = source("python", "empty", " \r\n");
+    unmapped["byteMapping"] = json!("unavailable");
+    let report = run(request(vec![unmapped]));
+    assert_eq!(report.documents[0].status, Status::Partial);
+    assert!(report.documents[0].gaps.iter().any(|g| g.reason.contains("caller_declared_unmapped")));
+    assert!(report.documents[0].rules.iter().all(|r| r.status == Status::Unsupported));
+}
+
+#[test]
+fn python_string_literal_remains_a_substantive_token() {
+    let report = run(request(vec![source("python", "docstring", "\"documentation\"\n")]));
+    assert_eq!(report.documents[0].tokens_indexed, 1);
+    assert_eq!(report.documents[0].blocks_indexed, 1);
+    assert!(report.pairs.is_empty()); // One token is below the admitted minimum.
 }

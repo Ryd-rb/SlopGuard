@@ -212,6 +212,7 @@ impl Scheduler {
             .collect();
         let scope = hash(
             &serde_json::to_vec(&(
+                slophawk_native_checks::SEMANTICS_VERSION,
                 revision,
                 root_identity,
                 git.branch,

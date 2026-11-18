@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 /// Stable pilot identity; changing fact semantics requires a new schema ID.
 pub const PROVIDER_ID: &str = "slophawk.python.ruff.syntax";
-pub const SCHEMA_VERSION: &str = "python-syntax-facts/v1";
+pub const SCHEMA_VERSION: &str = "python-syntax-facts/v2";
 pub const PARSER_CRATE: &str = "ruff_python_parser";
 pub const PARSER_VERSION: &str = "0.0.22";
 
@@ -230,11 +230,22 @@ pub struct TokenFact {
     pub span: ByteSpan,
     pub region_id: usize,
     pub category: TokenCategory,
+    /// Significant Python layout, separate from the original token spelling.
+    pub layout: TokenLayout,
     /// Exact source spelling. This can contain string literal contents;
     /// never feed it to the spelling rule.
     pub exact: String,
     /// Same as `exact` except for AST-proven local names, which use `$L<n>`.
     pub renamed_local: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenLayout {
+    /// Number of active INDENT tokens, not spaces or display columns.
+    pub indent_depth: u32,
+    /// First substantive token after a logical NEWLINE (or start of source).
+    /// Comments and continuation newlines do not change this boundary.
+    pub starts_logical_line: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,8 +311,9 @@ impl SourceFacts {
         }
     }
 
-    /// Return a region's substantive token stream, suitable for downstream
-    /// fingerprinting, collision checking, and near-match alignment.
+    /// Return a region's substantive spellings for candidate fingerprinting.
+    /// Python clone qualification must also compare `clone_layout`: spellings
+    /// alone omit suite nesting and logical statement boundaries.
     pub fn clone_stream(&self, region_id: usize, renamed_locals: bool) -> Vec<&str> {
         let Some(region) = self.regions.get(region_id) else {
             return Vec::new();
@@ -319,6 +331,23 @@ impl SourceFacts {
                 }
             })
             .collect()
+    }
+
+    /// Layout in the same order as `clone_stream`, relative to the region's
+    /// first token. Reject an invalid region or an escaping indentation depth.
+    /// No synthetic token text or zero-width source spans are introduced.
+    pub fn clone_layout(&self, region_id: usize) -> Option<Vec<TokenLayout>> {
+        let region = self.regions.get(region_id)?;
+        let mut tokens = self.tokens.iter().filter(|token| {
+            token.span.start >= region.span.start && token.span.end <= region.span.end
+        }).peekable();
+        let base = tokens.peek().map_or(0, |token| token.layout.indent_depth);
+        tokens.map(|token| {
+            Some(TokenLayout {
+                indent_depth: token.layout.indent_depth.checked_sub(base)?,
+                starts_logical_line: token.layout.starts_logical_line,
+            })
+        }).collect()
     }
 }
 

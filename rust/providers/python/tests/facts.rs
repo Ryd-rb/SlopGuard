@@ -22,7 +22,7 @@ fn region(
 fn pinned_identity_and_original_sha256() {
     let facts = check("a.py", b"abc");
     assert_eq!(facts.identity.parser_version, "0.0.22");
-    assert_eq!(facts.identity.schema, "python-syntax-facts/v1");
+    assert_eq!(facts.identity.schema, "python-syntax-facts/v2");
     assert_eq!(
         facts.identity.source_sha256,
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -60,6 +60,73 @@ fn functions_and_classes_are_bounded_declaration_regions() {
             .iter()
             .any(|name| name.name == "local_v" && name.local.is_some())
     );
+}
+
+#[test]
+fn python_layout_distinguishes_nesting_and_logical_statement_boundaries() {
+    let cases: [(&[u8], &[u8]); 2] = [
+        (
+            b"def f(flag):\n    value = 0\n    if flag:\n        value = 1\n        return value\n",
+            b"def f(flag):\n    value = 0\n    if flag:\n        value = 1\n    return value\n",
+        ),
+        (
+            b"def f():\n    value = 1\n    + 2\n    return value\n",
+            b"def f():\n    value = 1 + 2\n    return value\n",
+        ),
+    ];
+    for (left, right) in cases {
+        let a = check("a.py", left);
+        let b = check("b.py", right);
+        assert_eq!(a.outcome, Outcome::Complete);
+        assert_eq!(b.outcome, Outcome::Complete);
+        let ar = region(&a, RegionKind::Function).id;
+        let br = region(&b, RegionKind::Function).id;
+        // The independently different programs have the same ordinary lexemes.
+        assert_eq!(a.clone_stream(ar, false), b.clone_stream(br, false));
+        assert_ne!(a.clone_layout(ar).unwrap(), b.clone_layout(br).unwrap());
+    }
+}
+
+#[test]
+fn python_layout_ignores_formatting_and_preserves_original_token_bytes() {
+    let plain = b"def f():\n    value = (1 + 2)\n    return value\n";
+    let formatted = b"\xef\xbb\xbfdef f():\r\n\t# comment\r\n\tvalue = (\r\n\t    1 + 2\r\n\t)\r\n\r\n\treturn value";
+    let a = check("a.py", plain);
+    let b = check("b.py", formatted);
+    assert_eq!(a.outcome, Outcome::Complete);
+    assert_eq!(b.outcome, Outcome::Complete);
+    let ar = region(&a, RegionKind::Function).id;
+    let br = region(&b, RegionKind::Function).id;
+    assert_eq!(a.clone_stream(ar, false), b.clone_stream(br, false));
+    assert_eq!(a.clone_layout(ar).unwrap(), b.clone_layout(br).unwrap());
+    for token in &b.tokens {
+        assert_eq!(token.span.slice(formatted).unwrap(), token.exact.as_bytes());
+    }
+}
+
+#[test]
+fn python_layout_ignores_explicit_line_continuation() {
+    let a = check("a.py", b"def f():\n    value = 1 + 2\n    return value\n");
+    let b = check("b.py", b"def f():\n    value = 1 + \\\n        2\n    return value\n");
+    let ar = region(&a, RegionKind::Function).id;
+    let br = region(&b, RegionKind::Function).id;
+    assert_eq!(a.clone_stream(ar, false), b.clone_stream(br, false));
+    assert_eq!(a.clone_layout(ar).unwrap(), b.clone_layout(br).unwrap());
+}
+
+#[test]
+fn python_layout_is_relative_and_rejects_an_escaping_depth() {
+    let a = check("a.py", b"def f(value):\n    return value + 1\n");
+    let mut b = check("b.py", b"class C:\n    def f(value):\n        return value + 1\n");
+    let ar = region(&a, RegionKind::Function).id;
+    let br = region(&b, RegionKind::Function).id;
+    assert_eq!(a.clone_stream(ar, false), b.clone_stream(br, false));
+    assert_eq!(a.clone_layout(ar).unwrap(), b.clone_layout(br).unwrap());
+    assert!(b.clone_layout(usize::MAX).is_none());
+    // Malformed caller-owned metadata must not wrap or saturate into a match.
+    b.tokens.iter_mut().find(|token| token.exact == "return").unwrap()
+        .layout.indent_depth = 0;
+    assert!(b.clone_layout(br).is_none());
 }
 
 #[test]

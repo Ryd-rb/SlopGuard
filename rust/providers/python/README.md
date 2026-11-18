@@ -9,7 +9,7 @@ resolve dependency graphs, invoke Python, or run tests.
 ## Source contract
 
 `SourceIdentity` carries provider `slophawk.python.ruff.syntax`, schema
-`python-syntax-facts/v1`, `ruff_python_parser` version `0.0.22`, path and
+`python-syntax-facts/v2`, `ruff_python_parser` version `0.0.22`, path and
 logical document ID, SHA-256 of the supplied bytes, original size, file kind,
 target Python grammar, and an explicit encoding decision. The returned
 `ByteSpan` values are **half-open offsets in original UTF-8 bytes**. No line
@@ -45,6 +45,16 @@ we do not promise local recovery after invalid syntax. Version-specific parser
 errors are `UnsupportedGrammar` without publishing partial AST records.
 `clone_tokens` means *syntax token extraction*, not that semantic linkage
 or a clone finding has been verified.
+
+Schema v2 adds `TokenFact.layout`: indentation-stack depth and whether the
+token starts a logical line. Original spelling and byte ranges stay separate.
+`clone_stream` supplies candidate spellings; a Python clone consumer must also
+compare `clone_layout` for the selected region. That method removes only the
+region's enclosing indentation depth. It returns `None` for an invalid region
+or an escaping depth, not an empty proof. Indentation width, comments, blank
+lines and continuation newlines do not create structural differences. Inline
+and indented suites may still differ. See [Python clone qualification](../../../docs/python-clone-layout.md)
+for the native caller, versioning, budgets and remaining limits.
 
 The 4 MiB hard source cap limits a parser invocation's initial input size,
 but Ruff's allocations and execution time are **not** supervised by this
