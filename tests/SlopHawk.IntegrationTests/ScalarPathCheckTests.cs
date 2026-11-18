@@ -16,11 +16,13 @@ public sealed class ScalarPathCheckTests
         if (string.IsNullOrWhiteSpace(binary) || string.IsNullOrWhiteSpace(worker)) return;
         using var fixture = new Fixture();
         var output = await Native("build", fixture.Spec, fixture.Scratch);
+        Assert.Equal(new[] { "Build", "Candidate" }, output.Json.EnumerateObject().Select(property => property.Name));
         var build = PathOf(output, "Build");
         var plan = PathOf(await Native("plan", fixture.Spec, fixture.Scratch, build, "graph-on"), "Plan");
         var checkedRun = await Native("check", plan);
         var review = await Native("review", PathOf(checkedRun, "Review", 1));
         Assert.True(review.Json.GetProperty("Current").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, review.Json.GetProperty("HistoricalReason").ValueKind);
         var observed = Assert.Single(review.Json.GetProperty("Result").GetProperty("Reproduced").EnumerateArray());
         Assert.Equal(1, observed.GetProperty("Observed").GetInt32());
         var structural = await Native("plan", fixture.Spec, fixture.Scratch, "-", "graph-on");
@@ -37,6 +39,17 @@ public sealed class ScalarPathCheckTests
             Path.Combine(source, "rules.json"), Path.Combine(source, "published.json"), fixture.Scratch, "24");
         Assert.InRange(contracts.Exit, 0, 1);
         Assert.True(contracts.Json.GetProperty("Compared").GetInt32() > 0);
+        var reviewPath = PathOf(checkedRun, "Review", 1);
+        await File.AppendAllTextAsync(Path.Combine(source, "Rates.cs"), "\n// changed");
+        var historical = await Native("review", reviewPath);
+        Assert.Equal(1, historical.Exit);
+        Assert.False(historical.Json.GetProperty("Current").GetBoolean());
+        Assert.False(string.IsNullOrEmpty(historical.Json.GetProperty("HistoricalReason").GetString()));
+        Assert.True(JsonElement.DeepEquals(review.Json.GetProperty("Result"), historical.Json.GetProperty("Result")));
+        await File.AppendAllTextAsync(Path.Combine(Path.GetDirectoryName(reviewPath)!, "review.json"), " ");
+        var tampered = await Native("review", reviewPath);
+        Assert.Equal(1, tampered.Exit);
+        Assert.Contains("path_check_failed", tampered.Error);
 
         Task<(int Exit, JsonElement Json, string Error)> Native(params string[] args) => NativeTool("paths", args);
 

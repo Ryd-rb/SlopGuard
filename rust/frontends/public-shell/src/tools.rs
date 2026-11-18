@@ -75,8 +75,13 @@ pub fn paths(args: &[String]) -> Result<i32> {
             .into_string()
             .map_err(|_| failure("invalid_path", "Worker path must be Unicode."))?,
     );
-    let (output, code) = slophawk_scalar_foreground::run(&routed)
+    let (mut output, code) = slophawk_scalar_foreground::run(&routed)
         .map_err(|error| failure("path_check_failed", error))?;
+    if verb == Some("build") {
+        let build = output.as_object_mut()
+            .ok_or_else(|| failure("path_check_failed", "Expected the controlled build paths."))?;
+        build.retain(|name, _| matches!(name.as_str(), "Build" | "Candidate"));
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&output).map_err(|e| failure("path_check_failed", e))?

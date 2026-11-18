@@ -950,19 +950,23 @@ pub fn review(review_manifest: &Path, worker: &Path) -> Result<Value> {
         reviewed.work != plan.methods.iter().map(|m| m.work).sum::<usize>() {
         return Err("Review scope does not match its source plan".into());
     }
-    let (source, identity) = validated_source(&plan, worker)?;
-    if !identity.same_authority(&reviewed.identity) || !identity.same_authority(&review_seal.identity) {
-        return Err("Review authority is stale".into());
-    }
-    let (build_dir, receipt) = attested_build(Path::new(&plan.build), &identity, &source.scratch)?;
-    let inspected = inspect(worker, &source, &identity, Some(&build_dir.join("candidate.dll")), plan.mode == "graph-on")?;
-    if receipt.compiler_sha256 != inspected.compiler_sha256 ||
-        receipt.candidate_sha256 != inspected.candidate_sha256 ||
-        receipt.compiler_inputs != inspected.compiler_inputs ||
-        plan.compiler_inputs != inspected.compiler_inputs {
-        return Err("Review references a stale compiler/source/reference closure".into());
-    }
-    Ok(json!({"Review": review_manifest, "Current": true, "Result": reviewed}))
+    let historical = (|| -> Result<()> {
+        let (source, identity) = validated_source(&plan, worker)?;
+        if !identity.same_authority(&reviewed.identity) {
+            return Err("Review authority is stale".into());
+        }
+        let (build_dir, receipt) = attested_build(Path::new(&plan.build), &identity, &source.scratch)?;
+        let inspected = inspect(worker, &source, &identity, Some(&build_dir.join("candidate.dll")), plan.mode == "graph-on")?;
+        if receipt.compiler_sha256 != inspected.compiler_sha256 ||
+            receipt.candidate_sha256 != inspected.candidate_sha256 ||
+            receipt.compiler_inputs != inspected.compiler_inputs ||
+            plan.compiler_inputs != inspected.compiler_inputs {
+            return Err("Review references a stale compiler/source/reference closure".into());
+        }
+        Ok(())
+    })().err();
+    Ok(json!({"Review": review_manifest, "Current": historical.is_none(),
+        "HistoricalReason": historical, "Result": reviewed}))
 }
 
 /// CLI adaptor for the opt-in native foreground command; the shipped `slophawk paths` argv is unchanged.
@@ -975,7 +979,8 @@ pub fn run(args: &[String]) -> Result<(Value, i32)> {
         Some("review") if args.len() == 3 => review(path(1)?, path(2)?)?,
         _ => return Err("Usage: scalar-paths-foreground build <spec> <scratch> <worker.dll> | plan <spec> <scratch> <build-manifest> <graph-on|graph-off> <worker.dll> | check <plan-manifest> <worker.dll> | review <review-manifest> <worker.dll>".into()),
     };
-    let exit = if value.get("Blocker").is_some_and(|v| !v.is_null()) ||
+    let exit = if value.get("Current").and_then(Value::as_bool) == Some(false) ||
+        value.get("Blocker").is_some_and(|v| !v.is_null()) ||
         value.get("Result").and_then(|r| r.get("Outcome")).and_then(Value::as_str)
             .is_some_and(|o| o != "no-discrepancy-in-scope") { 1 } else { 0 };
     Ok((value, exit))
