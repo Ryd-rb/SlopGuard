@@ -152,8 +152,13 @@ recovers the worker scope first and marks an unfinished attempt interrupted.
 It records provider receipts only for the same root, Git context, source
 inventory and grant. View the latest batch under `testScheduler` in daemon
 status. Its ledger lives in `native-<epoch>.tests.json` and provider captures
-remain in private attempt directories. Managed schema-v5 causes remain
-pending until the adapter can reconcile them with native receipts.
+remain in private attempt directories. The native owner resolves managed
+schema-v5 C# causes only after complete project selection and a passed or
+failed VSTest receipt for every eligible target. Partial selection, skipped
+tests and zero discovery leave those causes pending. Rollback returns the
+resolved intents and VSTest details with the snapshot. It also returns the
+other providers' attempt summaries, with their full receipts in the native
+ledger.
 
 ### Migration job frame contract
 

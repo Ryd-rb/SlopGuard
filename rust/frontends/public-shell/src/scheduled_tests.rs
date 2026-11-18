@@ -93,6 +93,8 @@ struct Record {
     state: String,
     receipts: Vec<Value>,
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planned_causes: Option<Vec<String>>,
 }
 
 pub(super) struct Scheduler {
@@ -182,10 +184,16 @@ fn inspect(profile: &Path, root: &Path, identity: &str, revision: i64) -> io::Re
 }
 
 impl Scheduler {
-    pub(super) fn open(state: &Path, epoch: &str) -> io::Result<Self> {
+    pub(super) fn open(state: &Path, root: &Path, epoch: &str) -> io::Result<Self> {
         let ledger = state.join(format!("native-{epoch}.tests.json"));
-        let latest = match bytes(&ledger, LIMIT) {
-            Ok(raw) => Some(serde_json::from_slice::<Record>(&raw).map_err(io::Error::other)?),
+        let latest = match worker::read_owner_document_bounded(&ledger, root, LIMIT) {
+            Ok(raw) => {
+                let record = serde_json::from_slice::<Record>(&raw).map_err(io::Error::other)?;
+                if record.epoch != epoch || record.id == 0 {
+                    return Err(invalid("native test ledger belongs to another epoch"));
+                }
+                Some(record)
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => None,
             Err(error) => return Err(error),
         };
@@ -221,12 +229,24 @@ impl Scheduler {
         Ok(())
     }
 
-    pub(super) fn start(
+    #[cfg(test)]
+    fn start(
         &mut self,
         root: &Path,
         identity: &str,
         epoch: &str,
         revision: i64,
+    ) -> Option<Running> {
+        self.start_with_causes(root, identity, epoch, revision, Vec::new())
+    }
+
+    pub(super) fn start_with_causes(
+        &mut self,
+        root: &Path,
+        identity: &str,
+        epoch: &str,
+        revision: i64,
+        causes: Vec<String>,
     ) -> Option<Running> {
         self.error = None;
         let result = (|| {
@@ -242,6 +262,7 @@ impl Scheduler {
             if self.latest.as_ref().is_some_and(|last| {
                 last.scope_sha256 == observed.scope
                     && !matches!(last.state.as_str(), "interrupted" | "superseded")
+                    && (causes.is_empty() || last.planned_causes.as_ref() == Some(&causes))
             }) {
                 return Ok(None);
             }
@@ -258,6 +279,7 @@ impl Scheduler {
                 state: "running".into(),
                 receipts: Vec::new(),
                 error: None,
+                planned_causes: Some(causes.clone()),
             };
             self.save(record.clone())?;
             let work = Work {
@@ -268,6 +290,7 @@ impl Scheduler {
                 revision,
                 epoch: epoch.into(),
                 observed,
+                causes,
             };
             match Running::start(work) {
                 Ok(running) => Ok(Some(running)),
@@ -288,6 +311,53 @@ impl Scheduler {
                 None
             }
         }
+    }
+
+    fn projectable_batch(&self, revision: i64) -> Option<&Record> {
+        self.latest.as_ref().filter(|record| {
+            record.planned_causes.is_some()
+                && record.revision == revision
+                && matches!(record.state.as_str(), "completed" | "blocked")
+                && record.receipts.iter().any(|batch| {
+                    batch["receipts"]
+                        .as_array()
+                        .is_some_and(|receipts| !receipts.is_empty())
+                })
+        })
+    }
+
+    pub(super) fn needs_projection(&self, state: &super::Snapshot) -> io::Result<bool> {
+        self.projectable_batch(state.revision)
+            .map_or(Ok(false), |record| {
+                super::test_handoff::needs_projection(state, &record.epoch, record.id)
+            })
+    }
+
+    pub(super) fn configured(&self) -> bool {
+        !fs::symlink_metadata(&self.profile).is_err_and(|error| error.kind() == ErrorKind::NotFound)
+    }
+
+    pub(super) fn project(&self, root: &Path, state: &mut super::Snapshot) -> io::Result<bool> {
+        let Some(record) = self.projectable_batch(state.revision) else {
+            return Ok(false);
+        };
+        // A successful projection is transactionally represented in schema v5.
+        // When resuming between the two writes, revalidate the complete scope.
+        if !super::test_handoff::needs_projection(state, &record.epoch, record.id)? {
+            return Ok(false);
+        }
+        let current = inspect(&self.profile, root, &state.root_identity, state.revision);
+        if !current.is_ok_and(|value| value.scope == record.scope_sha256) {
+            return Ok(false);
+        }
+        super::test_handoff::project(
+            state,
+            &record.epoch,
+            record.id,
+            &record.scope_sha256,
+            record.planned_causes.as_deref().unwrap_or_default(),
+            &record.receipts,
+        )
     }
 
     pub(super) fn finish(
@@ -412,6 +482,7 @@ struct Work {
     revision: i64,
     epoch: String,
     observed: Observation,
+    causes: Vec<String>,
 }
 
 struct Context<'a> {
@@ -614,6 +685,7 @@ impl Context<'_> {
                         scope: &self.work.observed.scope,
                         branch: &self.work.observed.branch,
                         commit: &self.work.observed.branch_commit,
+                        causes: &self.work.causes,
                         execution_profile: &grant,
                         deadline: std::time::Duration::from_millis(
                             self.work.observed.profile.budget.deadline_ms,
@@ -1229,9 +1301,49 @@ mod tests {
         )
         .unwrap();
         let epoch = nonce().unwrap();
-        let mut scheduler = Scheduler::open(&state, &epoch).unwrap();
+        let mut inventory = super::super::Snapshot {
+            format: 1,
+            inventory_schema: 5,
+            root_identity: identity.clone(),
+            revision: 5,
+            policy: None,
+            tables: super::super::TABLES
+                .iter()
+                .map(|(name, columns, _)| super::super::Table {
+                    name: (*name).into(),
+                    columns: columns.split(',').map(str::to_owned).collect(),
+                    rows: Vec::new(),
+                })
+                .collect(),
+        };
+        use super::super::Cell;
+        let null = Cell::nullable(String::new());
+        inventory.tables[0].rows.push(vec![
+            Cell::integer(1),
+            Cell::integer(5),
+            Cell::text(identity.clone()),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+            null.clone(),
+        ]);
+        inventory.tables[3].rows.push(vec![
+            Cell::integer(4),
+            Cell::text("csharp/Tests.cs".into()),
+            null.clone(),
+            null.clone(),
+            Cell::text("csharp/Tests.cs".into()),
+            Cell::text(sha256(b"fixture source")),
+            Cell::text("graph_unavailable".into()),
+        ]);
+        inventory.tables[4]
+            .rows
+            .push(vec![Cell::integer(1), Cell::integer(1), Cell::integer(5)]);
+        let planned = super::super::test_handoff::causes(&inventory).unwrap();
+        let mut scheduler = Scheduler::open(&state, &root, &epoch).unwrap();
         let mut running = scheduler
-            .start(&root, &identity, &epoch, 5)
+            .start_with_causes(&root, &identity, &epoch, 5, planned)
             .expect("first scope should run");
         assert_eq!(scheduler.status()["latest"]["state"], "running");
         let deadline = Instant::now() + Duration::from_secs(100);
@@ -1267,14 +1379,57 @@ mod tests {
             first["latest"]["receipts"][2]["receipts"][0]["receipt"]["observed_json"],
             "[23]"
         );
-        if let Some(state) = csharp {
+        if let Some(state) = &csharp {
             let csharp = &first["latest"]["receipts"][3]["receipts"][0];
             assert_eq!(csharp["outcome"], "Passed", "{first:#}");
             assert_eq!(csharp["receipt"]["counters"]["passed"], 1);
             eprintln!("C# fixture managed state: {}", state.display());
         }
 
-        let mut restored = Scheduler::open(&state, &epoch).unwrap();
+        let mut restored = Scheduler::open(&state, &root, &epoch).unwrap();
+        let mut subset = inventory.clone();
+        let mut incomplete = restored.latest.clone().unwrap();
+        if let Some(registered) = incomplete
+            .receipts
+            .iter_mut()
+            .find(|item| item["provider"] == "csharp")
+        {
+            registered["receipts"][0]["selectionComplete"] = false.into();
+        }
+        assert!(
+            super::super::test_handoff::project(
+                &mut subset,
+                &epoch,
+                incomplete.id,
+                &incomplete.scope_sha256,
+                incomplete.planned_causes.as_ref().unwrap(),
+                &incomplete.receipts
+            )
+            .unwrap()
+        );
+        assert_eq!(subset.tables[3].rows.len(), 1);
+        assert_eq!(subset.tables[4].rows.len(), 1);
+        assert!(restored.project(&root, &mut inventory).unwrap());
+        assert!(!restored.project(&root, &mut inventory).unwrap());
+        assert_eq!(
+            inventory.tables[5].rows.len(),
+            if csharp.is_some() { 5 } else { 4 }
+        );
+        assert_eq!(
+            inventory.tables[8].rows.len(),
+            usize::from(csharp.is_some())
+        );
+        if csharp.is_some() {
+            assert!(inventory.tables[3].rows.is_empty());
+            assert!(inventory.tables[4].rows.is_empty());
+            let export = fixture.join("projected-v5.json");
+            create_bound(&export, &json_bytes(&inventory).unwrap()).unwrap();
+            if let Some(path) = std::env::var_os("VODA_SCHEDULER_FIXTURE_MANIFEST") {
+                let paths = json!({"root":path_text(&root),
+                    "registration":state.join("native-tests.json"),"projection":export});
+                create_bound(Path::new(&path), &json_bytes(&paths).unwrap()).unwrap();
+            }
+        }
         assert!(restored.start(&root, &identity, &epoch, 5).is_none());
         assert_eq!(restored.status(), first);
         let mut interrupted = restored.latest.clone().unwrap();
@@ -1282,7 +1437,7 @@ mod tests {
         interrupted.receipts.clear();
         restored.save(interrupted).unwrap();
         slophawk_worker_scope::recover(Duration::from_secs(3)).unwrap();
-        let restored = Scheduler::open(&state, &epoch).unwrap();
+        let restored = Scheduler::open(&state, &root, &epoch).unwrap();
         assert_eq!(restored.latest.unwrap().state, "interrupted");
         // The test-owned output is retained for inspecting raw provider artifacts.
         eprintln!("executable scheduler evidence: {}", fixture.display());

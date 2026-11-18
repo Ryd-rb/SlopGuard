@@ -87,6 +87,95 @@ public sealed class NativeEngineSelectionTests
     }
 
     [Fact]
+    public async Task LiveNativeTestReceiptsResolveSchemaFiveCausesAndSurviveRollback()
+    {
+        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
+        var manifest = Environment.GetEnvironmentVariable("VODA_SCHEDULER_FIXTURE_MANIFEST");
+        if (string.IsNullOrWhiteSpace(manifest)) return;
+        Assert.False(string.IsNullOrWhiteSpace(binary));
+        var fixture = JsonNode.Parse(await File.ReadAllTextAsync(manifest))!;
+        var workspace = new Workspace(fixture["root"]!.GetValue<string>());
+        var inventory = new SourceInventory(workspace);
+        _ = inventory.Load();
+        var root = MigrationStateBridge.ReadRootIdentity(workspace);
+        var source = Path.Combine(workspace.Root, "csharp", "Tests.cs");
+        var sourceDigest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source)));
+        var sourceKey = OperatingSystem.IsWindows() ? "CSHARP/TESTS.CS" : "csharp/Tests.cs";
+        using (var connection = Open(workspace))
+        using (var transaction = connection.BeginTransaction())
+        using (var seed = connection.CreateCommand())
+        {
+            seed.Transaction = transaction;
+            seed.CommandText = """
+                UPDATE workspace SET revision = 7, root_identity = $root WHERE id = 1;
+                INSERT INTO source VALUES ($key,'csharp/Tests.cs',$digest,1);
+                INSERT INTO test_intent VALUES (6,$key,NULL,NULL,'csharp/Tests.cs',$digest,'graph_unavailable');
+                INSERT INTO intent_fallback VALUES (1,3,7);
+                """;
+            seed.Parameters.AddWithValue("$root", root);
+            seed.Parameters.AddWithValue("$key", sourceKey);
+            seed.Parameters.AddWithValue("$digest", sourceDigest);
+            seed.ExecuteNonQuery();
+            transaction.Commit();
+        }
+        var registration = Path.Combine(workspace.StateDirectory, "native-tests.json");
+        File.Copy(fixture["registration"]!.GetValue<string>(), registration);
+        if (OperatingSystem.IsLinux())
+            File.SetUnixFileMode(registration, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(binary!)));
+        var profile = new string('F', 64);
+        const string grant = "live-native-receipt-rollback";
+        MigrationStateBridge.TransferToNative(workspace, binary!, digest, profile, grant);
+        try
+        {
+            await Run("start");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            while (true)
+            {
+                var status = JsonNode.Parse(await Run("status"))!;
+                if (status["pendingTestIntents"]?["state"]?.GetValue<string>() == "none")
+                    break;
+                Assert.False(status["testScheduler"]?["state"]?.GetValue<string>() is "blocked" or "blocked_policy",
+                    status.ToJsonString());
+                await Task.Delay(150, deadline.Token);
+            }
+        }
+        finally
+        {
+            MigrationStateBridge.RollbackToLegacy(workspace, binary!, digest, profile, grant);
+        }
+        MigrationStateBridge.RequireLegacyWriter(workspace);
+        using var restored = Open(workspace);
+        Assert.Equal(0, Scalar(restored, "SELECT count(*) FROM test_intent"));
+        Assert.Equal(0, Scalar(restored, "SELECT count(*) FROM intent_fallback"));
+        Assert.Equal(5, Scalar(restored, "SELECT count(*) FROM test_attempt"));
+        Assert.Equal(3, Scalar(restored, """
+            SELECT count(*) FROM test_attempt WHERE state = 'passed'
+            AND (target LIKE 'python:%' OR target LIKE 'fluxr:%' OR target = 'rust:alpha@0.1.0')
+            """));
+        Assert.Equal(1, Scalar(restored, "SELECT count(*) FROM test_attempt WHERE target = 'rust:beta@0.1.0' AND state = 'blocked'"));
+        var attempt = Scalar(restored, "SELECT attempt_id FROM test_run_receipt");
+        var receipt = Assert.IsType<TestRunReceiptDetails>(inventory.ReadTestRunReceipt(attempt));
+        Assert.Equal(VstestDisposition.Passed, receipt.Platform);
+        Assert.Equal(1, receipt.Counters!.Passed);
+
+        async Task<string> Run(string command)
+        {
+            var start = new ProcessStartInfo(binary!) { RedirectStandardOutput = true,
+                RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var argument in new[] { "--native-workspace-v1", workspace.Root, workspace.StateDirectory, profile, command })
+                start.ArgumentList.Add(argument);
+            using var process = Process.Start(start)!;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token);
+            Assert.True(process.ExitCode == 0, await stderr);
+            return await stdout;
+        }
+    }
+
+    [Fact]
     public void InstalledRustPeerTransfersAndReturnsDurableState()
     {
         var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");

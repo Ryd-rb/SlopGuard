@@ -13,7 +13,7 @@ mod admission;
 mod python;
 mod runner;
 
-pub use admission::{Refusal, Verified, discard_staged, read_owner_document, run_admitted, run_admitted_guarded, verify_executable};
+pub use admission::{Refusal, Verified, discard_staged, read_owner_document, read_owner_document_bounded, run_admitted, run_admitted_guarded, verify_executable};
 pub use runner::{cargo_binding, cargo_environment_digest, cargo_msvc_environment_digest};
 pub use protocol::{Budget, CargoVariant, Executable, InputFile, FluxrModule, FluxrOperation, Identity, Job, MsvcToolchain, Operation, Status, PROTOCOL};
 use slophawk_python_project_context as py;

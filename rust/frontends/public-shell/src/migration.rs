@@ -21,6 +21,8 @@ mod scheduled_checks;
 mod scheduled_tests;
 #[path = "scheduled_csharp.rs"]
 mod scheduled_csharp;
+#[path = "test_handoff.rs"]
+mod test_handoff;
 
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -648,7 +650,25 @@ fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
         }
         ("export_and_stop_v1", "native" | "rollback-uncertain") if data.is_empty() => {
             let data = bytes(&state, CAP)?;
-            snapshot(&data, identity)?;
+            let mut exported = snapshot(&data, identity)?;
+            // The stopped seal commits an immutable rollback payload on retry.
+            let data = if fs::symlink_metadata(&stopped).is_ok() {
+                data
+            } else {
+                let tests = scheduled_tests::Scheduler::open(&directory, &root, &identity.epoch)?;
+                if tests.project(&root, &mut exported)? {
+                    let next = serde_json::to_vec(&exported).map_err(io::Error::other)?;
+                    snapshot(&next, identity)?;
+                    if next.len() > CAP || read_marker(&directory)? != marker
+                        || physical_root(&root)? != identity.root_identity {
+                        return Err(invalid("rollback test projection lost its authority or budget"));
+                    }
+                    store_snapshot(&state, &next, &identity.job)?;
+                    next
+                } else {
+                    data
+                }
+            };
             install_once(&stopped, hash(&data).as_bytes(), &identity.job)?;
             Ok((data, false))
         }

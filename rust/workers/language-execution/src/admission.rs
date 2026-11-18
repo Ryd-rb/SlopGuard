@@ -123,18 +123,26 @@ fn open_private(path: &Path, directory: bool) -> io::Result<File> {
 }
 
 fn read_private_profile(path: &Path) -> io::Result<Vec<u8>> {
+    read_private_document(path, 32 * 1024)
+}
+
+fn read_private_document(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     let dir = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
     let _directory = open_private(dir, true)?;
     let file = open_private(path, false)?;
-    read_bounded(file, 32 * 1024)
+    read_bounded(file, limit)
 }
 
 /// Read an owner-authenticated scheduler configuration outside the checkout.
 pub fn read_owner_document(path: &Path, root: &Path) -> io::Result<Vec<u8>> {
+    read_owner_document_bounded(path, root, 32 * 1024)
+}
+
+pub fn read_owner_document_bounded(path: &Path, root: &Path, limit: usize) -> io::Result<Vec<u8>> {
     if path.canonicalize()?.starts_with(root.canonicalize()?) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "checkout cannot grant execution"));
     }
-    read_private_profile(path)
+    read_private_document(path, limit)
 }
 
 fn verify_profile(path: &Path, job: &Job) -> Result<(Profile, String), Refusal> {

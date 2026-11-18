@@ -30,6 +30,7 @@ pub(super) struct Schedule<'a> {
     pub scope: &'a str,
     pub branch: &'a str,
     pub commit: &'a str,
+    pub causes: &'a [String],
     pub execution_profile: &'a Path,
     pub deadline: Duration,
     pub cancelled: &'a AtomicBool,
@@ -109,7 +110,7 @@ pub(super) fn run(
         return Err("C# project evaluation is incomplete".into());
     }
     let mut selected = std::collections::BTreeSet::new();
-    targets
+    let mut receipts = targets
         .iter()
         .enumerate()
         .map(|(index, target)| {
@@ -129,7 +130,21 @@ pub(super) fn run(
             }
             peer.test(id, target, index as u64)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    // Individual receipts may cover a registered subset. Resolving the
+    // workspace causes requires the entire evaluated test graph.
+    let complete = evaluated
+        .iter()
+        .filter(|target| target["isTestProject"] == true)
+        .all(|target| {
+            target["id"]
+                .as_str()
+                .is_some_and(|id| selected.contains(id))
+        });
+    for receipt in &mut receipts {
+        receipt["selectionComplete"] = complete.into();
+    }
+    Ok(receipts)
 }
 
 impl Peer<'_> {
@@ -140,10 +155,16 @@ impl Peer<'_> {
     fn test(&self, id: &str, target: &Target, index: u64) -> Result<Value, String> {
         pin(self.schedule.root, &target.runner)?;
         let input = sha256(format!("{}\0{id}", self.schedule.scope).as_bytes());
+        let fallback = [input.clone()];
+        let causes = if self.schedule.causes.is_empty() {
+            &fallback[..]
+        } else {
+            self.schedule.causes
+        };
         let work = json!({
             "root":self.root,"dotnetPath":self.dotnet.path,
             "selectedTargetId":id,"resultsRoot":target.results_root,"closure":target.closure,
-            "selectedInputFingerprint":input,"causeIds":[input],
+            "selectedInputFingerprint":input,"causeIds":causes,
             "gitBranch":self.schedule.branch,"gitCommit":self.schedule.commit,
             "runnerPath":target.runner.path,"timeoutSeconds":self.timeout()
         });
@@ -210,7 +231,7 @@ impl Peer<'_> {
         }
         Ok(
             json!({"target":id,"projectPath":target.project_path,"framework":target.framework,
-            "outcome":disposition,"receipt":receipt}),
+            "outcome":disposition,"receipt":receipt,"causeIds":self.schedule.causes}),
         )
     }
 

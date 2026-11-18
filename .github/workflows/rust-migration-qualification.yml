@@ -93,6 +93,7 @@ jobs:
           export VODA_CSHARP_SDK=10.0.404
           export VODA_CSHARP_PEER="$artifacts/bin/SlopHawk.Providers.CSharp.ExecutionWorker/debug/SlopHawk.Providers.CSharp.ExecutionWorker.dll"
           export VODA_SCHEDULER_EVIDENCE="$RUNNER_TEMP/native-executable-receipts.json"
+          export VODA_SCHEDULER_FIXTURE_MANIFEST="$RUNNER_TEMP/native-scheduler-workspace.json"
           cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml --bin slophawk-native resident_scheduler_runs_registered_providers_and_recovers_receipts -- --ignored --nocapture
       - name: Retain executable-test scheduler receipts
         if: ${{ !cancelled() }}
@@ -134,6 +135,8 @@ jobs:
           dotnet build tests/fixtures/native-engine/ControlledPeer.csproj --artifacts-path "$artifacts"
           dotnet build src/SlopHawk.Providers.CSharp.ScalarWorker/SlopHawk.Providers.CSharp.ScalarWorker.csproj --artifacts-path "$artifacts"
           export SLOPHAWK_NATIVE_MIGRATION_BINARY="$CARGO_TARGET_DIR/debug/slophawk-native"
+          export VODA_SCHEDULER_FIXTURE_MANIFEST="$RUNNER_TEMP/native-scheduler-workspace.json"
+          export VODA_NATIVE_PROVIDER_RECEIPTS="$RUNNER_TEMP/native-executable-receipts.json"
           export SLOPHAWK_NATIVE_TEST_PEER_BINARY="$artifacts/bin/ControlledPeer/debug/slophawk-controlled-migration-peer"
           export SLOPHAWK_NATIVE_SCALAR_WORKER="$artifacts/bin/SlopHawk.Providers.CSharp.ScalarWorker/debug/SlopHawk.Providers.CSharp.ScalarWorker.dll"
           export SLOPHAWK_PROJECT_TEST_DOTNET="$(readlink -f "$(command -v dotnet)")"

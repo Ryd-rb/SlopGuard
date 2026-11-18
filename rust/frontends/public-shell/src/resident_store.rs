@@ -53,7 +53,7 @@ impl Workspace {
         let lease = writer_lock(&state_dir, &marker.epoch, Duration::ZERO)?;
         slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
         let scheduler = Scheduler::open(&state_dir, &marker.epoch)?;
-        let tests = super::scheduled_tests::Scheduler::open(&state_dir, &marker.epoch)?;
+        let tests = super::scheduled_tests::Scheduler::open(&state_dir, &root, &marker.epoch)?;
         let state = state_dir.join(format!("native-{}.json", marker.epoch));
         let backup = bytes(
             &state_dir.join(format!("migration-backup-{}.json", marker.epoch)),
@@ -219,16 +219,47 @@ impl Workspace {
 
     pub fn schedule_tests(&mut self) -> Option<TestWorker> {
         self.report.as_ref()?;
-        self.tests.start(&self.root, &self.marker.root_identity, &self.marker.epoch, self.snapshot.revision)
+        let prepared = self.reconcile_test_receipts().and_then(|()| {
+            if self.tests.configured() { test_handoff::causes(&self.snapshot) } else { Ok(Vec::new()) }
+        });
+        let causes = match prepared {
+            Ok(causes) => causes,
+            Err(error) => {
+                self.tests.failed(error);
+                return None;
+            }
+        };
+        self.tests.start_with_causes(&self.root, &self.marker.root_identity,
+            &self.marker.epoch, self.snapshot.revision, causes)
     }
 
     pub fn finish_tests(&mut self, finished: io::Result<super::scheduled_tests::Finished>) {
         if let Err(error) = finished.and_then(|receipt| {
             self.authorized()?;
-            self.tests.finish(&self.root, &self.marker.root_identity, self.snapshot.revision, receipt)
+            self.tests.finish(&self.root, &self.marker.root_identity, self.snapshot.revision, receipt)?;
+            self.reconcile_test_receipts()
         }) {
             self.tests.failed(error);
         }
+    }
+
+    fn reconcile_test_receipts(&mut self) -> io::Result<()> {
+        if !self.tests.needs_projection(&self.snapshot)? {
+            return Ok(());
+        }
+        let mut next = self.snapshot.clone();
+        if !self.tests.project(&self.root, &mut next)? {
+            return Ok(());
+        }
+        let data = serde_json::to_vec(&next).map_err(io::Error::other)?;
+        if data.len() > CAP {
+            return Err(invalid("native test receipt projection exceeds the snapshot budget"));
+        }
+        snapshot(&data, &self.identity)?;
+        self.authorized()?;
+        store_snapshot(&self.state, &data, &nonce()?)?;
+        self.snapshot = next;
+        Ok(())
     }
 
     pub fn status(&self) -> Value {
