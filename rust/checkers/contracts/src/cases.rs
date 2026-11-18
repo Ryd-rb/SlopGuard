@@ -1,4 +1,6 @@
 //! Public-rule qualification, interpreted expectations and ordered seeded generation.
+mod diversity;
+
 use crate::expression::{self, Comparison, Expr, Name};
 use crate::integer::Integer;
 use crate::plan::{self, MAX_OPERATION_LIMIT, MAX_TOTAL_PLAN};

@@ -38,6 +38,75 @@ impl Expr {
         }
     }
 
+    // Operand postorder, left to right. These are syntactic comparisons, not
+    // observed branches: a comparison can sit in an unvisited lazy expression.
+    pub(crate) fn collect_comparisons(
+        &self,
+        output: &mut Vec<Comparison>,
+        limit: usize,
+    ) -> Result<(), &'static str> {
+        match self.node.as_ref() {
+            Node::Value(_) | Node::Parameter(_) => {}
+            Node::Unary(_, inner) => inner.collect_comparisons(output, limit)?,
+            Node::Binary(op, left, right) => {
+                left.collect_comparisons(output, limit)?;
+                right.collect_comparisons(output, limit)?;
+                if self.inputs != 0
+                    && matches!(op.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=")
+                    && !output.iter().any(|existing| {
+                        existing.op == *op
+                            && existing.left.same_tree(left)
+                            && existing.right.same_tree(right)
+                    })
+                {
+                    if output.len() >= limit {
+                        return Err("too many explicit comparison conditions for diversity selection");
+                    }
+                    output.push(Comparison {
+                        op: op.clone(),
+                        inputs: self.inputs,
+                        left: left.clone(),
+                        right: right.clone(),
+                    });
+                }
+            }
+            Node::Conditional(condition, yes, no) => {
+                condition.collect_comparisons(output, limit)?;
+                yes.collect_comparisons(output, limit)?;
+                no.collect_comparisons(output, limit)?;
+            }
+            Node::Function(_, args) => {
+                for arg in args {
+                    arg.collect_comparisons(output, limit)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Compare syntax without the derived `conditions` metadata. This coalesces
+    // repeated parsed comparisons; it does not prove semantic equivalence.
+    fn same_tree(&self, other: &Self) -> bool {
+        if Arc::ptr_eq(&self.node, &other.node) {
+            return true;
+        }
+        match (self.node.as_ref(), other.node.as_ref()) {
+            (Node::Value(a), Node::Value(b)) => a == b,
+            (Node::Parameter(a), Node::Parameter(b)) => a == b,
+            (Node::Unary(a, x), Node::Unary(b, y)) => a == b && x.same_tree(y),
+            (Node::Binary(a, x, y), Node::Binary(b, u, v)) => {
+                a == b && x.same_tree(u) && y.same_tree(v)
+            }
+            (Node::Conditional(a, b, c), Node::Conditional(x, y, z)) => {
+                a.same_tree(x) && b.same_tree(y) && c.same_tree(z)
+            }
+            (Node::Function(a, xs), Node::Function(b, ys)) => {
+                a == b && xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| x.same_tree(y))
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn eval(&self, values: &[Integer]) -> Result<Integer, &'static str> {
         let result = match self.node.as_ref() {
             Node::Value(value) => value.clone(),
