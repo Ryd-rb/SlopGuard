@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
 
+pub mod publication;
 pub mod typed;
 
 /// Versioned rule IDs for already validated, typed producer facts.
