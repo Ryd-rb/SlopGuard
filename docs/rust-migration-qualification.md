@@ -157,8 +157,8 @@ schema-v5 C# causes only after complete project selection and a passed or
 failed VSTest receipt for every eligible target. Partial selection, skipped
 tests and zero discovery leave those causes pending. Rollback returns the
 resolved intents and VSTest details with the snapshot. It also returns the
-other providers' attempt summaries, with their full receipts in the native
-ledger.
+other providers' attempt summaries. Every projected batch keeps its original
+receipts in a private `native-<epoch>.tests-<batch>.json` recovery file.
 
 ### Migration job frame contract
 

@@ -1,6 +1,7 @@
 //! Owner-configured executable tests run under the resident writer's fence.
 use super::{
-    bytes, create_bound, invalid, resident_store::nonce, scheduled_csharp, store_snapshot,
+    bytes, create_bound, install_once, invalid, resident_store::nonce, scheduled_csharp,
+    store_snapshot,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -350,14 +351,25 @@ impl Scheduler {
         if !current.is_ok_and(|value| value.scope == record.scope_sha256) {
             return Ok(false);
         }
-        super::test_handoff::project(
+        let projected = super::test_handoff::project(
             state,
             &record.epoch,
             record.id,
             &record.scope_sha256,
             record.planned_causes.as_deref().unwrap_or_default(),
             &record.receipts,
-        )
+        )?;
+        if projected {
+            // Managed v5 stores VSTest details and aggregate outcomes. Keep
+            // every projected batch's original identities and evidence with
+            // the private native recovery files before committing its rows.
+            let receipt = self.spool.join(format!(
+                "native-{}.tests-{}.json",
+                record.epoch, record.id
+            ));
+            install_once(&receipt, &json_bytes(record)?, &nonce()?)?;
+        }
+        Ok(projected)
     }
 
     pub(super) fn finish(

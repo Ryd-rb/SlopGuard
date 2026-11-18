@@ -158,6 +158,11 @@ public sealed class NativeEngineSelectionTests
         var receipt = Assert.IsType<TestRunReceiptDetails>(inventory.ReadTestRunReceipt(attempt));
         Assert.Equal(VstestDisposition.Passed, receipt.Platform);
         Assert.Equal(1, receipt.Counters!.Passed);
+        var archived = Assert.Single(Directory.EnumerateFiles(workspace.StateDirectory, "native-*.tests-*.json"));
+        var batch = JsonNode.Parse(await File.ReadAllTextAsync(archived))!;
+        Assert.Equal(4, batch["receipts"]!.AsArray().Count);
+        var original = batch["receipts"]!.AsArray().Single(group => group!["provider"]!.GetValue<string>() == "csharp")!;
+        Assert.Equal(receipt.ArtifactSha256, original["receipts"]![0]!["receipt"]!["artifactSha256"]!.GetValue<string>());
 
         async Task<string> Run(string command)
         {

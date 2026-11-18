@@ -130,6 +130,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/native-state-transfer.log") 2>&1
           artifacts="$RUNNER_TEMP/voda-dotnet"
           cargo +1.99.1 build --locked --manifest-path rust/frontends/public-shell/Cargo.toml
           dotnet build tests/fixtures/native-engine/ControlledPeer.csproj --artifacts-path "$artifacts"
@@ -144,6 +145,13 @@ jobs:
           test -f "$SLOPHAWK_CHECKER_TEST_REFERENCE_PACK/System.Runtime.dll"
           test -x "$SLOPHAWK_NATIVE_TEST_PEER_BINARY"
           dotnet test SlopHawk.slnx --artifacts-path "$artifacts" --logger 'console;verbosity=normal' -- xUnit.MaxParallelThreads=2
+      - name: Retain transfer, rollback and managed parity checks
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: linux-state-transfer-and-managed-parity
+          path: ${{ runner.temp }}/native-state-transfer.log
+          if-no-files-found: ignore
       - name: Reject incomplete release evidence
         shell: bash
         run: |
