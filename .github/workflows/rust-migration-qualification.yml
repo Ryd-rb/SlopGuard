@@ -73,9 +73,11 @@ jobs:
           cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml
           cargo +1.99.1 test --locked --offline --manifest-path rust/workers/language-execution/Cargo.toml --test real_workers -- --ignored --nocapture --test-threads=1
       - name: Run the native executable-test scheduler against real workers
+        id: executable-scheduler
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/native-executable-scheduler.log") 2>&1
           export VODA_LANGUAGE_WORKER_BIN="$CARGO_TARGET_DIR/debug/slophawk-language-worker"
           artifacts="$RUNNER_TEMP/voda-dotnet"
           dotnet build src/SlopHawk.Providers.CSharp.ExecutionWorker/SlopHawk.Providers.CSharp.ExecutionWorker.csproj --artifacts-path "$artifacts"
@@ -88,7 +90,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: linux-executable-test-receipts
-          path: ${{ runner.temp }}/native-executable-receipts.json
+          path: |
+            ${{ runner.temp }}/native-executable-receipts.json
+            ${{ runner.temp }}/native-executable-scheduler.log
           if-no-files-found: ignore
       - name: Exercise the coordinator and recover an interrupted live worker
         shell: bash
@@ -112,7 +116,7 @@ jobs:
           export VARO_REQUIRE_REAL_WORKER=1 VODA_TEST_SYSTEMD_SCOPE=1
           cargo +1.99.1 test --locked --manifest-path rust/native-checks/Cargo.toml -- --test-threads=1
       - name: Transfer, update and return durable state with the Rust peer
-        if: ${{ !cancelled() && steps.workers.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.executable-scheduler.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -141,7 +145,7 @@ jobs:
           test -f "$RUNNER_TEMP/analysis.json"
       - name: Build matched release and checker fixtures
         id: release
-        if: ${{ !cancelled() && steps.workers.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.executable-scheduler.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail

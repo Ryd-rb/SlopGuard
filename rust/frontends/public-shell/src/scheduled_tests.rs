@@ -1225,6 +1225,9 @@ mod tests {
         };
         scheduler.finish(&root, &identity, 5, finished).unwrap();
         let first = scheduler.status();
+        if let Some(path) = std::env::var_os("VODA_SCHEDULER_EVIDENCE") {
+            create_bound(Path::new(&path), &json_bytes(&first).unwrap()).unwrap();
+        }
         assert_eq!(first["state"], "completed", "{first:#}");
         assert_eq!(
             first["latest"]["receipts"][0]["receipts"][0]["outcome"], "Passed",
@@ -1250,9 +1253,6 @@ mod tests {
             assert_eq!(csharp["outcome"], "Passed", "{first:#}");
             assert_eq!(csharp["receipt"]["counters"]["passed"], 1);
             eprintln!("C# fixture managed state: {}", state.display());
-        }
-        if let Some(path) = std::env::var_os("VODA_SCHEDULER_EVIDENCE") {
-            create_bound(Path::new(&path), &json_bytes(&first).unwrap()).unwrap();
         }
 
         let mut restored = Scheduler::open(&state, &epoch).unwrap();
