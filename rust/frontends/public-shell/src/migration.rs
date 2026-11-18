@@ -15,6 +15,8 @@ const CAP: usize = 16 * 1024 * 1024;
 
 #[path = "resident_store.rs"]
 pub mod resident_store;
+#[path = "scheduled_checks.rs"]
+mod scheduled_checks;
 
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -621,9 +623,9 @@ fn exchange(identity: &Identity, data: &[u8]) -> io::Result<(Vec<u8>, bool)> {
     {
         return Err(invalid("migration marker does not bind this writer"));
     }
-    slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
     let wait = if identity.operation == "export_and_stop_v1" { Duration::from_secs(8) } else { Duration::ZERO };
     let _lock = writer_lock(&directory, &identity.epoch, wait)?;
+    slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
     if read_marker(&directory)? != marker || physical_root(&root)? != identity.root_identity {
         return Err(invalid("migration writer changed while taking its lease"));
     }

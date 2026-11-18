@@ -106,6 +106,8 @@ jobs:
           export SLOPHAWK_NATIVE_TEST_PEER_BINARY="$artifacts/bin/ControlledPeer/debug/slophawk-controlled-migration-peer"
           export SLOPHAWK_NATIVE_SCALAR_WORKER="$artifacts/bin/SlopHawk.Providers.CSharp.ScalarWorker/debug/SlopHawk.Providers.CSharp.ScalarWorker.dll"
           export SLOPHAWK_PROJECT_TEST_DOTNET="$(readlink -f "$(command -v dotnet)")"
+          export SLOPHAWK_CHECKER_TEST_REFERENCE_PACK="$(find "$(dirname "$SLOPHAWK_PROJECT_TEST_DOTNET")/packs/Microsoft.NETCore.App.Ref" -path '*/ref/net10.0' -type d | sort -V | tail -n 1)"
+          test -f "$SLOPHAWK_CHECKER_TEST_REFERENCE_PACK/System.Runtime.dll"
           test -x "$SLOPHAWK_NATIVE_TEST_PEER_BINARY"
           dotnet test SlopHawk.slnx --artifacts-path "$artifacts" --logger 'console;verbosity=normal'
       - name: Reject incomplete release evidence

@@ -1,3 +1,5 @@
+pub use super::scheduled_checks::Running as CheckerWorker;
+use super::scheduled_checks::{Finished, Running, Scheduler};
 use super::*;
 use serde_json::{Value, json};
 
@@ -12,6 +14,7 @@ pub struct Workspace {
     epoch: String,
     report: Option<Vec<u8>>,
     error: Option<String>,
+    scheduler: Scheduler,
 }
 
 impl Workspace {
@@ -43,8 +46,9 @@ impl Workspace {
                 "resident daemon does not own the committed migration epoch",
             ));
         }
-        slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
         let lease = writer_lock(&state_dir, &marker.epoch, Duration::ZERO)?;
+        slophawk_worker_scope::recover(Duration::from_secs(3)).map_err(io::Error::other)?;
+        let scheduler = Scheduler::open(&state_dir, &marker.epoch)?;
         let state = state_dir.join(format!("native-{}.json", marker.epoch));
         let backup = bytes(
             &state_dir.join(format!("migration-backup-{}.json", marker.epoch)),
@@ -83,6 +87,7 @@ impl Workspace {
             epoch: epoch()?,
             report: None,
             error: None,
+            scheduler,
         };
         window.authorized()?;
         window.refresh();
@@ -157,6 +162,37 @@ impl Workspace {
         Ok(self.revision)
     }
 
+    pub fn schedule_checks(&mut self) -> Option<Running> {
+        self.report.as_ref()?;
+        let work = self.scheduler.admit(
+            &self.root,
+            &self.marker.root_identity,
+            &self.marker.epoch,
+            self.snapshot.revision,
+        )?;
+        match Running::start(work) {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                self.scheduler.failed(error);
+                None
+            }
+        }
+    }
+
+    pub fn finish_checks(&mut self, finished: io::Result<Finished>) {
+        if let Err(error) = finished.and_then(|receipt| {
+            self.authorized()?;
+            self.scheduler.finish(
+                &self.root,
+                &self.marker.root_identity,
+                self.snapshot.revision,
+                receipt,
+            )
+        }) {
+            self.scheduler.failed(error);
+        }
+    }
+
     pub fn status(&self) -> Value {
         let detail = &self.snapshot.tables[3].rows;
         let fallback = self.snapshot.tables[4].rows.first().map(|row| json!({
@@ -177,7 +213,7 @@ impl Workspace {
             })
         });
         let ready = self.report.is_some();
-        json!({"root":self.marker.root,"epoch":self.epoch,"revision":self.revision,
+        let mut status = json!({"root":self.marker.root,"epoch":self.epoch,"revision":self.revision,
             "committedRevision":self.snapshot.revision,"reportSchemaVersion":2,
             "state": if ready { "ready" } else if self.error.is_some() { "degraded" } else { "pending" },
             "lastError":self.error,"fileCount":ready.then(||self.snapshot.tables[1].rows.len()),
@@ -188,7 +224,11 @@ impl Workspace {
                 "oldestRevision":detail.first().and_then(|row|integer(&row[0])).or(first_fallback),
                 "latestRevision":last_fallback.or_else(||detail.last().and_then(|row|integer(&row[0]))),
                 "fallback":fallback,"state":if !detail.is_empty() || fallback.is_some() {"awaiting_selection"} else {"none"}},
-            "retiredTestIntents":retirement})
+            "retiredTestIntents":retirement});
+        if let Some(scheduled) = self.scheduler.status() {
+            status["checkerScheduler"] = scheduled;
+        }
+        status
     }
 
     pub fn results(&mut self) -> Option<Value> {
@@ -282,7 +322,7 @@ fn integer(cell: &Cell) -> Option<i64> {
     cell.value.as_deref()?.parse().ok()
 }
 
-fn nonce() -> io::Result<String> {
+pub(super) fn nonce() -> io::Result<String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;
     Ok(slophawk_public_shell::identity::uppercase_hex(&bytes).to_ascii_lowercase())

@@ -21,7 +21,7 @@ internal sealed record SampleCapture(string Platform, string Engine, string Scen
 internal static partial class Sampler
 {
     internal static async Task<SampleCapture> CaptureAsync(SampleSpec spec, Func<Task>? ready = null,
-        Func<Task<IReadOnlyList<double>>>? workload = null)
+        Func<Task<IReadOnlyList<double>>>? workload = null, Action? launching = null)
     {
         if (spec.SchemaVersion != 1 || (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) ||
             spec.Platform != (OperatingSystem.IsWindows() ? "windows" : "linux") ||
@@ -37,6 +37,7 @@ internal static partial class Sampler
 
         var errors = new HashSet<string>(StringComparer.Ordinal);
         var samples = new List<SamplePoint>();
+        launching?.Invoke();
         using var scope = StartSampleProcess(spec);
         if (ready is not null) await ready();
         var timer = Stopwatch.StartNew();

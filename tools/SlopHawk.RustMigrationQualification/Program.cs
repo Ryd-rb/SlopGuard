@@ -21,8 +21,8 @@ internal static class Program
                 Write(output, run);
                 return run.ScopeComplete ? 0 : 1;
             }
-            if (args is ["benchmark-resident", var legacy, var native, var scratch])
-                return await ResidentBenchmark.RunAsync(legacy, native, scratch);
+            if (args is ["benchmark-resident" or "benchmark-resident-events", var legacy, var native, var scratch])
+                return await ResidentBenchmark.RunAsync(legacy, native, scratch, includeSoak: args[0] == "benchmark-resident");
             if (args is ["qualify", var input, var receipt, var report])
             {
                 var result = Qualification.Evaluate(Read<QualificationInput>(input));
@@ -31,7 +31,8 @@ internal static class Program
                 return result.Report.Qualified ? 0 : 1;
             }
             Console.Error.WriteLine("Usage: qualification sample <spec.json> <capture.json> | " +
-                "qualify <evidence.json> <receipt.json> <report.json> | benchmark-resident <legacy> <native> <new-scratch>");
+                "qualify <evidence.json> <receipt.json> <report.json> | " +
+                "benchmark-resident|benchmark-resident-events <legacy> <native> <new-scratch>");
             return 2;
         }
         catch (Exception ex) when (ex is IOException or JsonException or ArgumentException or

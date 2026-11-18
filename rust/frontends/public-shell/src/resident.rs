@@ -290,6 +290,7 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
     let workspace = Arc::new(Mutex::new(workspace));
     let stopping = Arc::new(AtomicBool::new(false));
     let recheck = Arc::new(AtomicBool::new(false));
+    let mut checker: Option<crate::migration::resident_store::CheckerWorker> = None;
     let result = std::thread::scope(|threads| -> io::Result<()> {
         let mut active = Vec::<std::thread::ScopedJoinHandle<'_, ()>>::new();
         let mut next_scan = Instant::now() + POLL;
@@ -302,8 +303,15 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
                 if state.authorized().is_err() {
                     break;
                 }
+                if let Some(finished) = checker.as_mut().and_then(|worker| worker.completed()) {
+                    state.finish_checks(finished);
+                    checker = None;
+                }
                 if recheck.swap(false, Ordering::AcqRel) || Instant::now() >= next_scan {
                     state.refresh();
+                    if checker.is_none() {
+                        checker = state.schedule_checks();
+                    }
                     next_scan = Instant::now() + POLL;
                 }
             }
@@ -333,6 +341,7 @@ pub fn serve(root: &Path, state: &Path, profile: &str) -> io::Result<()> {
         }
         Ok(())
     });
+    drop(checker);
     if session.read().is_ok_and(|current| current == record) {
         fs::remove_file(&session.0)?;
     }

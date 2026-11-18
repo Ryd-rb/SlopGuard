@@ -94,6 +94,32 @@ retry an interrupted export. The original backup is retained per epoch for
 forensic recovery. Transitions to or from newer durable schemas require a new
 interchange version.
 
+### Scheduled source checks
+
+To enable the bounded resident source checker, put `native-checkers.json` in
+the private state directory that contains `migration-engine.json`. The
+version-1 document has `version`, `rootIdentity`, `context` and optional
+`worker` members. Copy `rootIdentity` from the current writer marker and use
+the documented shadow checker context. If the source closure contains C#,
+provide `worker.dotnet` and `worker.assembly` as `{path, sha256}` pins and an
+external reference pack in `context.referencePack`. Keep the profile readable
+and writable by the owner only. The other source checkers are built into Rust.
+
+The scheduler binds all input paths and digests, the Git observation, profile
+bytes and workspace revision before admitting an attempt. It checks this
+binding again before publishing the receipt. An interrupted attempt becomes
+eligible to rerun only after the writer and worker scopes are recovered. An
+unchanged completed or partial receipt is reused after restart. View the
+current attempt and report through `status` or MCP `workspace_status` under
+`checkerScheduler`. The latest receipt in `native-<epoch>.checks.json` is
+retained after rollback. Managed executable-test data continues to use its
+schema-v5 intent and receipt tables.
+
+This scheduler covers the existing shadow checker's bounded source syntax
+and clone rules. Larger or incomplete source closures are explicitly blocked.
+Executable test selection, scalar replay and test receipts have their own
+qualification requirements.
+
 ### Migration job frame contract
 
 Protocol `slophawk.migration-job/1`: every frame is little-endian `int32`
@@ -150,9 +176,12 @@ The sampler offers `sample <spec.json> <capture.json>`. The
 qualifier consumes all evidence as
 `qualify <evidence.json> <release-receipt.json> <analysis.json>`.
 `benchmark-resident <managed-executable> <native-executable> <new-scratch>`
-captures paired five-minute active idle and warm reconciliation measurements
-against a 100-source fixture. It retains per-process-scope evidence and the
-measured end-to-end recheck times for both binaries.
+captures paired cold startup, single edit, 100-file burst, same-commit branch
+switch, five-minute active idle and warm reconciliation measurements against
+a 100-source Git fixture. `benchmark-resident-events` runs the first four
+scenarios. These commands retain process-scope evidence and end-to-end
+latencies. Rollback and checker-process peak measurements require evidence
+that covers the transition and worker scopes as well.
 Owner harnesses must prepare a stable checkout/rule/policy/toolchain/fixture
 closure and run matched cold, warm, **five-minute idle**, single edits,
 **100-file burst**, branch switches and native-to-managed rollback, on **both

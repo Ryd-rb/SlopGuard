@@ -240,6 +240,120 @@ public sealed class NativeEngineSelectionTests
     }
 
     [Fact]
+    public async Task RustResidentSchedulesAllFourSourceCheckersAndRecoversDurableAttempts()
+    {
+        var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
+        var host = Environment.GetEnvironmentVariable("SLOPHAWK_PROJECT_TEST_DOTNET");
+        var pack = Environment.GetEnvironmentVariable("SLOPHAWK_CHECKER_TEST_REFERENCE_PACK");
+        if (string.IsNullOrWhiteSpace(binary) || string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(pack)) return;
+        using var home = new TempWorkspace();
+        Seed(home);
+        var digest = Digest(binary);
+        var profile = new string('E', 64);
+        var workspace = home.Workspace;
+        var samples = new Dictionary<string, string>
+        {
+            [".cs"] = "partial class Source { static int Value(int x) => x + 1; }\n",
+            [".py"] = "def total():\n    local_value = 1\n    return local_value + 2\n",
+            [".rs"] = "fn value() { let local_value = 1; local_value + 2; }\n",
+            [".fluxr"] = "fluxr 1\npub run 3 x int factor int offset int int ret add mul x factor offset\n",
+        };
+        foreach (var (extension, source) in samples)
+        {
+            await File.WriteAllTextAsync(Path.Combine(workspace.Root, "A" + extension), source);
+            await File.WriteAllTextAsync(Path.Combine(workspace.Root, "B" + extension), source);
+        }
+        MigrationStateBridge.TransferToNative(workspace, binary, digest, profile, "native-check-scheduler-test");
+        var marker = JsonNode.Parse(File.ReadAllText(Path.Combine(workspace.StateDirectory, "migration-engine.json")))!;
+        var epoch = marker["epoch"]!.GetValue<string>();
+        var receipt = Path.Combine(workspace.StateDirectory, $"native-{epoch}.checks.json");
+        try
+        {
+            var assembly = Path.Combine(AppContext.BaseDirectory, "SlopHawk.Providers.CSharp.Worker.dll");
+            var config = Path.Combine(workspace.StateDirectory, "native-checkers.json");
+            await File.WriteAllTextAsync(config, JsonSerializer.Serialize(new
+            {
+                version = 1, rootIdentity = marker["rootIdentity"]!.GetValue<string>(),
+                context = new { key = "native-scheduler-fixture", targetFramework = "net10.0", languageVersion = "CSharp14",
+                    assemblyName = "Fixture", referencePack = pack, fluxrModule = "fixture@checked-v1",
+                    referenceClosureComplete = true, sourceClosureComplete = true },
+                worker = new { dotnet = new { path = host, sha256 = Digest(host) }, assembly = new { path = assembly, sha256 = Digest(assembly) } },
+            }));
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(config, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            await Run("start");
+            var first = await WaitForReceipt();
+            var pairs = first["report"]!["pairs"]!.AsArray();
+            Assert.True(pairs.Select(pair => pair!["language"]!.GetValue<string>()).Order()
+                .SequenceEqual(new[] { "csharp", "fluxr", "python", "rust" }), first["report"]!.ToJsonString());
+            var firstAttempt = first["attempt"]!.GetValue<string>();
+            await Stop();
+            await Run("start");
+            Assert.Equal(firstAttempt, (await WaitForReceipt())["attempt"]!.GetValue<string>());
+            await Stop();
+
+            var interrupted = JsonNode.Parse(await File.ReadAllTextAsync(receipt))!;
+            interrupted["outcome"] = "running";
+            interrupted["report"] = null;
+            await File.WriteAllTextAsync(receipt, interrupted.ToJsonString());
+            await Run("start");
+            var recovered = await WaitForReceipt(firstAttempt);
+            Assert.Equal(first["scopeSha256"]!.GetValue<string>(), recovered["scopeSha256"]!.GetValue<string>());
+
+            await File.WriteAllTextAsync(Path.Combine(workspace.Root, "B.py"), samples[".py"].Replace("+ 2", "+ 3", StringComparison.Ordinal));
+            await Run("recheck");
+            var changed = await WaitForReceipt(recovered["attempt"]!.GetValue<string>());
+            Assert.NotEqual(recovered["scopeSha256"]!.GetValue<string>(), changed["scopeSha256"]!.GetValue<string>());
+            Assert.DoesNotContain(changed["report"]!["pairs"]!.AsArray(), pair => pair!["language"]!.GetValue<string>() == "python");
+        }
+        finally
+        {
+            MigrationStateBridge.RollbackToLegacy(workspace, binary, digest, profile, "native-check-scheduler-test");
+        }
+        MigrationStateBridge.RequireLegacyWriter(workspace);
+        Assert.True(File.Exists(receipt));
+
+        static string Digest(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+
+        async Task<JsonNode> Run(string verb)
+        {
+            var start = new ProcessStartInfo(binary) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var argument in new[] { "--native-workspace-v1", workspace.Root, workspace.StateDirectory, profile, verb })
+                start.ArgumentList.Add(argument);
+            using var process = Process.Start(start)!;
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var output = process.StandardOutput.ReadToEndAsync(deadline.Token);
+            var error = process.StandardError.ReadToEndAsync(deadline.Token);
+            await process.WaitForExitAsync(deadline.Token);
+            Assert.True(process.ExitCode == 0, await error);
+            return JsonNode.Parse(await output)!;
+        }
+
+        async Task Stop()
+        {
+            Assert.True((await Run("stop"))["stopping"]!.GetValue<bool>());
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            while (File.Exists(Path.Combine(workspace.StateDirectory, "native-daemon.json")) ||
+                   File.Exists(Path.Combine(workspace.Root, ".slophawk", "results.json")))
+                await Task.Delay(50, deadline.Token);
+        }
+
+        async Task<JsonNode> WaitForReceipt(string? previous = null)
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(24));
+            while (true)
+            {
+                var scheduler = (await Run("status"))["checkerScheduler"];
+                var state = scheduler?["state"]?.GetValue<string>();
+                Assert.False(state is "failed" or "blocked", scheduler?.ToJsonString());
+                if (state is "complete" or "partial" && scheduler!["attempt"]!.GetValue<string>() != previous)
+                    return scheduler;
+                await Task.Delay(75, deadline.Token);
+            }
+        }
+    }
+
+    [Fact]
     public async Task RustProjectsRoutesPinnedMsbuildFactsWithTheManagedPublicShape()
     {
         var binary = Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY");
