@@ -186,6 +186,29 @@ pub(crate) struct Comparison {
 }
 
 impl Comparison {
+    pub(crate) fn modulo_anchor(&self) -> Option<(usize, i64, i64)> {
+        if self.op != "==" {
+            return None;
+        }
+        fn anchor(remainder: &Expr, target: &Expr) -> Option<(usize, i64, i64)> {
+            let (value, period) = match remainder.node.as_ref() {
+                Node::Binary(op, value, period) if op == "%" => (value, period),
+                Node::Function(name, args) if name == "mod" => (&args[0], &args[1]),
+                _ => return None,
+            };
+            let Node::Parameter(index) = value.node.as_ref() else {
+                return None;
+            };
+            if period.inputs != 0 || target.inputs != 0 {
+                return None;
+            }
+            let period = period.eval(&[]).ok()?.to_i64()?;
+            let target = target.eval(&[]).ok()?.to_i64()?;
+            (period > 0 && target > -period && target < period).then_some((*index, period, target))
+        }
+        anchor(&self.left, &self.right).or_else(|| anchor(&self.right, &self.left))
+    }
+
     pub(crate) fn difference(&self, values: &[Integer]) -> Result<Integer, &'static str> {
         let result = self.left.eval(values)?.sub(&self.right.eval(values)?);
         if result.twos_complement_bits() > MAX_INTERMEDIATE_BITS + 1 {

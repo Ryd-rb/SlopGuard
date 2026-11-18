@@ -42,6 +42,11 @@ public sealed class ForegroundEvidenceTests
         Assert.Equal(stable.GetProperty("Result").GetRawText(), review.GetProperty("Result").GetRawText());
         Assert.Equal(operations.Length, review.GetProperty("Operations").GetArrayLength());
         Assert.Equal(3, review.GetProperty("ReplayChanges").GetInt32());
+        var requestsPath = result.Json.GetProperty("ReplayRequests").GetString()!;
+        Assert.Equal(requestsPath, summary.GetProperty("ReplayRequests").GetString());
+        Assert.Equal(requestsPath, review.GetProperty("ReplayRequests").GetString());
+        var request = Assert.Single(workspace.Read(requestsPath).EnumerateArray());
+        Assert.True(JsonElement.DeepEquals(finding.GetProperty("Input"), request));
     }
 
     [NativeCliFact]

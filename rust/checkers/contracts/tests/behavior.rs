@@ -23,6 +23,30 @@ fn values(cases: &[ProbeExpectation]) -> Vec<(String, Vec<i64>, String)> {
         })
         .collect()
 }
+
+#[test]
+fn periodic_projection_reaches_a_coupled_branch_from_an_ordinary_input() {
+    let rule = IntegerContract::new(
+        "Carry",
+        &["start", "end", "span", "part", "combined", "base"],
+        "start >= 0 && start <= end && span > 0 && part > 0 && base >= 0",
+        "end - start == span && span % 17 == 0 && combined == base + part ? end + part : end",
+        "carry.md",
+    );
+    let catalog = ContractCases::new(
+        &[rule],
+        &[known("Carry", &[3, 144, 55, 7, 88, 62], 144)],
+    )
+    .unwrap();
+    let probes = catalog.generate(64, 0, None, true, &[]).unwrap();
+    assert!(probes.iter().any(|case| {
+        let [start, end, span, part, combined, base] = case.args[..] else {
+            return false;
+        };
+        end - start == span && span % 17 == 0 && combined == base + part
+    }));
+}
+
 #[test]
 fn public_example_validation_and_rule_absence() {
     let guarded = IntegerContract::new(

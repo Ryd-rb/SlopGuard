@@ -8,8 +8,8 @@ use crate::{
 use serde::Serialize;
 use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
-use slophawk_contracts::ContractCases;
-use slophawk_probe_replay::{ProbeExpectation, check, check_result_json};
+use slophawk_contracts::{ContractCases, ProbeInput};
+use slophawk_probe_replay::{ProbeCheckResult, ProbeExpectation, check, check_result_json};
 use std::collections::hash_map::RandomState;
 use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
@@ -152,8 +152,7 @@ struct CheckRun<'a> {
 struct Published {
     report: Option<String>,
     run: Option<String>,
-    findings: usize,
-    result: Option<Box<RawValue>>,
+    result: Option<ProbeCheckResult>,
     replay_report: Option<String>,
 }
 
@@ -167,7 +166,6 @@ fn publish_replay(
     let mut published = Published {
         report: None,
         run: None,
-        findings: 0,
         result: None,
         replay_report: outcome.replay_report.clone(),
     };
@@ -182,8 +180,7 @@ fn publish_replay(
             published.report = Some(path.clone());
             published.replay_report = Some(path);
             published.run = Some(original.run.clone());
-            published.findings = original.result.findings.len();
-            published.result = Some(raw(&check_result_json(&original.result))?);
+            published.result = Some(original.result.clone());
         }
         Publication::Subset {
             cases,
@@ -199,7 +196,7 @@ fn publish_replay(
                 inputs_json(
                     &cases
                         .iter()
-                        .map(|c| slophawk_contracts::ProbeInput {
+                        .map(|c| ProbeInput {
                             operation: c.operation.clone(),
                             args: c.args.clone(),
                         })
@@ -231,8 +228,7 @@ fn publish_replay(
             )?;
             published.report = Some(root.join("report.json").to_string_lossy().into_owned());
             published.run = Some(run);
-            published.findings = checked.findings.len();
-            published.result = Some(result);
+            published.result = Some(checked);
         }
     }
     Ok(published)
@@ -250,6 +246,7 @@ struct Summary<'a> {
     PublishedSha256: &'a str,
     Summary: &'a str,
     Review: &'a str,
+    ReplayRequests: &'a Option<String>,
     Report: &'a Option<String>,
     Run: &'a Option<String>,
     Compared: usize,
@@ -280,6 +277,7 @@ struct Review<'a> {
     ReplayChanges: usize,
     Operations: &'a Value,
     Result: Option<&'a RawValue>,
+    ReplayRequests: &'a Option<String>,
 }
 
 fn check_contracts(
@@ -380,6 +378,15 @@ fn check_contracts(
     let review_path = search_path.join("review.json");
     let review_string = review_path.to_string_lossy().into_owned();
     let qualification_string = qualification_path.to_string_lossy().into_owned();
+    let findings = evidence.result.as_ref().map_or(&[][..], |result| result.findings.as_slice());
+    let replay_requests = if findings.is_empty() {
+        None
+    } else {
+        let path = search_path.join("replay-requests.json");
+        let requests: Vec<ProbeInput> = findings.iter().map(|finding| finding.input.clone()).collect();
+        publish_json(&path, inputs_json(&requests)?.as_bytes())?;
+        Some(path.to_string_lossy().into_owned())
+    };
     let summary = Summary {
         Format: FORMAT,
         Search: &search_string,
@@ -390,19 +397,23 @@ fn check_contracts(
         PublishedSha256: &published_sha,
         Summary: &summary_string,
         Review: &review_string,
+        ReplayRequests: &replay_requests,
         Report: &evidence.report,
         Run: &evidence.run,
         Compared: outcome.compared,
         PerOperation: per_operation,
         ElapsedMilliseconds: started.elapsed().as_millis(),
         Unsupported: outcome.unsupported,
-        Findings: evidence.findings,
+        Findings: findings.len(),
         ObservedDiscrepancies: outcome.observed_discrepancies,
         ReplayUnsupported: outcome.replay_unsupported,
         ReplayReport: &evidence.replay_report,
         ReplayChanges: raw(&replay_changes_json(&outcome.replay_changes)?)?,
         Operations: operations_json(&outcome.operations),
     };
+    let result = evidence.result.as_ref()
+        .map(|result| raw(&check_result_json(result)))
+        .transpose()?;
     let review = Review {
         Format: "slophawk-contract-review-v1",
         Run: &evidence.run,
@@ -416,7 +427,8 @@ fn check_contracts(
         ReplayUnsupported: outcome.replay_unsupported,
         ReplayChanges: outcome.replay_changes.len(),
         Operations: &summary.Operations,
-        Result: evidence.result.as_deref(),
+        Result: result.as_deref(),
+        ReplayRequests: &replay_requests,
     };
     publish_json(
         &review_path,
@@ -434,8 +446,9 @@ fn check_contracts(
         "{}",
         json!({
             "Format": FORMAT, "Summary": summary_string, "Review": review_string,
+            "ReplayRequests": replay_requests,
             "Report": evidence.report, "Run": evidence.run, "Compared": outcome.compared,
-            "Unsupported": outcome.unsupported, "Findings": evidence.findings,
+            "Unsupported": outcome.unsupported, "Findings": findings.len(),
             "ObservedDiscrepancies": outcome.observed_discrepancies,
             "ReplayUnsupported": outcome.replay_unsupported,
             "ElapsedMilliseconds": summary.ElapsedMilliseconds,
@@ -447,7 +460,7 @@ fn check_contracts(
         })
     );
     Ok(
-        if outcome.success(evidence.report.is_some(), evidence.findings) {
+        if outcome.success(evidence.report.is_some(), findings.len()) {
             0
         } else {
             1

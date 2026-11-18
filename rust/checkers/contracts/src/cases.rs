@@ -615,8 +615,14 @@ fn cmp_difference(
 }
 
 fn project(group: &[Comparison], point: &mut [i64], locals: &[Expr], reverse: bool) -> bool {
+    // Anchor periodic equalities before projecting coupled arithmetic.
+    // Otherwise an earlier linear projection can pin the only periodic input.
+    let mut ordered: Vec<_> = group.iter().map(|comparison| {
+        (comparison, comparison.modulo_anchor().filter(|(field, _, _)| *field < point.len()))
+    }).collect();
+    ordered.sort_by_key(|(_, anchor)| anchor.is_none());
     let mut run = || -> Result<bool, &'static str> {
-        for (index, comparison) in group.iter().enumerate() {
+        for (index, &(comparison, anchor)) in ordered.iter().enumerate() {
             let current = cmp_difference(comparison, point, locals)?;
             if comparison.matches(&current) {
                 continue;
@@ -632,8 +638,41 @@ fn project(group: &[Comparison], point: &mut [i64], locals: &[Expr], reverse: bo
                     continue;
                 }
                 let origin = point[field];
-                let unit = if origin == i64::MAX { -1_i64 } else { 1_i64 };
                 let mut candidate = point.to_vec();
+                let preserves = |candidate: &[i64]| -> Result<bool, &'static str> {
+                    if !comparison.matches(&cmp_difference(comparison, candidate, locals)?) {
+                        return Ok(false);
+                    }
+                    for &(earlier, _) in &ordered[..index] {
+                        if !earlier.matches(&cmp_difference(earlier, candidate, locals)?) {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                };
+                if let Some((periodic_field, period, target)) = anchor {
+                    if field != periodic_field {
+                        continue;
+                    }
+                    let (origin, period, target) =
+                        (i128::from(origin), i128::from(period), i128::from(target));
+                    let lower = origin - (origin - target).rem_euclid(period);
+                    let mut choices = [lower, lower + period];
+                    choices.sort_by_key(|value| (value - origin).abs());
+                    for proposed in choices {
+                        let Ok(value) = i64::try_from(proposed) else {
+                            continue;
+                        };
+                        candidate[field] = value;
+                        if preserves(&candidate)? {
+                            point[field] = value;
+                            adjusted = true;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                let unit = if origin == i64::MAX { -1_i64 } else { 1_i64 };
                 candidate[field] = origin + unit;
                 let slope = cmp_difference(comparison, &candidate, locals)?
                     .sub(&current)
@@ -651,17 +690,7 @@ fn project(group: &[Comparison], point: &mut [i64], locals: &[Expr], reverse: bo
                             continue;
                         }
                         candidate[field] = value;
-                        if !comparison.matches(&cmp_difference(comparison, &candidate, locals)?) {
-                            continue;
-                        }
-                        let mut preserves = true;
-                        for earlier in &group[..index] {
-                            if !earlier.matches(&cmp_difference(earlier, &candidate, locals)?) {
-                                preserves = false;
-                                break;
-                            }
-                        }
-                        if preserves {
+                        if preserves(&candidate)? {
                             point[field] = value;
                             adjusted = true;
                             break;
