@@ -7,10 +7,17 @@ using Xunit;
 
 namespace SlopHawk.IntegrationTests;
 
-[CollectionDefinition("NativeExecutionFixtures", DisableParallelization = true)]
-public sealed class NativeExecutionFixtureCollection { }
+[CollectionDefinition(NativeExecutionFixtureCollection.Name, DisableParallelization = true)]
+public sealed class NativeExecutionFixtureCollection
+{
+    internal const string Name = "NativeExecutionFixtures";
 
-[Collection("NativeExecutionFixtures")]
+    // Temporary checkouts sit outside the repository's SDK resolver configuration.
+    internal static void ConfigureSdk(string root) =>
+        File.Copy(Path.Combine(AppContext.BaseDirectory, "slophawk-test-sdk.json"), Path.Combine(root, "global.json"));
+}
+
+[Collection(NativeExecutionFixtureCollection.Name)]
 public sealed class NativeExecutionBridgeTests
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
@@ -224,6 +231,7 @@ public sealed class NativeExecutionBridgeTests
         if (Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_SDK_TEST") != "1")
             return; // Opt-in .NET 10 SDK fixture; no restore performed by the fixture.
         using var f = new TempRoot();
+        NativeExecutionFixtureCollection.ConfigureSdk(f.Checkout);
         var project = Path.Combine(f.Checkout, "Tests", "Unit.csproj");
         Directory.CreateDirectory(Path.GetDirectoryName(project)!);
         File.WriteAllText(project, """

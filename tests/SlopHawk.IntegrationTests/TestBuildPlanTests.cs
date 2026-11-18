@@ -5,6 +5,7 @@ using Xunit;
 
 namespace SlopHawk.IntegrationTests;
 
+[Collection(NativeExecutionFixtureCollection.Name)]
 public sealed class TestBuildPlanTests
 {
     [Fact]
@@ -168,6 +169,7 @@ public sealed class TestBuildPlanTests
     public async Task RealEvaluatedSdkStyleTestTargetIsPreparedWithoutLaunchingBuild()
     {
         using var f = new Fixture();
+        NativeExecutionFixtureCollection.ConfigureSdk(f.Root);
         var test = f.Target("Real SDK Target/Real SDK Target.csproj", "net10.0", true);
         var obj = Path.GetDirectoryName(f.AssetsPath(test))!;
         File.WriteAllText(Path.Combine(obj, Path.GetFileName(test.ProjectPath) + ".nuget.g.targets"), "<Project />");
