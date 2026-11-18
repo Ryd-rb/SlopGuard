@@ -19,6 +19,8 @@ pub mod resident_store;
 mod scheduled_checks;
 #[path = "scheduled_tests.rs"]
 mod scheduled_tests;
+#[path = "scheduled_csharp.rs"]
+mod scheduled_csharp;
 
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

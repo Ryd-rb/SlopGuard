@@ -434,12 +434,13 @@ public sealed class ProjectEvaluator(Workspace workspace)
         }
     }
 
-    private static async Task<WorkerResult> RunExplicitAsync(ProcessStartInfo info, CancellationTokenSource command)
+    internal static async Task<WorkerResult> RunExplicitAsync(ProcessStartInfo info, CancellationTokenSource command,
+        int maxOutput = MaxMetadataBytes)
     {
         using var process = Process.Start(info) ?? throw new IOException("The project evaluator could not start.");
         try
         {
-            var stdout = ReadBoundedAsync(process.StandardOutput, MaxMetadataBytes, command);
+            var stdout = ReadBoundedAsync(process.StandardOutput, maxOutput, command);
             var stderr = ReadBoundedAsync(process.StandardError, 32_768, command);
             await Task.WhenAll(stdout, stderr, process.WaitForExitAsync(command.Token));
             return new WorkerResult(process.ExitCode, await stdout, await stderr);

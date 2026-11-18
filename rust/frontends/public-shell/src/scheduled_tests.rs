@@ -1,5 +1,7 @@
 //! Owner-configured executable tests run under the resident writer's fence.
-use super::{bytes, create_bound, invalid, resident_store::nonce, store_snapshot};
+use super::{
+    bytes, create_bound, invalid, resident_store::nonce, scheduled_csharp, store_snapshot,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use slophawk_language_execution as worker;
@@ -31,6 +33,11 @@ struct Profile {
 #[derive(Deserialize)]
 #[serde(tag = "language", rename_all = "snake_case", deny_unknown_fields)]
 enum Provider {
+    Csharp {
+        dotnet: worker::Executable,
+        assembly: worker::Executable,
+        targets: Vec<scheduled_csharp::Target>,
+    },
     Python {
         interpreter: worker::Executable,
         project_root: String,
@@ -68,6 +75,7 @@ struct FluxrModule {
 impl Provider {
     fn name(&self) -> &'static str {
         match self {
+            Self::Csharp { .. } => "csharp",
             Self::Python { .. } => "python",
             Self::Rust { .. } => "rust",
             Self::Fluxr { .. } => "fluxr",
@@ -101,6 +109,7 @@ struct Observation {
     profile_sha256: String,
     profile: Profile,
     branch_commit: String,
+    branch: String,
     ledger: BTreeMap<String, worker::InputFile>,
 }
 
@@ -110,6 +119,7 @@ fn json_bytes(value: &impl Serialize) -> io::Result<Vec<u8>> {
 
 fn inspect(profile: &Path, root: &Path, identity: &str, revision: i64) -> io::Result<Observation> {
     let raw = worker::read_owner_document(profile, root)?;
+    let execution = profile.with_file_name("execution.json");
     let profile: Profile = serde_json::from_slice(&raw).map_err(io::Error::other)?;
     let providers = profile
         .providers
@@ -144,6 +154,13 @@ fn inspect(profile: &Path, root: &Path, identity: &str, revision: i64) -> io::Re
         })
         .collect::<BTreeMap<_, _>>();
     let profile_sha256 = sha256(&raw);
+    let managed_grant = if providers.contains("csharp") {
+        worker::read_owner_document(&execution, root)
+            .ok()
+            .map(|bytes| sha256(&bytes))
+    } else {
+        None
+    };
     let scope = sha256(&json_bytes(&(
         identity,
         revision,
@@ -151,6 +168,7 @@ fn inspect(profile: &Path, root: &Path, identity: &str, revision: i64) -> io::Re
         &git.branch,
         &git.commit,
         &profile_sha256,
+        managed_grant,
         &ledger,
     ))?);
     Ok(Observation {
@@ -158,6 +176,7 @@ fn inspect(profile: &Path, root: &Path, identity: &str, revision: i64) -> io::Re
         profile_sha256,
         profile,
         branch_commit: git.commit,
+        branch: git.branch,
         ledger,
     })
 }
@@ -575,6 +594,38 @@ impl Context<'_> {
 
     fn run(&mut self, provider: &Provider) -> Result<Vec<Value>, String> {
         match provider {
+            Provider::Csharp {
+                dotnet,
+                assembly,
+                targets,
+            } => {
+                let grant = self.work.spool.join("execution.json");
+                let current = || {
+                    worker::read_owner_document(&self.work.profile, &self.work.root)
+                        .is_ok_and(|bytes| sha256(&bytes) == self.work.observed.profile_sha256)
+                };
+                scheduled_csharp::run(
+                    scheduled_csharp::Schedule {
+                        root: &self.work.root,
+                        root_identity: &self.work.observed.profile.root_identity,
+                        revision: self.work.revision,
+                        epoch: &self.work.epoch,
+                        fence: self.work.id,
+                        scope: &self.work.observed.scope,
+                        branch: &self.work.observed.branch,
+                        commit: &self.work.observed.branch_commit,
+                        execution_profile: &grant,
+                        deadline: std::time::Duration::from_millis(
+                            self.work.observed.profile.budget.deadline_ms,
+                        ),
+                        cancelled: self.signal,
+                        current: &current,
+                    },
+                    dotnet,
+                    assembly,
+                    targets,
+                )
+            }
             Provider::Python {
                 interpreter,
                 project_root,
@@ -894,6 +945,133 @@ mod tests {
         }
     }
 
+    fn csharp_fixture(
+        root: &Path,
+        state: &Path,
+        identity: &str,
+        results: &Path,
+    ) -> (PathBuf, Value) {
+        let root_path = PathBuf::from(path_text(root));
+        let project_dir = root_path.join("csharp");
+        fs::create_dir(&project_dir).unwrap();
+        let project = project_dir.join("Fixture.csproj");
+        fs::write(&project, br#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" ExcludeAssets="build;buildTransitive;buildMultitargeting" />
+    <PackageReference Include="xunit" Version="2.9.3" ExcludeAssets="build;buildTransitive;buildMultitargeting" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" ExcludeAssets="build;buildTransitive;buildMultitargeting" PrivateAssets="all" />
+  </ItemGroup>
+</Project>"#).unwrap();
+        fs::write(project_dir.join("Tests.cs"), b"public sealed class Tests { [Xunit.Fact] public void Passes() => Xunit.Assert.True(true); }").unwrap();
+        let dotnet = tool("VODA_CSHARP_DOTNET");
+        let built = Command::new(&dotnet.path)
+            .current_dir(root)
+            .args(["build", "--nologo", "--verbosity", "quiet"])
+            .arg(&project)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "C# fixture build failed:\n{}\n{}",
+            String::from_utf8_lossy(&built.stdout),
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let version = Command::new(&dotnet.path)
+            .current_dir(root)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(version.status.success());
+        let version = std::str::from_utf8(&version.stdout).unwrap().trim();
+        let runner_path = Path::new(&dotnet.path)
+            .parent()
+            .unwrap()
+            .join("sdk")
+            .join(version)
+            .join("vstest.console.dll");
+        let runner = worker::Executable {
+            path: path_text(&runner_path),
+            sha256: sha256(&fs::read(&runner_path).unwrap()),
+        };
+        let out = project_dir.join("bin/Debug/net10.0");
+        let assets = project_dir.join("obj/project.assets.json");
+        let assets_json: Value = serde_json::from_slice(&fs::read(&assets).unwrap()).unwrap();
+        let adapter = assets_json["packageFolders"].as_object().unwrap().keys()
+            .map(|directory| Path::new(directory).join("xunit.runner.visualstudio/3.1.5/build/net8.0/xunit.runner.visualstudio.testadapter.dll"))
+            .find(|path| path.is_file()).expect("restored xUnit test adapter");
+        fs::copy(
+            adapter,
+            out.join("xunit.runner.visualstudio.testadapter.dll"),
+        )
+        .unwrap();
+        let assembly = out.join("Fixture.dll");
+        let companions = [
+            out.join("Fixture.deps.json"),
+            out.join("Fixture.runtimeconfig.json"),
+        ];
+        let mut runtime = companions.to_vec();
+        runtime.extend(fs::read_dir(&out).unwrap().filter_map(|entry| {
+            let path = entry.unwrap().path();
+            (path.extension().is_some_and(|ext| ext == "dll") && path != assembly).then_some(path)
+        }));
+        runtime.sort();
+        let adapters = runtime
+            .iter()
+            .filter(|path| {
+                path.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(".testadapter.dll")
+            })
+            .collect::<Vec<_>>();
+        assert!(!adapters.is_empty());
+        let required = std::iter::once(&assembly)
+            .chain(&runtime)
+            .collect::<Vec<_>>();
+        let root_text = path_text(root);
+        #[cfg(windows)]
+        let (user, state_parent, identity_root) = (
+            std::env::var("USERNAME").unwrap(),
+            PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("SlopHawk/state"),
+            root_text.replace('/', "\\").to_ascii_uppercase(),
+        );
+        #[cfg(not(windows))]
+        let (user, state_parent, identity_root) = (
+            std::env::var("USER").unwrap(),
+            std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(std::env::var_os("HOME").unwrap()).join(".local/share")
+                })
+                .join("SlopHawk/state"),
+            root_text,
+        );
+        fs::create_dir_all(&state_parent).unwrap();
+        let key = sha256(format!("{user}\0{identity_root}").as_bytes()).to_ascii_uppercase();
+        let managed_state = state_parent.join(format!("SlopHawk-{}", &key[..32]));
+        private_dir(&managed_state);
+        let grant = json!({"schemaVersion":1,"rootIdentity":identity,
+            "operations":["evaluate","build","test","compilerExtensions"],
+            "outputRoots":[project_dir.join("bin"),project_dir.join("obj"),results]});
+        let grant = json_bytes(&grant).unwrap();
+        for directory in [state, &managed_state] {
+            create_bound(&directory.join("execution.json"), &grant).unwrap();
+        }
+        let registration = json!({"language":"csharp","dotnet":dotnet,"assembly":tool("VODA_CSHARP_PEER"),
+            "targets":[{"project_path":"csharp/Fixture.csproj","framework":"net10.0","results_root":results,"runner":runner,
+                "closure":{"mappingIdentity":"voda-scheduler-v1","runnerIdentity":"vstest","adapterIdentity":"trx",
+                    "referenceAssemblies":[],"runtimeAssets":runtime,"settingsFiles":[project,assets],
+                    "adapterFiles":adapters,"requiredOutputs":required,"companions":runtime,
+                    "observedRuntimeInputs":runtime}}]});
+        (managed_state, registration)
+    }
+
     #[test]
     #[ignore = "requires the owner-admitted language, pytest, Cargo and FluxR executables"]
     fn resident_scheduler_runs_registered_providers_and_recovers_receipts() {
@@ -998,7 +1176,7 @@ mod tests {
             features: Vec::new(),
             msvc,
         };
-        let registration = json!({"version":1,"rootIdentity":identity,
+        let mut registration = json!({"version":1,"rootIdentity":identity,
         "worker":tool("VODA_LANGUAGE_WORKER_BIN"),
         "budget":{"deadline_ms":60000,"stdout_bytes":262144,"stderr_bytes":65536,"artifact_bytes":2097152},
         "providers":[
@@ -1017,6 +1195,15 @@ mod tests {
             "cases":[{"Operation":"affine","Args":[7,3,2],"Expected":23}],
             "limits":null,"output_scope":"tests/checked"}
         ]});
+        let csharp = std::env::var_os("VODA_CSHARP_PEER").map(|_| {
+            let results = fixture.join("vstest");
+            let (managed_state, csharp) = csharp_fixture(&root, &state, &identity, &results);
+            registration["providers"]
+                .as_array_mut()
+                .unwrap()
+                .push(csharp);
+            managed_state
+        });
         create_bound(
             &state.join("native-tests.json"),
             &json_bytes(&registration).unwrap(),
@@ -1058,6 +1245,15 @@ mod tests {
             first["latest"]["receipts"][2]["receipts"][0]["receipt"]["observed_json"],
             "[23]"
         );
+        if let Some(state) = csharp {
+            let csharp = &first["latest"]["receipts"][3]["receipts"][0];
+            assert_eq!(csharp["outcome"], "Passed", "{first:#}");
+            assert_eq!(csharp["receipt"]["counters"]["passed"], 1);
+            eprintln!("C# fixture managed state: {}", state.display());
+        }
+        if let Some(path) = std::env::var_os("VODA_SCHEDULER_EVIDENCE") {
+            create_bound(Path::new(&path), &json_bytes(&first).unwrap()).unwrap();
+        }
 
         let mut restored = Scheduler::open(&state, &epoch).unwrap();
         assert!(restored.start(&root, &identity, &epoch, 5).is_none());

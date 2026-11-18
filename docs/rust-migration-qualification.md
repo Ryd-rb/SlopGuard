@@ -130,7 +130,15 @@ state directory as the migration marker. The version-1 registration contains
 `version`, `rootIdentity`, the pinned language `worker` with its `path` and
 `sha256`, a worker `budget`, and a `providers` array.
 The [live scheduler fixture](../rust/frontends/public-shell/src/scheduled_tests.rs)
-shows a registration for Python, Cargo and FluxR.
+shows registrations for C#, Python, Cargo and FluxR.
+
+C# maps registered projects and frameworks to evaluated MSBuild test targets.
+The registration supplies pinned `dotnet` and execution-peer `assembly`,
+authorized results roots, explicit runtime closures and VSTest runner pins.
+The peer uses the ordinary `execution.json` build and test grants. The native
+writer binds those grants and checks the verified build and TRX receipt
+against the same target and attempt. On Linux the managed peer runs inside
+the native owner's authenticated user cgroup.
 
 Python selects the registered project and collects its full pytest scope.
 Cargo evaluates the root workspace manifest and conservatively selects up
@@ -144,8 +152,8 @@ recovers the worker scope first and marks an unfinished attempt interrupted.
 It records provider receipts only for the same root, Git context, source
 inventory and grant. View the latest batch under `testScheduler` in daemon
 status. Its ledger lives in `native-<epoch>.tests.json` and provider captures
-remain in private attempt directories. This registration does not resolve
-managed schema-v5 causes or establish C# executable-test parity.
+remain in private attempt directories. Managed schema-v5 causes remain
+pending until the adapter can reconcile them with native receipts.
 
 ### Migration job frame contract
 

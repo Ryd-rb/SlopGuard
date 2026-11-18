@@ -216,7 +216,7 @@ pub(crate) fn read_bounded(mut input: impl Read, limit: usize) -> io::Result<Vec
     }
 }
 
-fn verify_executable(executable: &Executable) -> Result<(), Refusal> {
+pub fn verify_executable(executable: &Executable) -> Result<(), Refusal> {
     if !executable.valid() { return Err(Refusal::Denied("invalid executable identity")); }
     let path = Path::new(&executable.path);
     let link = fs::symlink_metadata(path).map_err(|_| Refusal::Denied("executable unavailable"))?;

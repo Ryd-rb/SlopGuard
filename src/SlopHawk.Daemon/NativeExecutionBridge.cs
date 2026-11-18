@@ -161,13 +161,16 @@ public static class NativeExecutionBridge
                 (work.Closure is null || string.IsNullOrWhiteSpace(work.SelectedTargetId) ||
                  string.IsNullOrWhiteSpace(work.ResultsRoot)))
                 return NativeExecutionResult.Refuse("unsupported", "job_context_mismatch");
-            if (!OperatingSystem.IsWindowsVersionAtLeast(10))
-                return NativeExecutionResult.Refuse("unsupported", "process_scope_unavailable", "windows_job_scope");
+            var linux = OperatingSystem.IsLinux()
+                ? await NativeLinuxExecutionScope.TryAttachAsync(cancellationToken) : null;
+            if (!OperatingSystem.IsWindowsVersionAtLeast(10) && linux is null)
+                return NativeExecutionResult.Refuse("unsupported", "process_scope_unavailable", "native_worker_scope");
             var workspace = isolatedWorkspace ?? new Workspace(work.Root);
             if (RootIdentity.Read(workspace.Root) != identity.RootIdentity)
                 return NativeExecutionResult.Refuse("stale", "root_changed");
-            var dotnet = ResolveDotnet(workspace);
-            if (dotnet is null)
+            var dotnet = linux is null ? ResolveDotnet(workspace) : Path.GetFullPath(work.DotnetPath);
+            if (dotnet is null || linux is not null && (Path.GetFileName(dotnet) != "dotnet" ||
+                ExecutionProfile.Contains(workspace.Root, dotnet) || !File.Exists(dotnet)))
                 return NativeExecutionResult.Refuse("deferred", "dotnet_unavailable", "toolchain");
             if (!dotnet.Equals(Path.GetFullPath(work.DotnetPath), Paths) ||
                 !string.Equals(HashFile(dotnet, cancellationToken), identity.ToolSha256, StringComparison.OrdinalIgnoreCase))
@@ -186,7 +189,9 @@ public static class NativeExecutionBridge
             string[] roots = operation == "evaluate" ? [] : grant.OutputRoots;
             var requirements = new WorkerRequirements(operations, UsesProcesses: true, OutputRoots: roots);
             grant.Require(requirements);
-            var (lease, waiting) = new WorkerAdmission(workspace).TryAcquire(grant, requirements);
+            var (lease, waiting) = linux is null
+                ? new WorkerAdmission(workspace).TryAcquire(grant, requirements)
+                : (new WorkerLease(null, workspace, Guid.NewGuid(), grant, requirements, null, linux), null);
             if (lease is null)
                 return NativeExecutionResult.Refuse("deferred", waiting ?? "waiting_worker");
             await using var worker = lease;
@@ -195,7 +200,7 @@ public static class NativeExecutionBridge
             var token = deadline.Token;
             worker.Revalidate();
             var evaluator = new ProjectEvaluator(workspace);
-            var graph = await evaluator.EvaluateAsync(worker, token);
+            var graph = await evaluator.EvaluateAsync(worker, token, pinnedDotnet: dotnet);
             if (!graph.Complete)
                 return NativeExecutionResult.Refuse("partial", "evaluation_incomplete",
                     graph.Issues.Select(issue => issue.Reason).Distinct().Take(32).ToArray());
@@ -394,15 +399,17 @@ public static class NativeExecutionBridge
                 Path.DirectorySeparatorChar))), member.Link)).ToArray();
         var projectRefs = plan.InvokedTargets.Where(target => target.TargetId != selected.Id)
             .Select(target => target.TargetAssembly).ToArray();
-        if (projectRefs.Any(path => !closure.ReferenceAssemblies.Contains(path, Workspace.PathComparer)))
+        var referencePaths = closure.ReferenceAssemblies.Select(path => Path.GetFullPath(path)).ToArray();
+        if (projectRefs.Any(path => !referencePaths.Contains(path, Workspace.PathComparer)))
             throw new IOException("Evaluated project reference is not in the explicit closure.");
         var required = plan.InvokedTargets.Select(target => target.TargetAssembly)
-            .Concat(closure.RequiredOutputs).Distinct(Workspace.PathComparer).Select(Add).ToArray();
-        var references = closure.ReferenceAssemblies.Select(Add).ToArray();
+            .Concat(closure.RequiredOutputs).Select(path => Path.GetFullPath(path))
+            .Distinct(Workspace.PathComparer).Select(Add).ToArray();
+        var references = referencePaths.Select(Add).ToArray();
         var runtime = closure.RuntimeAssets.Select(Add).ToArray();
         var settings = plan.InvokedTargets.Select(target => target.ProjectPath)
             .Concat(plan.Assets.Select(asset => asset.Path)).Concat(closure.SettingsFiles)
-            .Distinct(Workspace.PathComparer).Select(Add).ToArray();
+            .Select(path => Path.GetFullPath(path)).Distinct(Workspace.PathComparer).Select(Add).ToArray();
         var adapters = closure.AdapterFiles.Select(Add).ToArray();
         if (work.SelectedTargetId is not null && closure.Companions.Any(path =>
             !closure.RequiredOutputs.Contains(path, Workspace.PathComparer)))

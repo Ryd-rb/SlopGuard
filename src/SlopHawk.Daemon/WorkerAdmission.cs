@@ -245,8 +245,8 @@ internal sealed class WorkerAdmission(Workspace workspace)
         string[] Outputs);
 }
 
-internal sealed class WorkerLease(WorkerAdmission admission, Workspace workspace, Guid id, ExecutionGrant grant,
-    WorkerRequirements requirements, WindowsJob? job) : IAsyncDisposable
+internal sealed class WorkerLease(WorkerAdmission? admission, Workspace workspace, Guid id, ExecutionGrant grant,
+    WorkerRequirements requirements, WindowsJob? job, NativeLinuxExecutionScope? linux = null) : IAsyncDisposable
 {
     private bool disposed;
     internal Guid Id => id;
@@ -255,7 +255,7 @@ internal sealed class WorkerLease(WorkerAdmission admission, Workspace workspace
     internal void RequireTestOutputRoot(string path)
     {
         Revalidate();
-        if (job is null || !requirements.Operations.HasFlag(ExecutionOperation.Test) ||
+        if (job is null && linux is null || !requirements.Operations.HasFlag(ExecutionOperation.Test) ||
             !requirements.OutputRoots.Any(root => ExecutionProfile.Contains(root, path)))
             throw new UnauthorizedAccessException("The process lease does not cover this test output root.");
     }
@@ -263,6 +263,8 @@ internal sealed class WorkerLease(WorkerAdmission admission, Workspace workspace
     internal void Revalidate()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+        if (OperatingSystem.IsLinux())
+            linux?.RequireCurrent();
         if (!grant.FromProfile && RootIdentity.Read(workspace.Root) != grant.RootIdentity)
             throw new UnauthorizedAccessException("The workspace root changed during evaluation.");
         var current = grant.FromProfile ? ExecutionProfile.Read(workspace, grant.RootIdentity) : grant;
@@ -274,6 +276,8 @@ internal sealed class WorkerLease(WorkerAdmission admission, Workspace workspace
     internal Task<WorkerResult> RunAsync(ProcessStartInfo command, int maxOutput, CancellationToken cancellationToken)
     {
         Revalidate();
+        if (OperatingSystem.IsLinux() && linux is not null)
+            return linux.RunAsync(command, maxOutput, cancellationToken);
         if (job is null)
             throw new InvalidOperationException("This worker was admitted without a process scope.");
         return job.RunAsync(command, maxOutput, cancellationToken);
@@ -289,6 +293,8 @@ internal sealed class WorkerLease(WorkerAdmission admission, Workspace workspace
             using (job)
                 await job.DrainAsync();
         }
+        if (admission is null)
+            return;
         // Keep the reservation if draining failed. Another owner can only reclaim
         // it after proving the previous owner and its process scope are gone.
         for (var attempt = 0; ; attempt++)
