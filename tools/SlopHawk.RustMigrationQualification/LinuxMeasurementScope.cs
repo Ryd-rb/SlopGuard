@@ -73,7 +73,7 @@ internal static partial class Sampler
                     if (observed.Terminal && Empty())
                     {
                         Run("/usr/bin/systemctl", ["--user", observed.Failed ? "reset-failed" : "stop", unit]);
-                        if (slice is not null)
+                        if (slice is not null && Directory.Exists(CgroupPath))
                             Run("/usr/bin/systemctl", ["--user", "stop", slice]);
                         stopped = true;
                         return true;

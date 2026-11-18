@@ -187,14 +187,19 @@ internal static partial class Sampler
         var count = 0;
         while (groups.TryDequeue(out var group))
         {
-            foreach (var line in File.ReadLines(Path.Combine(group, "cgroup.procs")))
-                members.Add(int.Parse(line, CultureInfo.InvariantCulture));
-            foreach (var child in Directory.EnumerateDirectories(group))
+            try
             {
-                if (++count > 4096 || (File.GetAttributes(child) & FileAttributes.ReparsePoint) != 0)
-                    throw new IOException("The measurement cgroup tree exceeded its scope.");
-                groups.Enqueue(child);
+                foreach (var line in File.ReadLines(Path.Combine(group, "cgroup.procs")))
+                    members.Add(int.Parse(line, CultureInfo.InvariantCulture));
+                foreach (var child in Directory.EnumerateDirectories(group))
+                {
+                    if (++count > 4096 || (File.GetAttributes(child) & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException("The measurement cgroup tree exceeded its scope.");
+                    groups.Enqueue(child);
+                }
             }
+            catch (IOException error) when (group != cgroup && error is FileNotFoundException or DirectoryNotFoundException)
+            { /* A retired child cgroup has no members. The second snapshot still verifies stability. */ }
         }
         return members;
     }
