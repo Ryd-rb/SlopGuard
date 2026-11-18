@@ -10,6 +10,7 @@ using Xunit;
 
 namespace SlopHawk.IntegrationTests;
 
+[Collection("NativeExecutionFixtures")]
 public sealed class NativeEngineSelectionTests
 {
     [Fact]
@@ -127,6 +128,7 @@ public sealed class NativeEngineSelectionTests
         const string grant = "live-native-receipt-rollback";
         string[] Native(string command) => ["--native-workspace-v1", workspace.Root, workspace.StateDirectory, profile, command];
         JsonNode nativeStatus;
+        Exception? nativeFailure = null;
         MigrationStateBridge.TransferToNative(workspace, binary!, digest, profile, grant);
         try
         {
@@ -134,9 +136,22 @@ public sealed class NativeEngineSelectionTests
             nativeStatus = await WaitForReceipts(binary!, Native("status"));
             Assert.Equal(Contract(nativeStatus), await ReadMcpContract(binary!, Native("mcp")));
         }
+        catch (Exception error)
+        {
+            nativeFailure = error;
+            throw;
+        }
         finally
         {
-            MigrationStateBridge.RollbackToLegacy(workspace, binary!, digest, profile, grant);
+            try
+            {
+                MigrationStateBridge.RollbackToLegacy(workspace, binary!, digest, profile, grant);
+            }
+            catch (Exception rollbackFailure) when (nativeFailure is not null)
+            {
+                throw new AggregateException("The native fixture failed and rollback did not complete.",
+                    nativeFailure, rollbackFailure);
+            }
         }
         MigrationStateBridge.RequireLegacyWriter(workspace);
         using var restored = Open(workspace);
