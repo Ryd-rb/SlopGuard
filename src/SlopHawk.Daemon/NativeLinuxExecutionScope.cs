@@ -71,6 +71,10 @@ internal sealed class NativeLinuxExecutionScope(string journal, string unit, str
     internal async Task<WorkerResult> RunAsync(ProcessStartInfo command, int maxOutput, CancellationToken token)
     {
         RequireCurrent();
+        // The Windows Job launcher installs its own capture handles.
+        // Process.Start on Linux needs the redirects on the start info.
+        command.RedirectStandardOutput = true;
+        command.RedirectStandardError = true;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         var result = await ProjectEvaluator.RunExplicitAsync(command, deadline, maxOutput);
         RequireCurrent();
