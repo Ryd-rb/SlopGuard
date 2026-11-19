@@ -5,6 +5,7 @@
 //! daemon IPC or inferring permission to execute from repository artifacts.
 //! The explicit assembly supplied by the user is the only runnable adapter.
 mod adapter;
+pub mod assertion_receipts;
 mod evidence;
 mod io;
 mod model;
