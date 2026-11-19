@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -437,6 +438,297 @@ public sealed class CSharpResourceLifetimeTests
         Assert.False(string.IsNullOrWhiteSpace(first.RoslynCSharpAssemblyVersion));
     }
 
+    [Fact]
+    public void FiniteBooleanGuardsRequireAnExplicitVersionedMode()
+    {
+        var oldInput = JsonSerializer.Deserialize<ResourceLifetimeLimits>("{\"MaxUses\":1}")!;
+        Assert.Equal(ResourceLifetimeGuardMode.SingleConditionV1, oldInput.GuardMode);
+        Assert.Equal(1, oldInput.MaxNonconstantConditions);
+        Assert.Equal(1, oldInput.MaxBooleanParameters);
+        Assert.Equal(1, oldInput.MaxUses);
+        Assert.Equal(new ResourceLifetimeLimits(MaxUses: 1), oldInput);
+        Assert.Equal(16, FiniteBooleanLimits.MaxNonconstantConditions);
+        Assert.Equal(3, FiniteBooleanLimits.MaxBooleanParameters);
+        Assert.NotEqual(new ResourceLifetimeLimits(), FiniteBooleanLimits);
+
+        const string body = "var stream = new MemoryStream(); if (choose) stream.Dispose(); if (choose) return stream.ReadByte(); return 0;";
+        AssertUnsupported(Read(body));
+        AssertUnsupported(Read(body, limits: oldInput));
+        Assert.Equal(ResourceLifetimeUseState.Disposed,
+            Assert.Single(Read(body, limits: FiniteBooleanLimits).Uses).State);
+
+        var restored = JsonSerializer.Deserialize<ResourceLifetimeLimits>(
+            JsonSerializer.Serialize(FiniteBooleanLimits))!;
+        Assert.Equal(FiniteBooleanLimits, restored);
+        Assert.Throws<ArgumentOutOfRangeException>(() => Read("return 0;",
+            limits: new ResourceLifetimeLimits { GuardMode = (ResourceLifetimeGuardMode)99 }));
+    }
+
+    [Theory]
+    [InlineData("if (choose) stream.Dispose(); if (choose) return stream.ReadByte(); return 0;", ResourceLifetimeUseState.Disposed, 1)]
+    [InlineData("if (choose) stream.Dispose(); if (!choose) return stream.ReadByte(); return 0;", ResourceLifetimeUseState.Live, 0)]
+    [InlineData("if (choose) stream.Dispose(); if (!choose) stream.Dispose(); return stream.ReadByte();", ResourceLifetimeUseState.Disposed, 2)]
+    public void RepeatedImmutableGuardsRetainTheirValuations(
+        string suffix, ResourceLifetimeUseState expected, int witnesses)
+    {
+        var result = Read("var stream = new MemoryStream(); " + suffix, limits: FiniteBooleanLimits);
+        var use = Assert.Single(result.Uses);
+        Assert.Equal(ResourceLifetimeStatus.Analyzed, result.Status);
+        Assert.True(result.Complete);
+        Assert.Equal(expected, use.State);
+        Assert.NotNull(use.Allocation);
+        Assert.Equal(witnesses, use.Disposals.Count);
+        Assert.False(result.PathFeasibilityProved);
+    }
+
+    [Fact]
+    public void ContradictoryValuationsDoNotCreateADisposedUse()
+    {
+        var result = Read("var stream = new MemoryStream(); if (choose) { stream.Dispose(); if (!choose) return stream.ReadByte(); } return 0;",
+            limits: FiniteBooleanLimits);
+        Assert.Equal(ResourceLifetimeStatus.Analyzed, result.Status);
+        Assert.True(result.Complete);
+        Assert.Empty(result.Uses);
+    }
+
+    [Fact]
+    public void IndependentGuardsRetainBothLiveAndDisposedPossibilities()
+    {
+        var result = Read("var stream = new MemoryStream(); if (choose) stream.Dispose(); if (other) return stream.ReadByte(); return 0;",
+            limits: FiniteBooleanLimits, additionalParameters: ", bool other");
+        var use = Assert.Single(result.Uses);
+        Assert.Equal(ResourceLifetimeStatus.Analyzed, result.Status);
+        Assert.False(result.Complete);
+        Assert.Equal(ResourceLifetimeUseState.Unknown, use.State);
+        Assert.NotNull(use.Allocation);
+        Assert.Single(use.Disposals);
+        Assert.Equal("joined_lifetime_unknown", use.Reason);
+    }
+
+    [Theory]
+    [InlineData("if (choose) stream.Dispose(); if (choose && other && third) return stream.ReadByte(); return 0;")]
+    [InlineData("if (!choose) stream.Dispose(); if (!(choose || !other)) return stream.ReadByte(); return 0;")]
+    [InlineData("if (choose) stream.Dispose(); if (other) { if (third) { if (!!choose) return stream.ReadByte(); } } return 0;")]
+    public void LoweredShortCircuitAndNestedGuardsUseTheSameBooleanAtoms(string suffix)
+    {
+        var result = Read("var stream = new MemoryStream(); " + suffix, limits: FiniteBooleanLimits,
+            additionalParameters: ", bool other, bool third");
+        Assert.Equal(ResourceLifetimeStatus.Analyzed, result.Status);
+        Assert.True(result.Complete);
+        Assert.Equal(ResourceLifetimeUseState.Disposed, Assert.Single(result.Uses).State);
+    }
+
+    [Theory]
+    [InlineData("stream", ResourceLifetimeUseState.Live)]
+    [InlineData("alias", ResourceLifetimeUseState.Disposed)]
+    public void CorrelatedReacquisitionPreservesTheOldAlias(
+        string receiver, ResourceLifetimeUseState expected)
+    {
+        var body = "var stream = new MemoryStream(); var alias = stream; " +
+            "if (choose) { stream.Dispose(); stream = new MemoryStream(); } " +
+            $"if (choose) return {receiver}.ReadByte(); return 0;";
+        var result = Read(body, limits: FiniteBooleanLimits);
+        var use = Assert.Single(result.Uses);
+        Assert.True(result.Complete);
+        Assert.Equal(expected, use.State);
+        var source = Source(body);
+        var origin = expected == ResourceLifetimeUseState.Live
+            ? source.LastIndexOf("new MemoryStream()", StringComparison.Ordinal)
+            : source.IndexOf("new MemoryStream()", StringComparison.Ordinal);
+        Assert.Equal(origin, use.Allocation!.Start);
+        Assert.Equal(expected == ResourceLifetimeUseState.Live ? 0 : 1, use.Disposals.Count);
+    }
+
+    [Fact]
+    public void DifferentDisposedAllocationsDoNotBecomeOneExactIdentity()
+    {
+        var result = Read("var stream = new MemoryStream(); if (choose) stream = new MemoryStream(); stream.Dispose(); if (other) return stream.ReadByte(); return 0;",
+            limits: FiniteBooleanLimits, additionalParameters: ", bool other");
+        var use = Assert.Single(result.Uses);
+        Assert.Equal(ResourceLifetimeStatus.Analyzed, result.Status);
+        Assert.False(result.Complete);
+        Assert.Equal(ResourceLifetimeUseState.Unknown, use.State);
+        Assert.Null(use.Allocation);
+        Assert.Empty(use.Disposals);
+        Assert.Equal("object_identity_unknown", use.Reason);
+    }
+
+    [Fact]
+    public void ThrowingValuationsDoNotReachALaterGuardedRead()
+    {
+        var result = Read("var stream = new MemoryStream(); if (choose) { stream.Dispose(); stream.ReadByte(); } if (other) return stream.ReadByte(); return 0;",
+            limits: FiniteBooleanLimits, additionalParameters: ", bool other");
+        Assert.Equal(ResourceLifetimeStatus.Analyzed, result.Status);
+        Assert.True(result.Complete);
+        Assert.Equal(new[] { ResourceLifetimeUseState.Disposed, ResourceLifetimeUseState.Live },
+            result.Uses.Select(use => use.State).ToArray());
+        Assert.Single(result.Uses[0].Disposals);
+        Assert.Empty(result.Uses[1].Disposals);
+    }
+
+    [Fact]
+    public void AnUnknownReadStillTerminatesOnlyItsDisposedValuations()
+    {
+        var result = Read("var stream = new MemoryStream(); if (choose) stream.Dispose(); stream.ReadByte(); if (other) return stream.ReadByte(); return 0;",
+            limits: FiniteBooleanLimits, additionalParameters: ", bool other");
+        Assert.Equal(ResourceLifetimeStatus.Analyzed, result.Status);
+        Assert.False(result.Complete);
+        Assert.Equal(new[] { ResourceLifetimeUseState.Unknown, ResourceLifetimeUseState.Live },
+            result.Uses.Select(use => use.State).ToArray());
+    }
+
+    [Fact]
+    public void CorrelatedChangesStillRequireAMatchedLiveBaseline()
+    {
+        const string live = "var stream = new MemoryStream(); if (choose) stream.ToArray(); if (choose) return stream.ReadByte(); return 0;";
+        const string disposed = "var stream = new MemoryStream(); if (choose) stream.Dispose(); if (choose) return stream.ReadByte(); return 0;";
+        var before = Read(live, limits: FiniteBooleanLimits);
+        var after = Read(disposed, revision: "after", limits: FiniteBooleanLimits);
+        var introduced = CSharpResourceLifetime.Compare(before, after, [Match(before, after)]);
+        Assert.True(introduced.Complete);
+        Assert.Equal(ResourceLifetimeChangeKind.Introduced, Assert.Single(introduced.Changes).Kind);
+
+        var unmatched = CSharpResourceLifetime.Compare(before, after, []);
+        Assert.False(unmatched.Complete);
+        Assert.Equal(ResourceLifetimeChangeKind.Unknown, Assert.Single(unmatched.Changes).Kind);
+        Assert.Equal("matched_live_baseline_required", unmatched.Changes[0].Reason);
+
+        var shifted = Read("/* shifted */ " + disposed, revision: "shifted", limits: FiniteBooleanLimits);
+        var existing = CSharpResourceLifetime.Compare(after, shifted, [Match(after, shifted)]);
+        Assert.True(existing.Complete);
+        Assert.Equal(ResourceLifetimeChangeKind.Existing, Assert.Single(existing.Changes).Kind);
+
+        var reacquired = Read("var stream = new MemoryStream(); if (choose) { stream.Dispose(); stream = new MemoryStream(); } if (choose) return stream.ReadByte(); return 0;",
+            revision: "reacquired", limits: FiniteBooleanLimits);
+        var safe = CSharpResourceLifetime.Compare(after, reacquired, [Match(after, reacquired)]);
+        Assert.True(safe.Complete);
+        Assert.Equal(ResourceLifetimeChangeKind.NoRegression, Assert.Single(safe.Changes).Kind);
+    }
+
+    [Fact]
+    public void AnOldUnknownUnderIndependentGuardsCannotEstablishIntroduction()
+    {
+        var before = Read("var stream = new MemoryStream(); if (choose) stream.Dispose(); if (other) return stream.ReadByte(); return 0;",
+            limits: FiniteBooleanLimits, additionalParameters: ", bool other");
+        var after = Read("var stream = new MemoryStream(); if (choose) stream.Dispose(); if (choose) return stream.ReadByte(); return 0;",
+            revision: "after", limits: FiniteBooleanLimits, additionalParameters: ", bool other");
+        Assert.Equal(ResourceLifetimeUseState.Unknown, Assert.Single(before.Uses).State);
+        var comparison = CSharpResourceLifetime.Compare(before, after, [Match(before, after)]);
+        Assert.False(comparison.Complete);
+        var change = Assert.Single(comparison.Changes);
+        Assert.Equal(ResourceLifetimeChangeKind.Unknown, change.Kind);
+        Assert.Equal("incomplete_lifetime_observations", change.Reason);
+    }
+
+    [Fact]
+    public void AGuardModeChangeCannotBeAttributedToASourceEdit()
+    {
+        var before = Read("var stream = new MemoryStream(); return stream.ReadByte();");
+        var after = Read("var stream = new MemoryStream(); stream.Dispose(); return stream.ReadByte();",
+            revision: "after", limits: FiniteBooleanLimits);
+        var comparison = CSharpResourceLifetime.Compare(before, after, [Match(before, after)]);
+        Assert.False(comparison.Complete);
+        Assert.Empty(comparison.Changes);
+        Assert.Equal("incompatible_compiler_or_limits", comparison.Reason);
+    }
+
+    [Theory]
+    [InlineData("var stream = new MemoryStream(); if (choose) stream.Dispose(); choose = !choose; if (choose) return stream.ReadByte(); return 0;")]
+    [InlineData("var stream = new MemoryStream(); if (Get()) stream.Dispose(); if (choose) return stream.ReadByte(); return 0;")]
+    [InlineData("var stream = new MemoryStream(); if (Flag) stream.Dispose(); if (choose) return stream.ReadByte(); return 0;")]
+    [InlineData("var stream = new MemoryStream(); bool copy = choose; if (copy) stream.Dispose(); if (choose) return stream.ReadByte(); return 0;")]
+    [InlineData("var stream = new MemoryStream(); if (!choose) { stream.Dispose(); stream.ReadByte(); } else Opaque(); return 0;")]
+    [InlineData("var stream = new MemoryStream(); try { if (choose) stream.Dispose(); } catch { } if (choose) return stream.ReadByte(); return 0;")]
+    public void FiniteGuardsDoNotAdmitMutationOpaqueEffectsOrExceptionRegions(string body)
+    {
+        AssertUnsupported(Read(body, members: "static bool Get() => true; static bool Flag => true; static void Opaque() { }",
+            limits: FiniteBooleanLimits));
+    }
+
+    [Fact]
+    public void FiniteGuardsDoNotAdmitRefParameters()
+    {
+        AssertUnsupported(Read("var stream = new MemoryStream(); if (choose) stream.Dispose(); if (other) return stream.ReadByte(); return 0;",
+            limits: FiniteBooleanLimits, additionalParameters: ", ref bool other"));
+    }
+
+    [Fact]
+    public void AFourthBooleanAtomIsAnExplicitUnsupportedBoundary()
+    {
+        var result = Read("var stream = new MemoryStream(); if (choose) { if (other) { if (third) { if (fourth) return stream.ReadByte(); } } } return 0;",
+            limits: FiniteBooleanLimits, additionalParameters: ", bool other, bool third, bool fourth");
+        AssertUnsupported(result);
+        Assert.Equal("boolean_parameter_limit", result.Reason);
+    }
+
+    [Theory]
+    [InlineData(16, ResourceLifetimeStatus.Analyzed)]
+    [InlineData(17, ResourceLifetimeStatus.Unsupported)]
+    public void RepeatedGuardSitesHaveAFixedSliceBound(int sites, ResourceLifetimeStatus expected)
+    {
+        var body = "var stream = new MemoryStream(); " +
+            string.Concat(Enumerable.Repeat("if (choose) stream.ToArray(); ", sites)) + "return stream.ReadByte();";
+        var result = Read(body, limits: FiniteBooleanLimits);
+        Assert.Equal(expected, result.Status);
+        if (expected == ResourceLifetimeStatus.Analyzed)
+            Assert.Equal(ResourceLifetimeUseState.Live, Assert.Single(result.Uses).State);
+        else
+        {
+            Assert.Empty(result.Uses);
+            Assert.Equal("predicate_correlation_or_shape", result.Reason);
+        }
+    }
+
+    [Fact]
+    public void FiniteValuationsCountDistinctUsesAndShareTheWorkBudget()
+    {
+        const string prefix = "var stream = new MemoryStream(); if (choose) stream.ToArray(); if (other) stream.ToArray(); if (third) stream.ToArray(); ";
+        var single = Read(prefix + "return stream.ReadByte();", limits: FiniteBooleanLimits with { MaxUses = 1 },
+            additionalParameters: ", bool other, bool third");
+        Assert.Equal(ResourceLifetimeStatus.Analyzed, single.Status);
+        Assert.True(single.Complete);
+        Assert.Equal(ResourceLifetimeUseState.Live, Assert.Single(single.Uses).State);
+
+        var second = Read(prefix + "stream.ReadByte(); return stream.ReadByte();",
+            limits: FiniteBooleanLimits with { MaxUses = 1 }, additionalParameters: ", bool other, bool third");
+        Assert.Equal(ResourceLifetimeStatus.BudgetExceeded, second.Status);
+        Assert.Equal("use_limit", second.Reason);
+        Assert.Empty(second.Uses);
+
+        var bounded = Read(prefix + "return stream.ReadByte();", limits: FiniteBooleanLimits with { MaxWork = 256 },
+            additionalParameters: ", bool other, bool third");
+        Assert.Equal(ResourceLifetimeStatus.BudgetExceeded, bounded.Status);
+        Assert.Equal("work_limit", bounded.Reason);
+        Assert.InRange(bounded.Work, 0, 256);
+        Assert.Empty(bounded.Uses);
+    }
+
+    [Fact]
+    public void FiniteWitnessAggregationIsSortedAndNeverSilentlyTruncated()
+    {
+        const string body = "var stream = new MemoryStream(); if (choose) stream.Dispose(); else if (other) stream.Dispose(); else stream.Dispose(); return stream.ReadByte();";
+        var result = Read(body, limits: FiniteBooleanLimits, additionalParameters: ", bool other");
+        var repeated = Read(body, limits: FiniteBooleanLimits, additionalParameters: ", bool other");
+        var use = Assert.Single(result.Uses);
+        Assert.True(result.Complete);
+        Assert.Equal(ResourceLifetimeUseState.Disposed, use.State);
+        Assert.Equal(3, use.Disposals.Count);
+        Assert.Equal(use.Disposals.OrderBy(span => span.Start).ToArray(), use.Disposals.ToArray());
+        Assert.Equal(use.Disposals.ToArray(), Assert.Single(repeated.Uses).Disposals.ToArray());
+        Assert.Equal(result.Work, repeated.Work);
+
+        var exhausted = Read(body, limits: FiniteBooleanLimits with { MaxWitnessesPerUse = 2 },
+            additionalParameters: ", bool other");
+        Assert.Equal(ResourceLifetimeStatus.BudgetExceeded, exhausted.Status);
+        Assert.Equal("disposal_witness_limit", exhausted.Reason);
+        Assert.Empty(exhausted.Uses);
+    }
+
+    private static ResourceLifetimeLimits FiniteBooleanLimits => new()
+    {
+        GuardMode = ResourceLifetimeGuardMode.FiniteBooleanParametersV1
+    };
+
     private static void AssertUnsupported(ResourceLifetimeAnalysis result)
     {
         Assert.Equal(ResourceLifetimeStatus.Unsupported, result.Status);
@@ -452,18 +744,20 @@ public sealed class CSharpResourceLifetimeTests
         return new(new TextSpan(oldUse.Start, oldUse.Length), new TextSpan(newUse.Start, newUse.Length));
     }
 
-    private static string Source(string body, string members = "", bool isAsync = false) =>
+    private static string Source(string body, string members = "", bool isAsync = false,
+        string additionalParameters = "") =>
         "using System; using System.IO; class C { public static " +
         (isAsync ? "async System.Threading.Tasks.Task<int>" : "int") +
-        " Run(bool choose, MemoryStream input) { " + body + " } " + members + " }";
+        " Run(bool choose, MemoryStream input" + additionalParameters + ") { " + body + " } " + members + " }";
 
     private static ResourceLifetimeAnalysis Read(string body, string members = "", string revision = "before",
         string context = "fixture|net10.0|Debug", bool sourceClosure = true, bool referenceClosure = true,
         bool compilerErrorsAbsent = true, bool expectCompilerErrors = false,
         ResourceLifetimeSourceKind sourceKind = ResourceLifetimeSourceKind.User,
-        ResourceLifetimeLimits? limits = null, bool isAsync = false, CancellationToken cancellationToken = default)
+        ResourceLifetimeLimits? limits = null, bool isAsync = false, CancellationToken cancellationToken = default,
+        string additionalParameters = "")
     {
-        var source = Source(body, members, isAsync);
+        var source = Source(body, members, isAsync, additionalParameters);
         var tree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.CSharp14), path: "src/Fixture.cs");
         var compilation = CSharpCompilation.Create("LifetimeFixture", [tree],
             [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],

@@ -11,6 +11,7 @@ public enum ResourceLifetimeSourceKind { Unknown, User, Generated }
 public enum ResourceLifetimeStatus { Analyzed, IncompleteInput, Unsupported, BudgetExceeded, Cancelled }
 public enum ResourceLifetimeUseState { Live, Disposed, Unknown }
 public enum ResourceLifetimeChangeKind { Introduced, Existing, NoRegression, Unknown }
+public enum ResourceLifetimeGuardMode { SingleConditionV1 = 0, FiniteBooleanParametersV1 = 1 }
 
 // These are caller certifications for the supplied compilation, not facts inferred from file names.
 // The reference pack must implement the .NET 10 MemoryStream contract; no target code is executed.
@@ -21,8 +22,11 @@ public sealed record ResourceLifetimeLimits(int MaxMethodCharacters = 64_000, in
     int MaxBlocks = 128, int MaxWork = 16_384, int MaxTracked = 64, int MaxUses = 64,
     int MaxWitnessesPerUse = 8, int MaxDepth = 64)
 {
-    // A deliberate slice boundary, not a tunable path solver budget.
-    public int MaxNonconstantConditions => 1;
+    // Non-positional so existing construction/deconstruction and omitted old input keep their defaults.
+    public ResourceLifetimeGuardMode GuardMode { get; init; } = ResourceLifetimeGuardMode.SingleConditionV1;
+    // Deliberate slice boundaries, not tunable path solver budgets. The finite mode has at most 8 valuations.
+    public int MaxNonconstantConditions => GuardMode == ResourceLifetimeGuardMode.FiniteBooleanParametersV1 ? 16 : 1;
+    public int MaxBooleanParameters => GuardMode == ResourceLifetimeGuardMode.FiniteBooleanParametersV1 ? 3 : 1;
 }
 
 // All spans are UTF-16, with zero-based line/column coordinates, in this analysis's tree.
@@ -54,7 +58,8 @@ public sealed record ResourceLifetimeComparison(IReadOnlyList<ResourceLifetimeCh
 
 /// <summary>
 /// Opt-in, method-local evidence for parameterless new MemoryStream / Dispose / ReadByte.
-/// Admits at most one simple Boolean-parameter split; unsupported effects abort the method.
+/// Defaults to one simple Boolean-parameter split. Explicit finite mode preserves correlations
+/// across at most three immutable Boolean parameters and sixteen split sites; unsupported effects abort.
 /// No worker, report, analyzer, filesystem, process, generator or default-check registration is changed.
 /// The caller supplies already obtained, validated compiler inputs and explicit before/after matching.
 /// Checker-owned work is bounded; Roslyn binding/CFG construction still needs caller process admission.
@@ -77,7 +82,9 @@ public static class CSharpResourceLifetime
         if (limits.MaxMethodCharacters is < 1 or > 262_144 || limits.MaxSyntaxNodes is < 1 or > 65_536 ||
             limits.MaxBlocks is < 2 or > 512 || limits.MaxWork is < 1 or > 1_000_000 ||
             limits.MaxTracked is < 1 or > 256 || limits.MaxUses is < 1 or > MaximumUses ||
-            limits.MaxWitnessesPerUse is < 1 or > 16 || limits.MaxDepth is < 1 or > 128)
+            limits.MaxWitnessesPerUse is < 1 or > 16 || limits.MaxDepth is < 1 or > 128 ||
+            limits.GuardMode is not (ResourceLifetimeGuardMode.SingleConditionV1 or
+                ResourceLifetimeGuardMode.FiniteBooleanParametersV1))
             throw new ArgumentOutOfRangeException(nameof(limits), "Resource analysis limits must be bounded and positive.");
         var identity = input.Identity;
         if (new[] { identity.ContextKey, identity.DocumentKey, identity.PhysicalPath, identity.LogicalPath,
@@ -176,6 +183,7 @@ public static class CSharpResourceLifetime
     }
 
     private sealed record Lifetime(ResourceLifetimeUseState State, TextSpan[] Disposals);
+    private sealed record BooleanGuard(IParameterSymbol Parameter, bool Negated);
 
     private sealed class State
     {
@@ -191,6 +199,7 @@ public static class CSharpResourceLifetime
     {
         private readonly List<ResourceLifetimeUse> uses = [];
         private readonly HashSet<TextSpan> useSpans = [];
+        private readonly Dictionary<TextSpan, int> useIndices = [];
         private readonly Dictionary<int, TextSpan> allocations = [];
         private INamedTypeSymbol? memoryStream;
         private INamedTypeSymbol? stream;
@@ -323,17 +332,31 @@ public static class CSharpResourceLifetime
                     Stop(ResourceLifetimeStatus.Unsupported, "exception_or_unmodeled_region");
                 foreach (var nested in region.NestedRegions) { Tick(); regions.Push(nested); }
             }
-            // Reject correlations and backward flow before producing observations. Parameters cannot be
-            // assigned or passed by ref in this slice. One bool-parameter split admits both valuations.
+            // Validate every reachable branch before producing observations. Parameter writes and ref
+            // arguments remain unsupported. A valuation is fixed for the entire forward traversal.
+            var finite = limits.GuardMode == ResourceLifetimeGuardMode.FiniteBooleanParametersV1;
+            var guards = new Dictionary<int, BooleanGuard>();
+            var parameters = new List<IParameterSymbol>();
             var conditions = 0;
             foreach (var block in graph.Blocks.Where(block => block.IsReachable))
             {
                 if (block.ConditionKind != ControlFlowConditionKind.None &&
                     block.BranchValue?.ConstantValue is not { HasValue: true, Value: bool })
                 {
-                    if (++conditions > limits.MaxNonconstantConditions || block.BranchValue is null ||
-                        !BooleanParameter(block.BranchValue, 0))
+                    if (++conditions > limits.MaxNonconstantConditions || block.BranchValue is null)
                         Stop(ResourceLifetimeStatus.Unsupported, "predicate_correlation_or_shape");
+                    var guard = BooleanParameter(block.BranchValue!, 0);
+                    if (guard is null) Stop(ResourceLifetimeStatus.Unsupported, "predicate_correlation_or_shape");
+                    if (finite)
+                    {
+                        guards.Add(block.Ordinal, guard!);
+                        if (!parameters.Any(parameter => Same(parameter, guard!.Parameter)))
+                        {
+                            parameters.Add(guard!.Parameter);
+                            if (parameters.Count > limits.MaxBooleanParameters)
+                                Stop(ResourceLifetimeStatus.Unsupported, "boolean_parameter_limit");
+                        }
+                    }
                 }
                 foreach (var edge in new[] { block.FallThroughSuccessor, block.ConditionalSuccessor })
                 {
@@ -346,6 +369,30 @@ public static class CSharpResourceLifetime
                 }
             }
 
+            if (!finite)
+            {
+                WalkValuation(graph, null, null);
+                return;
+            }
+            // Parameter ordinal, valuation order, use order and witness order are deterministic.
+            parameters.Sort((left, right) => left.Ordinal.CompareTo(right.Ordinal));
+            for (var valuation = 0; valuation < (1 << parameters.Count); valuation++)
+            {
+                Tick();
+                useSpans.Clear(); // Duplicate lowering is checked within a traversal, not across valuations.
+                var values = new Dictionary<ISymbol, bool>(SymbolEqualityComparer.Default);
+                for (var bit = 0; bit < parameters.Count; bit++)
+                {
+                    Tick();
+                    values.Add(parameters[bit], (valuation & (1 << bit)) != 0);
+                }
+                WalkValuation(graph, guards, values);
+            }
+        }
+
+        private void WalkValuation(ControlFlowGraph graph, IReadOnlyDictionary<int, BooleanGuard>? guards,
+            IReadOnlyDictionary<ISymbol, bool>? values)
+        {
             var incoming = new State?[graph.Blocks.Length];
             incoming[0] = new State();
             foreach (var block in graph.Blocks)
@@ -362,13 +409,15 @@ public static class CSharpResourceLifetime
                 if (state.Terminated) continue;
                 if (block.ConditionKind == ControlFlowConditionKind.None && branchObject >= 0)
                     Stop(ResourceLifetimeStatus.Unsupported, "returned_resource_escape");
-                bool? conditional = block.BranchValue?.ConstantValue is { HasValue: true, Value: bool value }
-                    ? block.ConditionKind switch
-                    {
-                        ControlFlowConditionKind.WhenTrue => value,
-                        ControlFlowConditionKind.WhenFalse => !value,
-                        _ => null
-                    } : null;
+                bool? condition = block.BranchValue?.ConstantValue is { HasValue: true, Value: bool value }
+                    ? value : guards is not null && values is not null && guards.TryGetValue(block.Ordinal, out var guard)
+                        ? values[guard.Parameter] != guard.Negated : null;
+                bool? conditional = block.ConditionKind switch
+                {
+                    ControlFlowConditionKind.WhenTrue => condition,
+                    ControlFlowConditionKind.WhenFalse => !condition,
+                    _ => null
+                };
                 Transfer(block.FallThroughSuccessor, conditional != true);
                 Transfer(block.ConditionalSuccessor, conditional != false);
 
@@ -464,20 +513,21 @@ public static class CSharpResourceLifetime
         private static bool Primitive(ITypeSymbol? type) =>
             type?.SpecialType is SpecialType.System_Boolean or SpecialType.System_Int32;
 
-        private bool BooleanParameter(IOperation operation, int depth)
+        private BooleanGuard? BooleanParameter(IOperation operation, int depth)
         {
             Tick();
             if (depth >= limits.MaxDepth) Stop(ResourceLifetimeStatus.BudgetExceeded, "condition_depth_limit");
             return operation switch
             {
-                IParameterReferenceOperation parameter => parameter.Parameter.RefKind == RefKind.None &&
-                    parameter.Parameter.Type.SpecialType == SpecialType.System_Boolean,
+                IParameterReferenceOperation parameter when parameter.Parameter.RefKind == RefKind.None &&
+                    parameter.Parameter.Type.SpecialType == SpecialType.System_Boolean => new(parameter.Parameter, false),
                 IParenthesizedOperation parenthesized => BooleanParameter(parenthesized.Operand, depth + 1),
                 IConversionOperation conversion when conversion.OperatorMethod is null && conversion.Conversion.IsIdentity =>
                     BooleanParameter(conversion.Operand, depth + 1),
                 IUnaryOperation unary when unary.OperatorMethod is null && !unary.IsLifted &&
-                    unary.OperatorKind == UnaryOperatorKind.Not => BooleanParameter(unary.Operand, depth + 1),
-                _ => false
+                    unary.OperatorKind == UnaryOperatorKind.Not =>
+                    BooleanParameter(unary.Operand, depth + 1) is { } guard ? guard with { Negated = !guard.Negated } : null,
+                _ => null
             };
         }
 
@@ -493,13 +543,18 @@ public static class CSharpResourceLifetime
             {
                 var life = id >= 0 && state.Resources.TryGetValue(id, out var known)
                     ? known : new Lifetime(ResourceLifetimeUseState.Unknown, []);
-                if (uses.Count >= limits.MaxUses) Stop(ResourceLifetimeStatus.BudgetExceeded, "use_limit");
+                if (limits.GuardMode == ResourceLifetimeGuardMode.SingleConditionV1 && uses.Count >= limits.MaxUses)
+                    Stop(ResourceLifetimeStatus.BudgetExceeded, "use_limit");
                 if (!useSpans.Add(invocation.Syntax.Span)) Stop(ResourceLifetimeStatus.Unsupported, "duplicate_lowered_use");
-                uses.Add(new(Span(tree, invocation.Syntax.Span), life.State,
+                var observation = new ResourceLifetimeUse(Span(tree, invocation.Syntax.Span), life.State,
                     id >= 0 && allocations.TryGetValue(id, out var origin) ? Span(tree, origin) : null,
                     life.Disposals.Select(disposal => Span(tree, disposal)).ToArray(),
                     life.State != ResourceLifetimeUseState.Unknown ? null : id < 0
-                        ? "object_identity_unknown" : "joined_lifetime_unknown"));
+                        ? "object_identity_unknown" : "joined_lifetime_unknown");
+                if (limits.GuardMode == ResourceLifetimeGuardMode.FiniteBooleanParametersV1)
+                    ObserveValuation(invocation.Syntax.Span, observation);
+                else
+                    uses.Add(observation);
                 // Exact MemoryStream.ReadByte throws on a disposed instance; no catch regions are admitted.
                 if (life.State == ResourceLifetimeUseState.Disposed) state.Terminated = true;
                 return -1;
@@ -509,6 +564,36 @@ public static class CSharpResourceLifetime
                 state.Resources[id] = new(ResourceLifetimeUseState.Disposed, [invocation.Syntax.Span]);
             // ToArray on an exact MemoryStream is legal after close and preserves this lifetime state.
             return -1;
+        }
+
+        private void ObserveValuation(TextSpan span, ResourceLifetimeUse observation)
+        {
+            Tick();
+            if (!useIndices.TryGetValue(span, out var index))
+            {
+                if (uses.Count >= limits.MaxUses) Stop(ResourceLifetimeStatus.BudgetExceeded, "use_limit");
+                useIndices.Add(span, uses.Count);
+                uses.Add(observation);
+                return;
+            }
+            var previous = uses[index];
+            // A different allocation on each arm is not evidence about one exact object, even if
+            // every arm disposed its own receiver. Identity loss is permanent at this use site.
+            if (previous.Allocation is null || observation.Allocation is null ||
+                previous.Allocation != observation.Allocation)
+            {
+                uses[index] = previous with { State = ResourceLifetimeUseState.Unknown, Allocation = null,
+                    Disposals = [], Reason = "object_identity_unknown" };
+                return;
+            }
+            Tick(previous.Disposals.Count + observation.Disposals.Count);
+            var disposals = previous.Disposals.Concat(observation.Disposals).Distinct()
+                .OrderBy(disposal => disposal.Start).ThenBy(disposal => disposal.Length).ToArray();
+            if (disposals.Length > limits.MaxWitnessesPerUse)
+                Stop(ResourceLifetimeStatus.BudgetExceeded, "disposal_witness_limit");
+            var state = previous.State == observation.State ? previous.State : ResourceLifetimeUseState.Unknown;
+            uses[index] = previous with { State = state, Disposals = disposals,
+                Reason = state == ResourceLifetimeUseState.Unknown ? "joined_lifetime_unknown" : null };
         }
 
         private void CheckTracked(State state)
