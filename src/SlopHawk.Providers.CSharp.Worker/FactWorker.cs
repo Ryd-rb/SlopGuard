@@ -76,7 +76,9 @@ internal static class FactWorker
             // matching declaration fact or a locally evident invocation position.
             foreach (var token in job.Target.Tree.GetRoot().DescendantTokens())
             {
-                if (token.IsMissing || token.IsKind(SyntaxKind.EndOfFileToken)) continue;
+                // Omitted array sizes and type arguments can be present in a valid
+                // Roslyn tree without occupying any bytes in the original source.
+                if (token.IsMissing || token.Span.IsEmpty) continue;
                 var span = Span(job.Target.Tree, token.Span);
                 var text = token.Text;
                 var truncated = text.Length > 128;

@@ -22,6 +22,12 @@ For each adapter, define the smallest trustworthy evaluation scope, the inputs t
 
 Provider contracts are based on their own documentation. [Sonar C# analyzer package](https://packages.nuget.org/packages/SonarAnalyzer.CSharp), [SonarScanner workflow](https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/scanners/sonarscanner-for-dotnet/using), [JetBrains InspectCode](https://www.jetbrains.com/help/resharper/InspectCode.html), [Microsoft package reporting](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-package-list)
 
+## C# source audit
+
+Run the built Roslyn worker with `dotnet <worker.dll> --source-audit-v1 --root <checkout> --manifest <manifest.json>`. The manifest contains a `files` array of relative C# paths and an optional `defines` array for that scan. The worker parses each listed file, records its SHA-256 and status, and reports source-local findings with physical line and column numbers. It processes up to 10,000 files, with an 8 MiB per-file and 256 MiB total source budget. Include every supported source path in the manifest for a repository-wide pass and use a separate manifest for a different preprocessor configuration.
+
+The squared-delta rule identifies a straight-line sum of two squared `long` differences derived from `int` values. A preceding exit guard that bounds the absolute value of both differences to `int.MaxValue` or less proves the sum fits. A reported expression is a candidate for contract review. The source audit does not evaluate project references, caller-specific bounds, or branches disabled by the selected defines.
+
 ## Duplication detection
 
 Index Roslyn tokens in methods, constructors, accessors, local functions, lambdas and sufficiently large statement runs. Persist fingerprints in the [shared codebase index](semantic-index.md). Start with a minimum of 40 substantive tokens. Ignore comments and trivia, exclude generated files by default, and index two representations.

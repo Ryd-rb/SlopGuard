@@ -7,6 +7,8 @@ public static class Program
 {
     public static int Main(string[] args)
     {
+        if (args is ["--source-audit-v1", "--root", var auditRoot, "--manifest", var manifest])
+            return SourceAudit.Run(auditRoot, manifest);
         if (args is ["--project-graph-v1", "--root", var root])
             return WriteProjectGraph(root).GetAwaiter().GetResult();
         if (args.Length != 0) return 2;

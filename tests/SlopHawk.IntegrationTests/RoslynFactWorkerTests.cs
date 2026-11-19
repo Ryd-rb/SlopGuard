@@ -39,6 +39,89 @@ public sealed class RoslynFactWorkerTests
     }
 
     [Fact]
+    public async Task ValidArrayTypesDoNotEmitZeroWidthTokenFacts()
+    {
+        var result = await Execute(RequestFrame(Request(Source("A",
+            "class A { readonly int[] values = new int[1]; System.Type Type => typeof(System.Collections.Generic.List<>); }"))));
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("complete", Terminal(result).GetProperty("capabilities").GetProperty("tokens").GetString());
+        var tokens = result.Facts.Where(fact => fact.GetProperty("capability").GetString() == "tokens").ToArray();
+        Assert.Contains(tokens, token => token.GetProperty("value").GetProperty("text").GetString() == "[");
+        Assert.All(tokens, token =>
+            Assert.True(token.GetProperty("span").GetProperty("byteSpan").GetProperty("length").GetInt32() > 0));
+    }
+
+    [Fact]
+    public async Task SourceAuditReportsUnboundedDeltasAndAcceptsAProvenTwoAxisGuard()
+    {
+        const string code = """
+            class Distances
+            {
+                long Unbounded(int a, int b, int c, int d)
+                {
+                    long dx = (long)a - b;
+                    long dy = (long)c - d;
+                    long result = dx * dx + dy * dy;
+                    return result;
+                }
+
+                long Guarded(int a, int b, int c, int d)
+                {
+                    long dx = (long)a - b;
+                    long dy = (long)c - d;
+                    if (Math.Abs(dy) > int.MaxValue || Math.Abs(dx) > int.MaxValue) return long.MaxValue;
+                    long result = dy * dy + dx * dx;
+                    return result;
+                }
+
+                long OneAxis(int a, int b, int c, int d)
+                {
+                    long dx = (long)a - b;
+                    long dy = (long)c - d;
+                    if (Math.Abs(dx) > int.MaxValue || Math.Abs(dx) > int.MaxValue) return long.MaxValue;
+                    long result = dx * dx + dy * dy;
+                    return result;
+                }
+            }
+            """;
+        var workspace = Directory.CreateTempSubdirectory("slophawk-source-audit-");
+        try
+        {
+            var source = Path.Combine(workspace.FullName, "Distances.cs");
+            var manifest = Path.Combine(workspace.FullName, "manifest.json");
+            File.WriteAllText(source, code);
+            File.WriteAllText(manifest, """{"files":["Distances.cs"]}""");
+            var info = new ProcessStartInfo(DotnetExecutable())
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            foreach (string arg in new[] { WorkerBinary(), "--source-audit-v1", "--root", workspace.FullName, "--manifest", manifest })
+                info.ArgumentList.Add(arg);
+            using var process = Process.Start(info)!;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            await process.WaitForExitAsync(timeout.Token);
+            Assert.True(process.ExitCode == 0, await stderr);
+            using var receipt = JsonDocument.Parse(await stdout);
+            var document = Assert.Single(receipt.RootElement.GetProperty("documents").EnumerateArray());
+            Assert.Equal("reviewed", document.GetProperty("status").GetString());
+            Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))),
+                document.GetProperty("sha256").GetString());
+            var lines = document.GetProperty("findings").EnumerateArray()
+                .Select(finding => finding.GetProperty("line").GetInt32()).ToArray();
+            Assert.Equal(new[] { 7, 25 }, lines);
+        }
+        finally
+        {
+            workspace.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task UnresolvedAndDynamicEdgesArePartialRatherThanBoundCalls()
     {
         var result = await Execute(RequestFrame(Request(Source("A",
