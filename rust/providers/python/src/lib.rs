@@ -6,6 +6,7 @@
 //! No imports, annotations, expressions, or tests are executed.
 
 mod ruff_adapter;
+pub mod imports;
 
 use sha2::{Digest, Sha256};
 

@@ -3,8 +3,9 @@
 //! This module does not extract Python imports or resolve names. A trusted adapter
 //! must bind every fact to original bytes and prove complete extraction, unique
 //! regular-package roots, absence of shadowing/symlinks/path aliases, and any
-//! `ProvenTypeOnly` binding. Unknowns must be supplied, never dropped. The current
-//! syntax provider does not yet export this contract. Digests bind observations;
+//! `ProvenTypeOnly` binding. Unknowns must be supplied, never dropped. The separate
+//! `import-producer` crate supplies a narrow opt-in original-byte adapter; project
+//! package hints and native clone requests do not admit it. Digests bind observations;
 //! their equality does not authenticate the adapter's assertions.
 //! Without raw bytes this core checks digest format/equality and range bounds;
 //! the adapter must verify actual hashes and original UTF-8 span boundaries.

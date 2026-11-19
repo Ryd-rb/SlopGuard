@@ -764,3 +764,201 @@ pub(super) fn extract(
     }
     facts
 }
+
+/// Separate entry point: no changes to the token/layout collector above.
+pub(super) fn extract_imports(
+    source: &str,
+    prefix: u32,
+    limits: Limits,
+) -> Result<
+    (
+        Vec<crate::imports::AbsoluteImport>,
+        Vec<crate::imports::UnsupportedStatement>,
+    ),
+    crate::imports::Failure,
+> {
+    use crate::imports::{
+        AbsoluteImport, Failure, HARD_MAX_FACTS, HARD_MAX_TOKENS, UnsupportedKind,
+        UnsupportedStatement,
+    };
+
+    let options = ParseOptions::from(PySourceType::Python)
+        .with_target_version(PythonVersion { major: 3, minor: 12 });
+    let parsed = parse_unchecked(source, options)
+        .try_into_module()
+        .ok_or(Failure {
+            outcome: Outcome::InvalidSyntax,
+            reason: "direct-import parser did not return a module",
+        })?;
+    if parsed.tokens().len() > limits.max_tokens.min(HARD_MAX_TOKENS) {
+        return Err(Failure {
+            outcome: Outcome::ResourceLimit,
+            reason: "direct-import parser token quota exceeded",
+        });
+    }
+    if !parsed.has_valid_syntax() {
+        return Err(Failure {
+            outcome: Outcome::InvalidSyntax,
+            reason: "direct-import source has invalid syntax",
+        });
+    }
+    if !parsed.unsupported_syntax_errors().is_empty() {
+        return Err(Failure {
+            outcome: Outcome::UnsupportedGrammar,
+            reason: "direct-import source uses syntax outside Python 3.12",
+        });
+    }
+
+    // Validate/count before output allocation. One record per import alias,
+    // including an unsupported spelling; one per other non-inert statement.
+    let mut import_count = 0usize;
+    let mut unsupported_count = 0usize;
+    let cap = limits.max_facts.min(HARD_MAX_FACTS);
+    for statement in parsed.suite() {
+        match direct_import_statement(statement)? {
+            DirectImportStatement::Imports(aliases) => {
+                checked_import_span(statement.range(), source, prefix)?;
+                for alias in aliases {
+                    if admitted_import_name(alias, source)?.is_some() {
+                        import_count += 1;
+                    } else {
+                        unsupported_count += 1;
+                    }
+                    if import_count + unsupported_count > cap {
+                        return Err(Failure {
+                            outcome: Outcome::ResourceLimit,
+                            reason: "direct-import fact quota exceeded",
+                        });
+                    }
+                }
+            }
+            DirectImportStatement::Unsupported(_) => {
+                checked_import_span(statement.range(), source, prefix)?;
+                unsupported_count += 1;
+                if import_count + unsupported_count > cap {
+                    return Err(Failure {
+                        outcome: Outcome::ResourceLimit,
+                        reason: "direct-import fact quota exceeded",
+                    });
+                }
+            }
+            DirectImportStatement::Inert => {}
+        }
+    }
+
+    let mut imports = Vec::with_capacity(import_count);
+    let mut unsupported = Vec::with_capacity(unsupported_count);
+    for statement in parsed.suite() {
+        match direct_import_statement(statement)? {
+            DirectImportStatement::Imports(aliases) => {
+                let span = checked_import_span(statement.range(), source, prefix)?;
+                for alias in aliases {
+                    if let Some(name) = admitted_import_name(alias, source)? {
+                        imports.push(AbsoluteImport {
+                            name: name.to_owned(),
+                            span,
+                        });
+                    } else {
+                        unsupported.push(UnsupportedStatement {
+                            kind: UnsupportedKind::UnsupportedName,
+                            span,
+                        });
+                    }
+                }
+            }
+            DirectImportStatement::Unsupported(kind) => {
+                unsupported.push(UnsupportedStatement {
+                    kind,
+                    span: checked_import_span(statement.range(), source, prefix)?,
+                });
+            }
+            DirectImportStatement::Inert => {}
+        }
+    }
+    Ok((imports, unsupported))
+}
+
+enum DirectImportStatement<'a> {
+    Imports(&'a [ast::Alias]),
+    Unsupported(crate::imports::UnsupportedKind),
+    Inert,
+}
+
+fn direct_import_statement(
+    statement: &Stmt,
+) -> Result<DirectImportStatement<'_>, crate::imports::Failure> {
+    use crate::imports::{Failure, UnsupportedKind};
+
+    match statement {
+        Stmt::Import(node) if node.is_lazy => Err(Failure {
+            outcome: Outcome::UnsupportedGrammar,
+            reason: "lazy imports are outside the reviewed Python 3.12 slice",
+        }),
+        Stmt::Import(node) => Ok(DirectImportStatement::Imports(&node.names)),
+        Stmt::ImportFrom(node) if node.is_lazy => Err(Failure {
+            outcome: Outcome::UnsupportedGrammar,
+            reason: "lazy imports are outside the reviewed Python 3.12 slice",
+        }),
+        Stmt::ImportFrom(node) => Ok(DirectImportStatement::Unsupported(if node.level == 0 {
+            UnsupportedKind::FromImport
+        } else {
+            UnsupportedKind::RelativeImport
+        })),
+        Stmt::If(_) | Stmt::Try(_) => Ok(DirectImportStatement::Unsupported(
+            UnsupportedKind::UnresolvedGuard,
+        )),
+        Stmt::Pass(_) => Ok(DirectImportStatement::Inert),
+        Stmt::Expr(node) if matches!(node.value.as_ref(), Expr::StringLiteral(_)) => {
+            Ok(DirectImportStatement::Inert)
+        }
+        _ => Ok(DirectImportStatement::Unsupported(
+            UnsupportedKind::DynamicOrUnsupportedStatement,
+        )),
+    }
+}
+
+fn admitted_import_name<'a>(
+    alias: &'a ast::Alias,
+    source: &str,
+) -> Result<Option<&'a str>, crate::imports::Failure> {
+    let range = checked_import_span(alias.name.range(), source, 0)?;
+    let spelling = &source[range.start as usize..range.end as usize];
+    let name = alias.name.id.as_str();
+    // Ruff normalizes identifiers. Reject non-ASCII original spellings such
+    // as the Kelvin sign, even if the normalized name is the ASCII letter K.
+    let admitted = name.len() <= crate::imports::HARD_MAX_NAME_BYTES
+        && spelling.is_ascii()
+        && name.split('.').all(|part| {
+            let mut bytes = part.bytes();
+            part != "__init__"
+                && bytes
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        });
+    Ok(admitted.then_some(name))
+}
+
+fn checked_import_span(
+    range: TextRange,
+    source: &str,
+    prefix: u32,
+) -> Result<ByteSpan, crate::imports::Failure> {
+    let start = range.start().to_u32();
+    let end = range.end().to_u32();
+    if start >= end || source.get(start as usize..end as usize).is_none() {
+        return Err(crate::imports::Failure {
+            outcome: Outcome::InvalidSyntax,
+            reason: "direct-import parser returned an invalid UTF-8 source range",
+        });
+    }
+    let start = start.checked_add(prefix);
+    let end = end.checked_add(prefix);
+    match (start, end) {
+        (Some(start), Some(end)) => Ok(ByteSpan { start, end }),
+        _ => Err(crate::imports::Failure {
+            outcome: Outcome::ResourceLimit,
+            reason: "direct-import original source range overflowed",
+        }),
+    }
+}

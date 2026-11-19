@@ -85,3 +85,61 @@ cargo +1.99.1 clippy --manifest-path rust/providers/python/Cargo.toml --locked -
 
 The build/test commands are a **validation requirement**, not evidence that
 they were run successfully when the toolchain or registry is unavailable.
+
+## Opt-in direct-import syntax
+
+`slophawk_python_syntax_provider::imports::extract(SourceRequest)` is a
+separate typed library entry point with provider
+`slophawk.python.ruff.direct-import-syntax` and schema
+`python-direct-import-syntax/v1`. It preserves the existing `analyze` schema,
+token/layout facts, clone behavior, defaults, and caller behavior. It adds no
+CLI/MCP setting, automatic discovery, shared serialization, or execution.
+
+This entry point admits `.py` source with a Python 3.12 target only. It emits
+top-level `import package.module` references, including multiple aliases and
+`as` bindings. Names must be at most 256 bytes, have ASCII identifier components,
+not contain an `__init__` component, and have ASCII **original source spellings**.
+Ruff's normalized name alone is insufficient: an original Kelvin sign, for
+example, must not become an admitted ASCII `K`. An alias binding does not
+change the named module and is not used for resolution. Each record carries
+the entire original import-statement byte span; aliases in a statement share
+that span. Source order and duplicate witnesses are retained deterministically.
+
+The source hash includes original line endings and any UTF-8 BOM. Every
+emitted range is nonempty, lies on UTF-8 boundaries, and includes the BOM
+offset correction. The provider neither discovers nor resolves packages.
+A subsequent admitted-inventory producer must validate source revision,
+identity, package roots, unique module membership and policy permission before
+turning these names into graph edges. Python import hooks, package execution,
+`sys.modules`, filesystem presence, or runtime reachability are not proven.
+
+`ImportFacts.unsupported` retains the unknown frontier. Absolute `from`
+imports and explicit relative imports are unknown even when a matching file
+exists, because attribute/re-export bindings are not proved. `if` and `try`
+statements remain unresolved guards, including unbound or rebound
+`TYPE_CHECKING` names and their `else` branches. No nested bodies are traversed.
+Definitions, assignments, loops, calls, f-strings and every other executable
+statement retain one enclosing unknown span. This deliberately catches hidden
+dynamic imports instead of declaring a module complete merely because no
+recognized import call appeared. Only whitespace, comments, `pass`, and
+ordinary string-literal expression statements are inert in this version.
+`is_complete()` means only that this conservative syntax frontier is empty;
+it is not a proof of general runtime dependency completeness.
+
+Source/path/document-ID caps are checked before encoding inspection or
+copying. Caps are the lesser of caller budgets and 4 MiB of source, 131,072
+parser tokens, and 32,768 records; the path is limited to 1,024 UTF-8 bytes and
+the document ID to 160. A record is one import alias (including an unsupported
+name) or one other non-inert top-level statement. The adapter validates and
+counts all records before allocating output vectors; token/fact overflow,
+invalid syntax, unsupported grammar, and encoding failure return `Err(Failure)`
+without partial facts. Hashing occurs only after successful validation. Parser
+allocations still precede token-count inspection, so a supervising worker is
+required for a hard memory/time boundary.
+
+`tests/imports.rs` supplies source fixtures for absolute aliases, original
+byte witnesses, BOM/CRLF, relative and re-export uncertainty, type-only guard
+uncertainty, hidden dynamic imports, NFKC spellings, stale byte identities,
+resource limits and the independent old syntax contract. These fixtures and
+the implementation require owner-side runtime validation; authored assertions
+are not observed test results.

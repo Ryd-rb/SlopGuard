@@ -146,6 +146,15 @@ x64 with Rust 1.99.1. Formatting, locked offline all-target builds and Clippy
 with warnings denied also passed. These checks exercise the typed pilot;
 they do not establish a supervised pytest runner or release qualification.
 
+## Admitted direct-import producer
+
+The separately opted-in [admitted import producer](import-producer/README.md)
+connects captured original bytes and explicitly reviewed regular-package
+inventories to `import_layers::compare`. It is an independent crate so this
+context crate and its existing consumers keep their dependency/default behavior.
+Project-context package hints are not import-root admission. CLI/MCP integration
+still requires a separately authorized before/after evidence channel.
+
 ## Primary rationale
 
 - [Python `pyproject.toml` specification](https://packaging.python.org/en/latest/specifications/pyproject-toml/) — static metadata vs tool-owned tables.

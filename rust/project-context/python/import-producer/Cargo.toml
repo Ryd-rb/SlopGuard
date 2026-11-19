@@ -1,0 +1,16 @@
+[package]
+name = "slophawk-python-import-producer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+
+[lib]
+name = "slophawk_python_import_producer"
+path = "src/lib.rs"
+
+[dependencies]
+slophawk-python-project-context = { path = ".." }
+slophawk-python-syntax-provider = { path = "../../../providers/python" }
+sha2 = "=0.10.9"
