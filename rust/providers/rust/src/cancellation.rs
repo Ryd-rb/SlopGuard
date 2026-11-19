@@ -16,6 +16,8 @@
 //! does not establish an executed cancellation, lost bytes, or an application
 //! defect. A one-shot shutdown may intentionally accept partial I/O.
 
+pub mod attested;
+
 use crate::{MAX_SOURCE_BYTES, SourceEdition, Span};
 use sha2::{Digest, Sha256};
 use std::fmt;
