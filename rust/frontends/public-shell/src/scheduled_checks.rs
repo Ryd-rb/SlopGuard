@@ -207,7 +207,7 @@ impl Scheduler {
                 Some("cs") => Language::Csharp,
                 Some("py" | "pyi") => Language::Python,
                 Some("rs") => Language::Rust,
-                Some("fluxr") => Language::Fluxr,
+                Some("fluxr" | "flux") => Language::Fluxr,
                 _ => continue,
             };
             // The one-shot checker does not admit empty source documents.

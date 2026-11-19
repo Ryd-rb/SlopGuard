@@ -265,6 +265,21 @@ pub fn rust(job: &ScopeRequest, source: &Loaded) -> Projection {
 
 pub fn fluxr(job: &ScopeRequest, source: &Loaded) -> Projection {
     let module = match &job.context.fluxr_module { Some(s) if !s.trim().is_empty() => s, _ => return fail(source, job, "FluxR requires an explicit module context", Status::Unsupported) };
+    if let Some(version) = job.context.fluxr_compact_version {
+        if let Err(error) = fluxr::validate_compact_fragment(&source.bytes, version) {
+            return fail(source, job, &format!("FluxR compact fragment: {error}"), Status::Failed);
+        }
+        let mut report = initial(job, source);
+        report.status = Status::Partial;
+        rule(&mut report, "fluxr.compact-syntax.v1/check", Status::Complete,
+            "declared compact fragment", "Parsed using the pinned FluxR compiler");
+        gap(&mut report, "fluxr:compact_fragment_type_and_token_scope_unavailable", None);
+        unsupported(&mut report, "Compact fragment parsing does not provide mapped checked tokens");
+        return finish(report, Vec::new());
+    }
+    if source.source.logical_path.ends_with(".flux") {
+        return fail(source, job, "Compact .flux sources require an explicit module version", Status::Unsupported);
+    }
     let facts = match fluxr::analyze(fluxr::Request {
         logical_document_id: &source.source.logical_path, declared_module_context: module,
         source_bytes: &source.bytes, format: fluxr::SourceFormat::CanonicalChecked, limits: fluxr::Limits::default(),

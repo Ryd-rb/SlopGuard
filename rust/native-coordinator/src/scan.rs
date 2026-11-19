@@ -258,7 +258,7 @@ pub fn language(name: &str) -> Option<&'static str> {
     if name.ends_with(".cs") { Some("csharp") }
     else if name.ends_with(".pyi") || name.ends_with(".py") { Some("python") }
     else if name.ends_with(".rs") { Some("rust") }
-    else if name.ends_with(".fluxr") { Some("fluxr") }
+    else if name.ends_with(".fluxr") || name.ends_with(".flux") { Some("fluxr") }
     else { None }
 }
 fn is_source_input(name: &str) -> bool {

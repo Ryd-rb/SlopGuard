@@ -557,6 +557,25 @@ fn coverage() -> Vec<CapabilityCoverage> {
     ]
 }
 
+/// Parse a compact module fragment in the declared language version. The
+/// optional synthetic header grants syntax evidence only, with no original byte spans
+/// or claims about type checking in the eventual multi-file module.
+pub fn validate_compact_fragment(bytes: &[u8], version: u8) -> Result<(), String> {
+    if !matches!(version, 1 | 2) || bytes.len() > DEFAULT_MAX_SOURCE_BYTES {
+        return Err("Compact fragment exceeds its version or source scope.".into());
+    }
+    let fragment = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
+    let header = format!("v{version}");
+    let parsed = match fragment.split_whitespace().next() {
+        Some(actual @ ("v1" | "v2")) if actual == header => {
+            fluxr::structured::Source::parse_compact(fragment)
+        }
+        Some("v1" | "v2") => return Err("Compact source version conflicts with its declared module.".into()),
+        _ => fluxr::structured::Source::parse_compact(&format!("{header}\n{fragment}")),
+    };
+    parsed.map(|_| ()).map_err(|error| error.to_string())
+}
+
 /// Parse and check one UTF-8 source document, without running any of its code.
 /// Native item positions come *only* from upstream `SourceDocument::parse`.
 /// Checked tokens are separated using the same six ASCII whitespace bytes as

@@ -81,6 +81,13 @@ not a filesystem sandbox or source loading instruction.
 
 ## Projection and rule gates
 
+For modular compact FluxR sources, set `context.fluxrCompactVersion` to the
+version declared by the module loader, currently 1 or 2. Both `.flux` and
+`.fluxr` paths are admitted. This mode accepts both headerless fragments and
+files with a matching version header. It records a syntax result. The report marks type checking and clone
+coverage as incomplete because fragment parsing supplies neither a checked
+module nor mapped checked tokens.
+
 | Provider | Source scope admitted to clone-index v1 | Exact rule | Renamed-local rule |
 | --- | --- | --- | --- |
 | C# / `slophawk.csharp.roslyn.experimental` | Complete, byte-mapped, untruncated **whole source** token stream only | Yes, if worker status/capabilities/terminal/exit are accepted | **Unsupported**: `localRole` is syntax-only, no semantic local binding |

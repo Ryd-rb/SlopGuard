@@ -15,7 +15,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 /// Included in resident receipt identity whenever native checker semantics change.
-pub const SEMANTICS_VERSION: &str = "slophawk.native-checks/4";
+pub const SEMANTICS_VERSION: &str = "slophawk.native-checks/5";
 
 pub fn shadow(request: ScopeRequest, cancel: &AtomicBool) -> Result<Report, String> {
     let started = Instant::now();

@@ -35,6 +35,11 @@ impl Language {
     pub fn extension(self) -> &'static str {
         match self { Self::Csharp => ".cs", Self::Python => ".py", Self::Rust => ".rs", Self::Fluxr => ".fluxr" }
     }
+    fn admits_path(self, path: &str) -> bool {
+        path.ends_with(self.extension()) ||
+            matches!(self, Self::Python) && path.ends_with(".pyi") ||
+            matches!(self, Self::Fluxr) && path.ends_with(".flux")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +73,7 @@ pub struct Context {
     #[serde(default = "python_minor")] pub python_minor: u8,
     #[serde(default = "rust_edition")] pub rust_edition: String,
     #[serde(default)] pub fluxr_module: Option<String>,
+    #[serde(default)] pub fluxr_compact_version: Option<u8>,
 }
 fn python_minor() -> u8 { 12 }
 fn rust_edition() -> String { "2024".into() }
@@ -189,13 +195,11 @@ impl ScopeRequest {
             if Path::new(&src.logical_path).is_absolute() || src.logical_path.split(['/', '\\']).any(|p| p.is_empty() || p == "." || p == "..") {
                 return Err("logical source path must be relative without dot segments".into());
             }
-            let extension_ok = match src.language {
-                Language::Python => src.logical_path.ends_with(".py") || src.logical_path.ends_with(".pyi"),
-                other => src.logical_path.ends_with(other.extension()),
-            };
-            if !extension_ok { return Err("language and source extension mismatch".into()); }
+            if !src.language.admits_path(&src.logical_path) {
+                return Err("language and source extension mismatch".into());
+            }
             plain_absolute(&src.physical_path)?;
-            if !src.physical_path.ends_with(src.language.extension()) && !(src.language == Language::Python && src.physical_path.ends_with(".pyi")) {
+            if !src.language.admits_path(&src.physical_path) {
                 return Err("language and physical source extension mismatch".into());
             }
             let authorized = within(&self.workspace_root, &src.physical_path)

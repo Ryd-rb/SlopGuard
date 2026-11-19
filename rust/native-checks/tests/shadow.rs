@@ -52,6 +52,27 @@ fn matching(report: &slophawk_native_checks::contract::Report, class: &str) -> u
 }
 
 #[test]
+fn explicit_compact_fragment_mode_reports_syntax_without_checked_clone_coverage() {
+    let mut fragment = source("fluxr", "module", "(pub value () i64 () (ret 7))");
+    fragment["logicalPath"] = json!("src/module.flux");
+    fragment["physicalPath"] = json!(format!("{}/src/module.flux", root()));
+    let header = source("fluxr", "header", "v2\r\n(pub two () i64 () (ret 2))");
+    let default = run(request(vec![fragment.clone()]));
+    assert!(default.documents.iter().any(|row| row.document_id == "module" && row.status == Status::Unsupported));
+    let mut input = request(vec![fragment, header]);
+    input["context"]["fluxrCompactVersion"] = json!(2);
+    let report = run(input);
+    assert_eq!(report.status, Status::Partial);
+    assert!(report.pairs.is_empty());
+    for document in report.documents {
+        assert!(document.rules.iter().any(|row|
+            row.id == "fluxr.compact-syntax.v1/check" && row.status == Status::Complete));
+        assert!(document.rules.iter().any(|row|
+            row.id == slophawk_native_checks::contract::EXACT && row.status == Status::Unsupported));
+    }
+}
+
+#[test]
 fn python_exact_renamed_and_near_miss_are_separate() {
     let exact = "def total():\n    running_total = 1\n    return running_total + 2\n";
     let renamed = "def total():\n    answer_value = 1\n    return answer_value + 2\n";
