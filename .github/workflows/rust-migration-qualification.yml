@@ -135,7 +135,8 @@ jobs:
           export VARO_WORKER_DLL="$artifacts/bin/SlopHawk.Providers.CSharp.Worker/debug/SlopHawk.Providers.CSharp.Worker.dll"
           export VARO_REFERENCE_PACK="$(find "$(dirname "$VARO_DOTNET")/packs/Microsoft.NETCore.App.Ref" -path '*/ref/net10.0' -type d | sort -V | tail -n 1)"
           export VARO_REQUIRE_REAL_WORKER=1
-          cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml -- --test-threads=1
+          # The daemon hashes its executable under a 128 MiB limit. Keep source backtraces without full DWARF.
+          CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo +1.99.1 test --locked --manifest-path rust/frontends/public-shell/Cargo.toml -- --test-threads=1
           cargo +1.99.1 build --release --locked --manifest-path rust/frontends/public-shell/Cargo.toml
           dotnet build SlopHawk.slnx --artifacts-path "$artifacts"
           export SLOPHAWK_NATIVE_MIGRATION_BINARY="$CARGO_TARGET_DIR/release/slophawk"
