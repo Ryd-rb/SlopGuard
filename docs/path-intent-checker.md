@@ -118,3 +118,93 @@ Stage artifacts in a unique run directory. Check cross-file references and plann
 1. Verify compiler context and bound body selection. Export the graph and exercise one real CLI and skill workflow through a declared numeric adapter, the existing exact comparator, a separate retest, and a scoped review artifact. A structural graph is useful for diagnosis if execution is blocked.
 2. Add bounded scalar search and cross-check the model against compiled execution on small finite domains. Freeze a scalar ablation against current probes before expanding. Require a saved, independently verified incremental witness, with cost and false positives reported within predeclared limits.
 3. If the scalar gate passes, qualify the typed receipt, fixture reset, and per-assertion intent evaluator through the same foreground workflow. Then run the stateful holdout. Test structured intent questions separately once the cases and observation path work.
+
+## Correlated scalar receipt binding
+
+The native `graph-correlated-v1` route binds the inputs used by its planner to
+the inspections used by `paths check` and `paths review`. This is content
+attribution for a bounded prediction. It does not establish an observed branch
+or prove the scalar model complete. The original candidate, independent public
+expectations, forward/reverse replay and separate discrepancy retests retain
+their existing roles.
+
+Runnable correlated plans and their reviews use the authenticated seal format
+`slophawk-scalar-run-v2`. Build receipts, legacy `graph-on`/`graph-off` plans and
+reviews, and blocked structural plans retain `slophawk-scalar-run-v1`. A v1
+reader rejects v2 instead of silently ignoring the additional validation.
+There is no change to the worker protocol, scalar fact wire schema 1, search
+policy, default mode, target language, CLI arguments or execution grants.
+
+The new `plan.json` field `PlannerEvidence` has the following contract.
+
+| Field | Bound content |
+| --- | --- |
+| `Format` | `slophawk-scalar-planner-evidence-v1`, identifying the interpretation below. |
+| `Mode` | Exactly `graph-correlated-v1`, also equal to the plan mode. |
+| `PlannerRevision` | `correlated-equalities-v1/replay-v1`, identifying the policy and receipt validation contract. |
+| `PlannerSha256` | Uppercase SHA-256 of the complete running native coordinator executable, including its linked planner. The pathname is not part of the identity. |
+| `InspectionSha256` | Canonical digest of the complete typed `InspectResult`: compiler/input closure, original candidate digest, worker runtime version and the ordered target array. Each target retains operation/signature, binding/eligibility/reason, rule source, parameter types, exact fact string, graph, original expectations and ordinary keys. The sealed spec additionally binds each target's document. |
+| `ScalarFactsSha256` | Canonical digest of the existing `candidates.json` `ScalarFacts` object, keyed by operation. The fact strings are not duplicated in the new record. |
+| `GraphsSha256` | Canonical digest of the complete existing `graph.json`, including `BuildAttested`. |
+
+Canonicalization recursively sorts JSON object keys by Rust string order and
+uses compact `serde_json` scalar encoding. It preserves array order, integer
+values and exact string contents. It is a local versioned encoding, **not JCS**.
+The input is the typed worker reply after deserialization: unknown worker fields
+are outside this schema, and absent optional fields become their typed `None`
+values, serialized as null. Adding a consumed field or changing this encoding
+requires a new evidence revision. Facts remain exact UTF-8 string content,
+including whitespace, diagnostics and CRLF/LF differences; they are not parsed
+and reserialized for hashing. Target order is part of the binding. A JSON map's
+property ordering is not. No graph operation, block, child, parameter, seed or
+expectation array is sorted.
+
+The reader verifies the existing file closure and HMAC first, then requires the
+embedded plan identity to equal its seal identity. Correlated artifacts require
+one parseable fact stream and graph entry for every unique planned operation.
+Their content hashes must match the binding. Before the first replay, the
+coordinator requires the same planner executable and compares a fresh full
+inspection with the saved binding. It compares the final inspection again
+before publishing a review, and revalidates the original plan seal and digest.
+Review currentness uses the same planner and inspection checks. Neither path
+regenerates the search to reinterpret old predictions under today's planner.
+
+| Input or drift | Disposition |
+| --- | --- |
+| Same authority, build, planner and ordered inspection | Normal original-build checking; a valid retained review can be current. |
+| Changed facts, graph, target metadata or worker runtime | Before replay: error and no candidate execution. Detected after replay: error and no published review. On a later review: `Current: false`, a reason, and the retained `Result`. |
+| Changed native executable or unsupported evidence revision | New checking is unavailable; replan. An otherwise valid retained review remains readable with `Current: false`. |
+| Old v1 correlated plan without `PlannerEvidence` | New checking is unavailable. An intact v1 review remains readable as historical with its original `Result`; no binding is invented. |
+| New v2 receipt missing its binding; malformed hash, inconsistent mode/identity, missing or malformed saved facts, or mismatched cross-file content | Invalid receipt: hard error, never a current or silently downgraded result. |
+| Changed worker DLL, compiler bytes, source/reference closure, or missing/reordered live targets | Existing checks still reject these. Compiler version labels alone have never substituted for the recorded Roslyn binary hashes. |
+| Legacy graph-on/off receipt | Existing search and compatibility behavior; no new correlated evidence is claimed. |
+| Structural-only plan, including a requested correlated mode | Still blocked with zero runnable cases; no original-build or planner-evidence claim. |
+
+The digest is deliberately conservative: rebuilding an unrelated part of the
+native executable, using the standalone foreground executable instead of the
+public CLI, or changing platform invalidates correlated currentness. Replan
+with the chosen executable; do not copy a new digest into an old plan. A future
+more portable planner identity needs its own qualified compatibility contract.
+
+The planner executable is read in 64 KiB chunks, must be an ordinary nonempty
+file of at most 256 MiB, and must retain its recorded length/modification time
+during hashing. It must be discoverable through `current_exe`; otherwise the
+correlated checker is unavailable. The trusted installation must remain
+immutable throughout each operation. This is an artifact hash, not attestation
+of loaded memory or a concurrent executable replacement defense. Existing
+16 MiB worker/artifact limits still apply, including to canonical evidence.
+The fixed-size binding can cause a plan near the existing limit to be rejected;
+it does not raise the cap or publish a partial seal. Hashing reuses the existing
+inspections and adds no worker execution, search pass or adapter invocation.
+
+The existing worker DLL digest, Roslyn byte/input closure and host authority
+remain mandatory. Inspection content binding catches a separately deployed
+provider changing its facts while those identities remain the same. It accepts
+an equivalent-output provider dependency as content-equivalent: it does not
+identify every loaded provider/Core/runtime dependency, independently validate
+the public-rule evaluator, or authenticate an owner who controls the seal key.
+Full managed deployment provenance would require an attested loaded dependency
+closure from the worker; this receipt makes no such claim. The owner must keep
+that installation trusted. CLI/MCP `checker-plan`/`plan_checker` previews remain
+unsealed `caller_supplied` predictions with their existing limits. Neither they
+nor the new digests produce invocation-scoped measured branch coverage.

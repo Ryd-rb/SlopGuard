@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using SlopHawk.Core;
 using SlopHawk.WorkerFixture;
 using Xunit;
@@ -19,6 +22,18 @@ public sealed class ScalarPathCheckTests
         var planned = await Native("plan", fixture.Spec, fixture.Scratch, build, "graph-correlated-v1");
         var plan = PathOf(planned, "Plan");
         Assert.Equal("graph-correlated-v1", planned.Json.GetProperty("Mode").GetString());
+        using var planDocument = JsonDocument.Parse(await File.ReadAllTextAsync(Artifact(plan, "plan.json")));
+        var evidence = planDocument.RootElement.GetProperty("PlannerEvidence");
+        Assert.Equal("slophawk-scalar-planner-evidence-v1", evidence.GetProperty("Format").GetString());
+        Assert.Equal("graph-correlated-v1", evidence.GetProperty("Mode").GetString());
+        Assert.Equal("correlated-equalities-v1/replay-v1", evidence.GetProperty("PlannerRevision").GetString());
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(
+            Environment.GetEnvironmentVariable("SLOPHAWK_NATIVE_MIGRATION_BINARY")!))),
+            evidence.GetProperty("PlannerSha256").GetString());
+        foreach (var field in new[] { "InspectionSha256", "ScalarFactsSha256", "GraphsSha256" })
+            Assert.Matches("^[0-9A-F]{64}$", evidence.GetProperty(field).GetString()!);
+        using var planSeal = JsonDocument.Parse(await File.ReadAllTextAsync(plan));
+        Assert.Equal("slophawk-scalar-run-v2", planSeal.RootElement.GetProperty("Format").GetString());
         using var candidates = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(Path.GetDirectoryName(plan)!, "candidates.json")));
         var request = Path.Combine(fixture.Scratch, "checker-plan.json");
@@ -34,12 +49,16 @@ public sealed class ScalarPathCheckTests
         Assert.NotEmpty(preview.Json.GetProperty("result").GetProperty("candidates").EnumerateArray());
         var checkedRun = await Native("check", plan);
         var review = await Native("review", PathOf(checkedRun, "Review", 1));
+        using var reviewSeal = JsonDocument.Parse(await File.ReadAllTextAsync(PathOf(checkedRun, "Review", 1)));
+        Assert.Equal("slophawk-scalar-run-v2", reviewSeal.RootElement.GetProperty("Format").GetString());
         Assert.True(review.Json.GetProperty("Current").GetBoolean());
         Assert.Equal(JsonValueKind.Null, review.Json.GetProperty("HistoricalReason").ValueKind);
         var observed = Assert.Single(review.Json.GetProperty("Result").GetProperty("Reproduced").EnumerateArray());
         Assert.Equal(1, observed.GetProperty("Observed").GetInt32());
-        var structural = await Native("plan", fixture.Spec, fixture.Scratch, "-", "graph-on");
+        var structural = await Native("plan", fixture.Spec, fixture.Scratch, "-", "graph-correlated-v1");
         var structuralPlan = PathOf(structural, "Plan", 1);
+        using var structuralDocument = JsonDocument.Parse(await File.ReadAllTextAsync(Artifact(structuralPlan, "plan.json")));
+        Assert.False(structuralDocument.RootElement.TryGetProperty("PlannerEvidence", out _));
         using var graphs = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(
             Path.GetDirectoryName(structuralPlan)!, "graph.json")));
         Assert.False(graphs.RootElement.GetProperty("BuildAttested").GetBoolean());
@@ -90,6 +109,8 @@ public sealed class ScalarPathCheckTests
         Assert.Equal(offRun.Json.GetProperty("Result").GetProperty("Cases").GetInt32(), results.GetProperty("Cases").GetInt32());
         var violation = Assert.Single(results.GetProperty("Reproduced").EnumerateArray());
         Assert.Equal(1, violation.GetProperty("Observed").GetInt32());
+        Assert.False(string.IsNullOrEmpty(violation.GetProperty("RetestJob").GetString()));
+        Assert.NotEqual(results.GetProperty("InitialJob").GetString(), violation.GetProperty("RetestJob").GetString());
         Assert.Equal("policy.md#ordinary-rate", violation.GetProperty("Source").GetString());
         Assert.Equal(new[] { 173, 311 }, violation.GetProperty("Case").GetProperty("Expectation").GetProperty("Args")
             .EnumerateArray().Select(item => item.GetInt32()).ToArray());
@@ -161,6 +182,131 @@ public sealed class ScalarPathCheckTests
         var review = run.Json.GetProperty("Result");
         Assert.Empty(review.GetProperty("Reproduced").EnumerateArray());
         Assert.True(review.GetProperty("Unstable").GetInt32() > 0);
+    }
+
+    [NativeCliFact(scalarWorker: true)]
+    public async Task CorrelatedEvidenceRejectsAuthenticatedModeAndMissingFacts()
+    {
+        using var fixture = new Fixture();
+        var build = PathOf(await Run("build", fixture.Spec, fixture.Scratch), "Build");
+        var modePlan = PathOf(await Run("plan", fixture.Spec, fixture.Scratch, build, "graph-correlated-v1"), "Plan");
+        RewriteJson(Artifact(modePlan, "plan.json"), value => value["Mode"] = "graph-off");
+        Reseal(modePlan);
+        AssertRejected(await Run("check", modePlan));
+
+        var factsPlan = PathOf(await Run("plan", fixture.Spec, fixture.Scratch, build, "graph-correlated-v1"), "Plan");
+        RewriteJson(Artifact(factsPlan, "candidates.json"), value => value["ScalarFacts"]!.AsObject().Remove("rate"));
+        Reseal(factsPlan);
+        AssertRejected(await Run("check", factsPlan));
+        Assert.Equal("daemon sentinel", File.ReadAllText(fixture.DaemonReport));
+    }
+
+    [NativeCliFact(scalarWorker: true)]
+    public async Task PlannerDriftAndOldCorrelatedReceiptsKeepHistoricalResultsWithoutFreshExecution()
+    {
+        using var fixture = new Fixture();
+        var build = PathOf(await Run("build", fixture.Spec, fixture.Scratch), "Build");
+        var plan = PathOf(await Run("plan", fixture.Spec, fixture.Scratch, build, "graph-correlated-v1"), "Plan");
+        var review = PathOf(await Run("check", plan), "Review", 1);
+        Assert.True((await Run("review", review)).Json.GetProperty("Current").GetBoolean());
+
+        RewriteJson(Artifact(plan, "plan.json"), value =>
+            value["PlannerEvidence"]!["PlannerRevision"] = "future-planner/99");
+        Reseal(plan);
+        RelinkReview(review, plan, "slophawk-scalar-run-v2");
+        AssertRejected(await Run("check", plan));
+        AssertHistorical(await Run("review", review), review);
+
+        // Recreate the old producer's v1 correlated receipt. There is no invented
+        // binding or migration default: its retained comparisons stay historical.
+        RewriteJson(Artifact(plan, "plan.json"), value => value.Remove("PlannerEvidence"));
+        Reseal(plan, "slophawk-scalar-run-v1");
+        RelinkReview(review, plan, "slophawk-scalar-run-v1");
+        var oldCheck = await Run("check", plan);
+        AssertRejected(oldCheck);
+        Assert.Contains("sealed planner evidence", oldCheck.Error);
+        var oldReview = await Run("review", review);
+        AssertHistorical(oldReview, review);
+        Assert.Contains("sealed planner evidence", oldReview.Json.GetProperty("HistoricalReason").GetString()!);
+
+        // Missing evidence in a new-format receipt is malformed, not an old input.
+        Reseal(plan, "slophawk-scalar-run-v2");
+        RelinkReview(review, plan, "slophawk-scalar-run-v2");
+        AssertRejected(await Run("check", plan));
+        AssertRejected(await Run("review", review));
+    }
+
+    private static string Artifact(string manifest, string name) =>
+        Path.Combine(Path.GetDirectoryName(manifest)!, name);
+
+    private static void AssertRejected((int Exit, JsonElement Json, string Error) result)
+    {
+        Assert.Equal(1, result.Exit);
+        Assert.StartsWith("path_check_failed:", result.Error);
+        Assert.Equal(JsonValueKind.Undefined, result.Json.ValueKind);
+    }
+
+    private static void AssertHistorical((int Exit, JsonElement Json, string Error) result, string manifest)
+    {
+        Assert.Equal(1, result.Exit);
+        Assert.False(result.Json.GetProperty("Current").GetBoolean());
+        Assert.False(string.IsNullOrEmpty(result.Json.GetProperty("HistoricalReason").GetString()));
+        using var retained = JsonDocument.Parse(File.ReadAllText(Artifact(manifest, "review.json")));
+        Assert.True(JsonElement.DeepEquals(retained.RootElement, result.Json.GetProperty("Result")));
+    }
+
+    private static void RewriteJson(string path, Action<JsonObject> edit)
+    {
+        var value = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        edit(value);
+        File.WriteAllText(path, value.ToJsonString());
+    }
+
+    private static void RelinkReview(string review, string plan, string format)
+    {
+        RewriteJson(Artifact(review, "review.json"), value =>
+            value["PlanSha256"] = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(plan))));
+        Reseal(review, format);
+    }
+
+    // Test-only producer of authenticated invalid/old receipts. This exercises
+    // cross-document admission after the existing byte seal has been verified.
+    private static void Reseal(string manifest, string? format = null)
+    {
+        using var existing = JsonDocument.Parse(File.ReadAllText(manifest));
+        var seal = existing.RootElement;
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("Format", format ?? seal.GetProperty("Format").GetString());
+            writer.WriteString("Kind", seal.GetProperty("Kind").GetString());
+            writer.WriteStartArray("Files");
+            foreach (var entry in seal.GetProperty("Files").EnumerateArray())
+            {
+                var name = entry.GetProperty("File").GetString()!;
+                var bytes = File.ReadAllBytes(Artifact(manifest, name));
+                writer.WriteStartObject();
+                writer.WriteString("File", name);
+                writer.WriteNumber("Length", bytes.LongLength);
+                writer.WriteString("Sha256", Convert.ToHexString(SHA256.HashData(bytes)));
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteStartObject("Identity");
+            foreach (var name in new[] { "Protocol", "Operation", "Job", "Root", "Context", "Epoch", "Revision",
+                "InputDigest", "ToolDigest", "PolicyDigest", "BudgetRef", "GrantRef" })
+            {
+                writer.WritePropertyName(name);
+                // Preserve the Rust producer's string escaping, including Unicode paths.
+                writer.WriteRawValue(seal.GetProperty("Identity").GetProperty(name).GetRawText());
+            }
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }
+        var unsigned = stream.ToArray();
+        var mac = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(SealKey), unsigned));
+        File.WriteAllText(manifest, Encoding.UTF8.GetString(unsigned)[..^1] + ",\"Mac\":\"" + mac + "\"}");
     }
 
     private static string PathOf((int Exit, JsonElement Json, string Error) result, string property, int expectedExit = 0)

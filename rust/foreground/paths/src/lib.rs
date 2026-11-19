@@ -8,7 +8,7 @@ use slophawk_scalar_paths::{SearchPolicy, parse_wire, search, search_with_policy
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
@@ -23,6 +23,10 @@ fn valid_mode(mode: &str) -> bool {
 
 const PROTOCOL: &str = "slophawk.migration-job/1";
 const FORMAT: &str = "slophawk-scalar-run-v1";
+const BOUND_FORMAT: &str = "slophawk-scalar-run-v2";
+const PLANNER_EVIDENCE_FORMAT: &str = "slophawk-scalar-planner-evidence-v1";
+const PLANNER_REVISION: &str = "correlated-equalities-v1/replay-v1";
+const MAX_PLANNER: u64 = 256 * 1024 * 1024;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_SOURCE: usize = 16 * 1024 * 1024;
 const WORKER_DEADLINE: Duration = Duration::from_secs(120);
@@ -156,7 +160,7 @@ struct BuildReceipt {
     compiler_inputs: Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct InspectResult {
     compiler_sha256: String,
@@ -166,7 +170,7 @@ struct InspectResult {
     targets: Vec<InspectedTarget>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct InspectedTarget {
     operation: String,
@@ -235,6 +239,18 @@ struct MethodPlan {
     graph_proposals: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+struct PlannerEvidence {
+    format: String,
+    mode: String,
+    planner_revision: String,
+    planner_sha256: String,
+    inspection_sha256: String,
+    scalar_facts_sha256: String,
+    graphs_sha256: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct PathPlan {
@@ -246,6 +262,8 @@ struct PathPlan {
     candidate_sha256: String,
     compiler_inputs: Value,
     mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planner_evidence: Option<PlannerEvidence>,
     per_operation: usize,
     retest_limit: usize,
     methods: Vec<MethodPlan>,
@@ -306,6 +324,135 @@ struct Proposed {
 
 fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02X}")).collect()
+}
+
+// This is a versioned local encoding, not RFC 8785/JCS: recursively sort JSON
+// object keys by Rust string order, preserve every array and exact string value,
+// and use serde_json's compact scalar encoding (including signed 64-bit integers).
+fn evidence_hash<T: Serialize>(value: &T) -> Result<String> {
+    fn ordered(value: Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut pairs = map.into_iter().collect::<Vec<_>>();
+                pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                Value::Object(pairs.into_iter().map(|(key, value)| (key, ordered(value))).collect())
+            }
+            Value::Array(values) => Value::Array(values.into_iter().map(ordered).collect()),
+            other => other,
+        }
+    }
+    let value = ordered(serde_json::to_value(value).map_err(|e| e.to_string())?);
+    let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_FRAME { return Err("Scalar planner evidence exceeds 16 MiB".into()); }
+    Ok(hash(&bytes))
+}
+
+fn planner_digest_at(path: &Path) -> Result<String> {
+    let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !before.file_type().is_file() || before.len() == 0 || before.len() > MAX_PLANNER {
+        return Err("Planner executable must be an ordinary file of at most 256 MiB".into());
+    }
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut length = 0u64;
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 { break; }
+        length += count as u64;
+        if length > MAX_PLANNER { return Err("Planner executable exceeds 256 MiB".into()); }
+        digest.update(&buffer[..count]);
+    }
+    let after = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if length != before.len() || !after.file_type().is_file() || after.len() != length ||
+        before.modified().map_err(|e| e.to_string())? != after.modified().map_err(|e| e.to_string())? {
+        return Err("Planner executable changed while hashing".into());
+    }
+    Ok(digest.finalize().iter().map(|b| format!("{b:02X}")).collect())
+}
+
+fn planner_digest() -> Result<String> {
+    // The trusted installation must remain immutable for the whole operation.
+    // Artifact identity deliberately includes linked dependencies and build options.
+    planner_digest_at(&env::current_exe().map_err(|e| e.to_string())?)
+}
+
+fn scalar_facts(inspected: &InspectResult) -> Value {
+    Value::Object(inspected.targets.iter().map(|target|
+        (target.operation.clone(), Value::String(target.facts.clone()))).collect())
+}
+
+fn graph_artifact(inspected: &InspectResult) -> Value {
+    let graphs: serde_json::Map<_, _> = inspected.targets.iter().map(|target|
+        (target.operation.clone(), target.graph.clone().unwrap_or(Value::Null))).collect();
+    json!({"BuildAttested": true, "Graphs": graphs})
+}
+
+fn planner_evidence(inspected: &InspectResult, planner: String) -> Result<PlannerEvidence> {
+    Ok(PlannerEvidence {
+        format: PLANNER_EVIDENCE_FORMAT.into(), mode: CORRELATED_MODE.into(),
+        planner_revision: PLANNER_REVISION.into(), planner_sha256: planner,
+        inspection_sha256: evidence_hash(inspected)?,
+        scalar_facts_sha256: evidence_hash(&scalar_facts(inspected))?,
+        graphs_sha256: evidence_hash(&graph_artifact(inspected))?,
+    })
+}
+
+fn current_planner(plan: &PathPlan) -> Result<()> {
+    if plan.mode != CORRELATED_MODE { return Ok(()); }
+    let evidence = plan.planner_evidence.as_ref()
+        .ok_or("Correlated plan has no sealed planner evidence; create a new plan")?;
+    if evidence.format != PLANNER_EVIDENCE_FORMAT || evidence.planner_revision != PLANNER_REVISION {
+        return Err("Unsupported scalar planner evidence revision; create a new plan".into());
+    }
+    if evidence.planner_sha256 != planner_digest()? {
+        return Err("Scalar planner executable changed; create a new plan".into());
+    }
+    Ok(())
+}
+
+fn same_inspection(plan: &PathPlan, inspected: &InspectResult) -> Result<()> {
+    if plan.mode != CORRELATED_MODE { return Ok(()); }
+    let evidence = plan.planner_evidence.as_ref().ok_or("Missing sealed scalar planner evidence")?;
+    if plan.methods.len() != inspected.targets.len() ||
+        plan.methods.iter().zip(&inspected.targets).any(|(method, target)|
+            method.operation != target.operation || method.signature != target.signature) {
+        return Err("Scalar plan target order or identity differs from its inspection".into());
+    }
+    let current = planner_evidence(inspected, evidence.planner_sha256.clone())?;
+    if *evidence != current {
+        return Err("Scalar facts, graph, runtime or target evidence changed; create a new plan".into());
+    }
+    Ok(())
+}
+
+fn validate_planner_artifacts(plan: &PathPlan, graphs: &Value, candidates: &Value) -> Result<()> {
+    let facts = candidates.get("ScalarFacts").and_then(Value::as_object)
+        .ok_or("Correlated plan is missing its ScalarFacts object")?;
+    let graph_map = graphs.get("Graphs").and_then(Value::as_object)
+        .ok_or("Correlated plan is missing its Graphs object")?;
+    if plan.methods.is_empty() || plan.methods.len() > 32 || facts.len() != plan.methods.len() ||
+        graph_map.len() != plan.methods.len() || graphs.get("BuildAttested") != Some(&Value::Bool(true)) ||
+        plan.methods.iter().map(|method| &method.operation).collect::<HashSet<_>>().len() != plan.methods.len() {
+        return Err("Correlated plan has incomplete or ambiguous target evidence".into());
+    }
+    for method in &plan.methods {
+        let wire = facts.get(&method.operation).and_then(Value::as_str)
+            .ok_or("Correlated plan omitted a target fact stream")?;
+        if method.operation.is_empty() || method.signature.is_empty() || !graph_map.contains_key(&method.operation) {
+            return Err("Correlated plan omitted a target graph or identity".into());
+        }
+        parse_wire(wire).map_err(|e| format!("{}: {e}", method.operation))?;
+    }
+    if let Some(evidence) = &plan.planner_evidence {
+        // Unknown revisions remain historical, not silently interpreted as v1.
+        if evidence.format == PLANNER_EVIDENCE_FORMAT &&
+            (evidence.scalar_facts_sha256 != evidence_hash(facts)? ||
+             evidence.graphs_sha256 != evidence_hash(graphs)?) {
+            return Err("Sealed scalar facts or graphs disagree with the planner binding".into());
+        }
+    }
+    Ok(())
 }
 
 fn hmac(bytes: &[u8], secret: &[u8]) -> String {
@@ -505,18 +652,18 @@ fn entries(dir: &Path, kind: &str) -> Result<Vec<Entry>> {
     }).collect()
 }
 
-fn publish(staged: &Path, final_dir: &Path, kind: &str, identity: &Identity) -> Result<PathBuf> {
+fn publish(staged: &Path, final_dir: &Path, kind: &str, identity: &Identity, format: &str) -> Result<PathBuf> {
     let files = entries(staged, kind)?;
-    let unsigned = UnsignedSeal { format: FORMAT, kind, files: &files, identity };
+    let unsigned = UnsignedSeal { format, kind, files: &files, identity };
     let signed = serde_json::to_vec(&unsigned).map_err(|e| e.to_string())?;
-    let seal = Seal { format: FORMAT.into(), kind: kind.into(), files, identity: identity.clone(),
+    let seal = Seal { format: format.into(), kind: kind.into(), files, identity: identity.clone(),
         mac: hmac(&signed, &seal_key()?) };
     write_json(&staged.join("manifest.json"), &seal)?;
     fs::rename(staged, final_dir).map_err(|e| e.to_string())?;
     Ok(final_dir.join("manifest.json"))
 }
 
-fn read_seal(manifest: &Path, kind: &str) -> Result<(PathBuf, Seal)> {
+fn read_seal(manifest: &Path, kind: &str) -> Result<(PathBuf, Seal, String)> {
     if manifest.file_name().and_then(|n| n.to_str()) != Some("manifest.json") {
         return Err("Not a published path manifest".into());
     }
@@ -525,8 +672,10 @@ fn read_seal(manifest: &Path, kind: &str) -> Result<(PathBuf, Seal)> {
         name.len() != 32 || !name.bytes().all(|b| b.is_ascii_hexdigit())) {
         return Err("Unexpected publication directory identity".into());
     }
-    let seal: Seal = read_json(manifest)?;
-    if seal.format != FORMAT || seal.kind != kind || seal.identity.protocol != PROTOCOL {
+    let manifest_bytes = read_file(&dir.join("manifest.json"), MAX_SOURCE)?;
+    let seal: Seal = serde_json::from_slice(&manifest_bytes).map_err(|e| e.to_string())?;
+    if (seal.format != FORMAT && (seal.format != BOUND_FORMAT || kind == "build")) ||
+        seal.kind != kind || seal.identity.protocol != PROTOCOL {
         return Err("Wrong path seal format/kind".into());
     }
     let expected = entries(&dir, kind)?;
@@ -540,15 +689,25 @@ fn read_seal(manifest: &Path, kind: &str) -> Result<(PathBuf, Seal)> {
     if !secure_equals(&seal.mac, &hmac(&data, &seal_key()?)) {
         return Err("Path seal MAC is stale or tampered".into());
     }
-    Ok((dir, seal))
+    Ok((dir, seal, hash(&manifest_bytes)))
+}
+
+fn read_sealed_json<T: for<'de> Deserialize<'de>>(dir: &Path, seal: &Seal, name: &str) -> Result<T> {
+    let entry = seal.files.iter().find(|entry| entry.file == name)
+        .ok_or("Artifact is missing from the seal")?;
+    let bytes = read_file(&dir.join(name), MAX_FRAME)?;
+    if entry.length != bytes.len() as u64 || entry.sha256 != hash(&bytes) {
+        return Err(format!("Sealed artifact changed while reading {name}"));
+    }
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
 fn attested_build(manifest: &Path, current: &Identity, scratch: &Path) -> Result<(PathBuf, BuildReceipt)> {
-    let (dir, seal) = read_seal(manifest, "build")?;
+    let (dir, seal, _) = read_seal(manifest, "build")?;
     if !seal.identity.same_authority(current) || !dir.starts_with(scratch.join(".slophawk/path-builds")) {
         return Err("Build seal is stale or from another workspace".into());
     }
-    let receipt: BuildReceipt = read_json(&dir.join("build.json"))?;
+    let receipt: BuildReceipt = read_sealed_json(&dir, &seal, "build.json")?;
     if receipt.candidate_sha256 != hash(&read_file(&dir.join("candidate.dll"), MAX_SOURCE)?) ||
         receipt.compiler_inputs.get("References").and_then(Value::as_array).is_none_or(|refs|
             refs.len() < 2 || refs.len() > 256) {
@@ -645,9 +804,12 @@ fn validated_source(plan: &PathPlan, worker: &Path) -> Result<(Source, Identity)
     Ok((source, identity))
 }
 
-fn read_plan(manifest: &Path) -> Result<(PathBuf, PathPlan)> {
-    let (directory, _) = read_seal(manifest, "plan")?;
-    let plan: PathPlan = read_json(&directory.join("plan.json"))?;
+fn read_plan(manifest: &Path) -> Result<(PathPlan, String)> {
+    let (directory, seal, digest) = read_seal(manifest, "plan")?;
+    let plan: PathPlan = read_sealed_json(&directory, &seal, "plan.json")?;
+    if seal.identity != plan.identity {
+        return Err("Plan identity differs from its authenticated seal".into());
+    }
     if plan.blocker.is_some() || plan.cases.is_empty() ||
         !directory.starts_with(Path::new(&plan.scratch).join(".slophawk/path-checks")) {
         return Err(plan.blocker.clone().unwrap_or_else(|| "No runnable sealed path cases".into()));
@@ -656,7 +818,19 @@ fn read_plan(manifest: &Path) -> Result<(PathBuf, PathPlan)> {
         !valid_mode(&plan.mode) {
         return Err("Referenced build or path mode changed".into());
     }
-    Ok((directory, plan))
+    if (seal.format == BOUND_FORMAT) != plan.planner_evidence.is_some() ||
+        plan.planner_evidence.as_ref().is_some_and(|evidence|
+            plan.mode != CORRELATED_MODE || evidence.mode != plan.mode ||
+            [&evidence.planner_sha256, &evidence.inspection_sha256,
+                &evidence.scalar_facts_sha256, &evidence.graphs_sha256].iter().any(|digest|
+                    digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)))) {
+        return Err("Malformed or mode-inconsistent scalar planner binding".into());
+    }
+    if plan.mode == CORRELATED_MODE {
+        validate_planner_artifacts(&plan, &read_sealed_json(&directory, &seal, "graph.json")?,
+            &read_sealed_json(&directory, &seal, "candidates.json")?)?;
+    }
+    Ok((plan, digest))
 }
 
 pub fn build(spec: &Path, scratch: &Path, worker: &Path) -> Result<Value> {
@@ -676,7 +850,7 @@ pub fn build(spec: &Path, scratch: &Path, worker: &Path) -> Result<Value> {
             claimed.candidate_sha256 != hash(&read_file(&stage.join("candidate.dll"), MAX_SOURCE)?) {
             return Err("Emitted candidate and build receipt disagree".into());
         }
-        let manifest = publish(&stage, &final_dir, "build", &identity)?;
+        let manifest = publish(&stage, &final_dir, "build", &identity, FORMAT)?;
         Ok(json!({"Build": manifest, "Candidate": final_dir.join("candidate.dll"),
             "CompilerSha256": claimed.compiler_sha256,
             "CandidateSha256": claimed.candidate_sha256}))
@@ -701,6 +875,9 @@ pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path
         inspected.candidate_sha256 != receipt.candidate_sha256 {
         return Err("Compiler input/reference closure differs from the original emission".into());
     }
+    let evidence = if mode == CORRELATED_MODE {
+        Some(planner_evidence(&inspected, planner_digest()?)?)
+    } else { None };
     let mut methods = Vec::new();
     let mut cases = Vec::new();
     let mut proposed = Vec::<Proposed>::new();
@@ -778,7 +955,7 @@ pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path
         build: build.to_string_lossy().into_owned(),
         build_sha256: hash(&read_file(build, MAX_SOURCE)?),
         candidate_sha256: receipt.candidate_sha256, compiler_inputs: receipt.compiler_inputs,
-        mode: mode.into(), per_operation: source.spec.per_operation,
+        mode: mode.into(), planner_evidence: evidence, per_operation: source.spec.per_operation,
         retest_limit: source.spec.retest_limit, methods, cases, blocker,
     };
     let (stage, final_dir) = staging(&source.scratch, "plan", &identity.job)?;
@@ -786,13 +963,12 @@ pub fn plan(spec: &Path, scratch: &Path, build: &Path, mode: &str, worker: &Path
         write_json(&stage.join("graph.json"), &json!({"BuildAttested": true, "Graphs": graphs}))?;
         let mut candidates = json!({"Baseline": baselines, "Graph": proposals});
         if mode == CORRELATED_MODE {
-            let facts: std::collections::BTreeMap<_, _> = inspected.targets.iter()
-                .map(|target| (&target.operation, &target.facts)).collect();
-            candidates["ScalarFacts"] = serde_json::to_value(facts).map_err(|e| e.to_string())?;
+            candidates["ScalarFacts"] = scalar_facts(&inspected);
         }
         write_json(&stage.join("candidates.json"), &candidates)?;
         write_json(&stage.join("plan.json"), &plan)?;
-        let manifest = publish(&stage, &final_dir, "plan", &identity)?;
+        let format = if mode == CORRELATED_MODE { BOUND_FORMAT } else { FORMAT };
+        let manifest = publish(&stage, &final_dir, "plan", &identity, format)?;
         Ok(json!({"Plan": manifest, "Mode": mode, "Cases": plan.cases.len(),
             "Blocker": plan.blocker, "Methods": plan.methods}))
     })();
@@ -817,13 +993,14 @@ fn structural_plan(source: &Source, identity: &Identity, mode: &str, worker: &Pa
     let plan = PathPlan { identity: identity.clone(), inputs: source.inputs(&receipt)?,
         scratch: source.scratch.display().to_string(), build: String::new(), build_sha256: String::new(),
         candidate_sha256: String::new(), compiler_inputs: receipt.compiler_inputs, mode: mode.into(),
+        planner_evidence: None,
         per_operation: source.spec.per_operation, retest_limit: source.spec.retest_limit,
         methods, cases: Vec::new(), blocker: Some(blocker.into()) };
     let (stage, destination) = staging(&source.scratch, "plan", &identity.job)?;
     write_json(&stage.join("graph.json"), &json!({"BuildAttested": false, "Graphs": graphs}))?;
     write_json(&stage.join("candidates.json"), &json!({"Baseline": {}, "Graph": {}}))?;
     write_json(&stage.join("plan.json"), &plan)?;
-    let manifest = publish(&stage, &destination, "plan", identity)?;
+    let manifest = publish(&stage, &destination, "plan", identity, FORMAT)?;
     Ok(json!({"Plan": manifest, "Mode": mode, "Cases": 0, "Blocker": blocker, "Methods": plan.methods}))
 }
 
@@ -854,7 +1031,8 @@ fn missing_coverage(scope: &[Scope]) -> bool {
 }
 
 pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
-    let (_, plan) = read_plan(plan_manifest)?;
+    let (plan, plan_sha256) = read_plan(plan_manifest)?;
+    current_planner(&plan)?;
     let (source, current) = validated_source(&plan, worker)?;
     let (build_dir, receipt) = attested_build(Path::new(&plan.build), &current, &source.scratch)?;
     if plan.candidate_sha256 != receipt.candidate_sha256 ||
@@ -868,6 +1046,7 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
         inspected.compiler_inputs != receipt.compiler_inputs {
         return Err("Compiler options, sources or reference closure changed".into());
     }
+    same_inspection(&plan, &inspected)?;
     let cases = plan.cases.iter().map(|item| item.expectation.clone()).collect::<Vec<_>>();
     let replay_id = source.identity("replay", worker)?;
     let initial = replay(worker, &source, &candidate, &replay_id, &cases)?;
@@ -896,11 +1075,12 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
     let mut pending = findings.len();
     if initial.ordering_stable {
         for (_, index) in priority.into_iter().take(plan.retest_limit) {
-            let single = replay(worker, &source, &candidate, &source.identity("replay", worker)?,
+            let retest_id = source.identity("replay", worker)?;
+            let single = replay(worker, &source, &candidate, &retest_id,
                 std::slice::from_ref(&cases[index]))?;
             retests += 1;
             if single.ordering_stable && single.observed[0] == initial.observed[index] {
-                reproduced.push(Violation { original_index: index, retest_job: replay_id.job.clone(),
+                reproduced.push(Violation { original_index: index, retest_job: retest_id.job,
                     case: plan.cases[index].clone(), observed: single.observed[0].clone(),
                     source: plan.methods.iter().find(|m| m.operation == cases[index].operation)
                         .and_then(|m| m.rule_source.clone()).unwrap_or_default() });
@@ -925,6 +1105,12 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
         final_inspect.compiler_sha256 != receipt.compiler_sha256 {
         return Err("Compilation closure changed during replay".into());
     }
+    same_inspection(&plan, &final_inspect)?;
+    // Revalidate publication before a review can refer to it. Keep the original
+    // manifest digest, rather than binding a possibly replaced plan after replay.
+    if plan_sha256 != read_plan(plan_manifest)?.1 {
+        return Err("Sealed plan changed during replay".into());
+    }
     let scope = plan.methods.iter().map(|m| Scope {
         operation: m.operation.clone(), signature: m.signature.clone(),
         bound: m.bound, reason: m.reason.clone(), unknown_frontiers: m.unknown.len(),
@@ -936,7 +1122,7 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
     else { "no-discrepancy-in-scope" };
     let review = PathReview {
         identity: current.clone(), plan: plan_manifest.to_string_lossy().into_owned(),
-        plan_sha256: hash(&read_file(plan_manifest, MAX_SOURCE)?), mode: plan.mode,
+        plan_sha256, mode: plan.mode.clone(),
         outcome: outcome.into(), cases: cases.len(), compared, unsupported, retests,
         unconfirmed: pending, work: plan.methods.iter().map(|m| m.work).sum(),
         initial_job: replay_id.job, reproduced, unstable: changed.len(), blocker: None,
@@ -947,7 +1133,8 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
         write_json(&stage.join("review.json"), &review)?;
         write_json(&stage.join("unstable.json"), &changed)?;
         write_json(&stage.join("observed.json"), &initial.observed)?;
-        let manifest = publish(&stage, &final_dir, "review", &current)?;
+        let format = if plan.mode == CORRELATED_MODE { BOUND_FORMAT } else { FORMAT };
+        let manifest = publish(&stage, &final_dir, "review", &current, format)?;
         Ok(json!({"Review": manifest, "Result": review}))
     })();
     if result.is_err() { let _ = fs::remove_dir_all(stage); }
@@ -955,18 +1142,22 @@ pub fn check(plan_manifest: &Path, worker: &Path) -> Result<Value> {
 }
 
 pub fn review(review_manifest: &Path, worker: &Path) -> Result<Value> {
-    let (dir, review_seal) = read_seal(review_manifest, "review")?;
-    let reviewed: PathReview = read_json(&dir.join("review.json"))?;
-    if review_seal.identity != reviewed.identity ||
-        reviewed.plan_sha256 != hash(&read_file(Path::new(&reviewed.plan), MAX_SOURCE)?) {
+    let (dir, review_seal, _) = read_seal(review_manifest, "review")?;
+    let reviewed: PathReview = read_sealed_json(&dir, &review_seal, "review.json")?;
+    let (plan, plan_sha256) = read_plan(Path::new(&reviewed.plan))?;
+    if review_seal.identity != reviewed.identity || reviewed.plan_sha256 != plan_sha256 {
         return Err("The review references a changed or unsealed plan".into());
     }
-    let (_, plan) = read_plan(Path::new(&reviewed.plan))?;
+    let format = if plan.planner_evidence.is_some() { BOUND_FORMAT } else { FORMAT };
+    if review_seal.format != format {
+        return Err("Review evidence format does not match its source plan".into());
+    }
     if reviewed.mode != plan.mode || reviewed.cases != plan.cases.len() ||
         reviewed.work != plan.methods.iter().map(|m| m.work).sum::<usize>() {
         return Err("Review scope does not match its source plan".into());
     }
     let historical = (|| -> Result<()> {
+        current_planner(&plan)?;
         let (source, identity) = validated_source(&plan, worker)?;
         if !identity.same_authority(&reviewed.identity) {
             return Err("Review authority is stale".into());
@@ -979,6 +1170,7 @@ pub fn review(review_manifest: &Path, worker: &Path) -> Result<Value> {
             plan.compiler_inputs != inspected.compiler_inputs {
             return Err("Review references a stale compiler/source/reference closure".into());
         }
+        same_inspection(&plan, &inspected)?;
         Ok(())
     })().err();
     Ok(json!({"Review": review_manifest, "Current": historical.is_none(),
@@ -1001,6 +1193,9 @@ pub fn run(args: &[String]) -> Result<(Value, i32)> {
             .is_some_and(|o| o != "no-discrepancy-in-scope") { 1 } else { 0 };
     Ok((value, exit))
 }
+
+#[cfg(test)]
+mod evidence_tests;
 
 #[cfg(test)]
 mod tests {
