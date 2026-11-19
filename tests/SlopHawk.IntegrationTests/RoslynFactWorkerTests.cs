@@ -66,11 +66,11 @@ public sealed class RoslynFactWorkerTests
                     return result;
                 }
 
-                long Guarded(int a, int b, int c, int d)
+                long Guarded(int a, int b, int c, int d, int limit)
                 {
                     long dx = (long)a - b;
                     long dy = (long)c - d;
-                    if (Math.Abs(dy) > int.MaxValue || Math.Abs(dx) > int.MaxValue) return long.MaxValue;
+                    if (Math.Abs(dy) >= limit || Math.Abs(dx) > int.MaxValue) return long.MaxValue;
                     long result = dy * dy + dx * dx;
                     return result;
                 }

@@ -123,8 +123,9 @@ internal static class SquaredDeltaOverflow
         if (condition is not BinaryExpressionSyntax
             {
                 Left: InvocationExpressionSyntax { ArgumentList.Arguments: [{ Expression: IdentifierNameSyntax axis }] } call
-            } comparison || !comparison.IsKind(SyntaxKind.GreaterThanExpression) ||
-            model.GetConstantValue(comparison.Right) is not { HasValue: true, Value: int limit } || limit < 0 ||
+            } comparison ||
+            comparison.Kind() is not (SyntaxKind.GreaterThanExpression or SyntaxKind.GreaterThanOrEqualExpression) ||
+            !IsIntBound(comparison.Right, model) ||
             model.GetSymbolInfo(call).Symbol is not IMethodSymbol
             {
                 Name: "Abs",
@@ -135,6 +136,12 @@ internal static class SquaredDeltaOverflow
             return null;
         return model.GetSymbolInfo(axis).Symbol;
     }
+
+    private static bool IsIntBound(ExpressionSyntax expression, SemanticModel model) =>
+        model.GetTypeInfo(expression).Type?.SpecialType == SpecialType.System_Int32 &&
+        (model.GetConstantValue(expression).HasValue ||
+            expression is IdentifierNameSyntax && model.GetSymbolInfo(expression).Symbol is
+                ILocalSymbol { RefKind: RefKind.None } or IParameterSymbol { RefKind: RefKind.None });
 
     private static bool Same(ISymbol? left, ISymbol? right) =>
         left is not null && right is not null && SymbolEqualityComparer.Default.Equals(left, right);
