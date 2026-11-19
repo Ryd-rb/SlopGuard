@@ -6,6 +6,8 @@
 //! separately: an issue-free evaluation does not include execution-created items.
 //! Findings concern configured graph reachability, never execution or coverage.
 
+pub mod capture;
+
 use super::{CompileMember, GraphIndex, PathComparison, ProjectGraph, ProjectTarget, ordinal, path_key};
 use std::collections::{HashMap, HashSet, VecDeque};
 

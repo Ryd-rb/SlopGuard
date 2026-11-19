@@ -154,3 +154,73 @@ The pinned live public-shell scheduler currently calls its separate C# schedulin
 path, not test-control/test-impact. Pair capture, persistence, support/group policy,
 source-survival/rename evidence and publication freshness remain external owner
 handoffs. This addition is not enabled by a daemon or a default configuration.
+
+## Capture verification
+
+`lost_routes::capture` adds a versioned, pure integrity boundary before the existing
+comparison. It does not turn the live `projects` JSON into an authenticated capture.
+The normal CLI, MCP, managed worker, scheduler, selection and admission paths are
+unchanged. There is no new command, configuration default, file reader or process.
+
+The owner supplies two `CapturedEvaluation` values, separately retained
+`ExpectedCapture` values, independent `SourceObservation` bytes, a `SupportPolicy`,
+and an explicit bounded list of `OwnerRequest` mappings. `verify_pair` checks their
+binding and constructs a private `VerifiedPair`. Its `check` method requires a
+fresh independent current `Stamp` and calls the existing bounded graph comparison.
+
+### One supported policy
+
+Version 1 requires canonical relative paths with `PathComparison::Ordinal`, one
+concrete target per project in each independently declared complete target roster,
+and explicit owner qualification of immutable, evaluation-sufficient inputs.
+Per-capture rosters may differ; target replacements still have no implicit mapping
+in the core. Actual SDK version, provider and toolchain closure digests, complete
+global properties, environment identity and fixed external-input closure must be
+comparable. Changing in-root source/import contents belong to the source snapshot.
+Unsupported path modes, incomplete graphs, unqualified target-time inputs, and
+missing or mismatching evidence remain unavailable.
+
+The supported configured-group policy is explicitly `AllEvaluatedTests`. The
+verifier derives every `IsTestProject` endpoint from each complete graph. It accepts
+no approval or selection list. A reachable unapproved or budget-deferred test can
+therefore preserve a configured route. This policy grants no execution authority.
+Other configured-group policies need a separately specified resolver and version.
+
+Graph and observation fingerprints are domain-separated and length-prefixed,
+with deterministic ordering and bounded inputs. They bind actual graph facts and
+independently supplied source bytes, preserving physical paths and logical Link
+names separately. A source missing from current Compile membership must still be
+observed independently to establish survival. The verifier derives its SHA-256;
+absence from Compile is never interpreted as physical deletion or retirement.
+Physical or logical renames and retirements require current-bound owner declarations.
+
+### Trust and lifecycle prerequisites
+
+An `ExpectedCapture` must originate in trusted owner-controlled capture management,
+retained separately from the candidate envelope. Do not copy an envelope's claims
+into an expectation at verification time. The fingerprint helpers establish byte
+consistency; they do not authenticate a collector or prove completeness of its
+input observations. `SupportPolicy` records the owner's qualification, not a
+capability inferred from `ProjectGraph.complete` or a nonempty digest.
+
+A source snapshot must bind immutable contents and all relevant metadata/read
+inputs, including untracked inputs, missing-file probes and directory membership
+when applicable. Equal pre/post root, source and Git labels cannot rule out mixed
+reads or change-and-revert races. The owner must evaluate and observe the same
+immutable snapshot or provide an equivalent qualified atomic observation contract.
+Currentness must be revalidated under the publication boundary; a pure method
+cannot prevent a later filesystem/Git change after it returns.
+
+The existing evaluator supplies neither this lifecycle nor the independent policy
+and source observations. It uses target-free MSBuild item/property queries, hashes
+selected properties and discovered in-root metadata, and checks physical root
+replacement. SDK targets can add Compile items during execution, external inputs
+can affect evaluation, and `MSBuildAllProjects` is not a complete read manifest.
+Those gaps require an owner producer, persistence, qualification, complete request
+enumeration and publication revalidation before any live lost-route opt-in.
+
+`Report.complete` still means that every supplied request was decided within the
+comparison caps. It does not prove the owner enumerated every affected item,
+establish test execution or coverage, or attribute an edge to a defining XML line.
+The existing raw `lost_routes::check` remains available under its original
+owner-attestation contract; the new seam does not silently upgrade old inputs.
