@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SlopHawk.Daemon;
 
@@ -24,7 +25,13 @@ public sealed record NativeExecutionWork(
     string Root, string DotnetPath, string? SelectedTargetId = null, string? ResultsRoot = null,
     NativeExecutionClosure? Closure = null, string? SelectedInputFingerprint = null,
     string[]? CauseIds = null, string? GitBranch = null, string? GitCommit = null,
-    string? RunnerPath = null, int TimeoutSeconds = 300);
+    string? RunnerPath = null, int TimeoutSeconds = 300)
+{
+    // Data-only opt-in; the old request JSON and fact shape remain unchanged.
+    // This does not request another evaluation or establish AdditionalFiles attribution.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IncludeAdditionalFileEvidence { get; init; }
+}
 
 public sealed record NativeExecutionFact(string Kind, JsonElement Data);
 public sealed record NativeExecutionResult(string Status, string Reason,
@@ -75,7 +82,7 @@ public static class NativeExecutionBridge
             return false;
         if (operation == "evaluate")
         {
-            if (identity.Context != "workspace" || identity.AttemptId != 0 ||
+            if (work.IncludeAdditionalFileEvidence || identity.Context != "workspace" || identity.AttemptId != 0 ||
                 identity.AttemptNumber != 0 || identity.ExecutableSha256 is not null ||
                 identity.RunnerSha256 is not null)
                 return false;
@@ -154,6 +161,7 @@ public static class NativeExecutionBridge
         {
             if (!Path.GetFullPath(identity.Root).Equals(Path.GetFullPath(work.Root), Paths) ||
                 operation is not ("evaluate" or "build" or "test") ||
+                operation == "evaluate" && work.IncludeAdditionalFileEvidence ||
                 operation != "evaluate" && identity.Context != work.SelectedTargetId ||
                 isolatedWorkspace is not null &&
                 !isolatedWorkspace.Root.Equals(Path.GetFullPath(work.Root), Paths) ||
@@ -232,12 +240,15 @@ public static class NativeExecutionBridge
             if (!capture.Stamp.Complete)
                 return NativeExecutionResult.Refuse("partial", "build_closure_incomplete",
                     capture.Stamp.Problems.Select(problem => problem.Field).Take(32).ToArray());
-            var buildFact = new NativeExecutionFact("verified_build", JsonSerializer.SerializeToElement(new
+            var buildData = JsonSerializer.SerializeToElement(new
             {
                 plan.SelectedTargetId, selected.Framework, selected.Configuration, selected.Platform,
                 selected.RuntimeIdentifier, selected.SdkVersion, plan.Assets,
                 plan.InvokedTargets, capture.Stamp, capture.Outputs
-            }, Wire));
+            }, Wire);
+            if (work.IncludeAdditionalFileEvidence)
+                buildData = AdditionalFileEvidence.Attach(buildData, capture, identity, "post-build");
+            var buildFact = new NativeExecutionFact("verified_build", buildData);
             if (operation == "build")
             {
                 worker.Revalidate();
@@ -424,7 +435,8 @@ public static class NativeExecutionBridge
         return BuildArtifactCapture.Capture(manifest,
             new BuildArtifactReadScope([workspace.Root], mapped, MappingTrusted: true),
             cancellationToken: token,
-            observedRuntimeInputs: closure.ObservedRuntimeInputs.Select(Add).ToArray());
+            observedRuntimeInputs: closure.ObservedRuntimeInputs.Select(Add).ToArray(),
+            retainIdentityWitness: work.IncludeAdditionalFileEvidence);
     }
 
     private static VstestVerifiedFile FindVerified(BuildArtifactCaptureResult capture, string path)

@@ -5,6 +5,7 @@
 //! closed when the platform cannot establish a stable, unlinked artifact identity.
 //! The verification bridge never turns aggregate lines/branches into an exact arm.
 
+pub mod additional_file_evidence;
 pub mod capture;
 pub mod cobertura;
 pub mod identity;

@@ -60,7 +60,13 @@ internal sealed record BuildArtifactFileEvidence(
 internal sealed record BuildArtifactCaptureResult(
     string TargetId, string SdkVersion, BuildIdentityStamp Stamp,
     IReadOnlyList<BuildArtifactFileEvidence> Evidence,
-    IReadOnlyList<BuildArtifactFileEvidence> Outputs);
+    IReadOnlyList<BuildArtifactFileEvidence> Outputs)
+{
+    // Optional, transient evidence from this exact capture. Old callers and old
+    // constructed results have no witness. Neither property grants reuse authority.
+    internal BuildIdentityInputs? IdentityInputs { get; init; }
+    internal IReadOnlyList<BuildArtifactFileEvidence>? SettingsFiles { get; init; }
+}
 
 /// <summary>
 /// Bounded, read-only capture of an explicit target closure. It never runs MSBuild, discovers
@@ -80,7 +86,8 @@ internal static class BuildArtifactCapture
         BuildArtifactCaptureLimits? limits = null,
         CancellationToken cancellationToken = default,
         Action<string>? betweenValidationReads = null,
-        IReadOnlyList<string>? observedRuntimeInputs = null)
+        IReadOnlyList<string>? observedRuntimeInputs = null,
+        bool retainIdentityWitness = false)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(manifest.Target);
@@ -330,13 +337,22 @@ internal static class BuildArtifactCapture
             mappingIdentity, mappingTrusted,
             scope.ImmutableSnapshotVerified ? BuildCollectionMode.ImmutableSnapshot : BuildCollectionMode.LiveCheckout,
             settingsDigest, manifest.RunnerIdentity, adapterIdentity, compile, references, runtime, outputs?.ToArray());
-        var captured = BuildOutputIdentity.Capture(input);
+        // Copy before hashing so a later mutation of caller-owned target lists cannot
+        // relabel the retained inputs. No new reads or identity fields are introduced.
+        var witnessInput = retainIdentityWitness
+            ? AdditionalFileEvidence.CopyInputsForWitness(input, settings) : null;
+        var captured = BuildOutputIdentity.Capture(witnessInput ?? input);
         var allProblems = problems.Concat(captured.Problems).Distinct().Take(BuildOutputIdentity.MaxProblems).ToArray();
         return new BuildArtifactCaptureResult(manifest.Target.Id, manifest.Target.SdkVersion, captured with
         {
             Complete = allProblems.Length == 0,
             Problems = allProblems
-        }, evidence.AsReadOnly(), Array.AsReadOnly(outputEvidence?.ToArray() ?? []));
+        }, evidence.AsReadOnly(), Array.AsReadOnly(outputEvidence?.ToArray() ?? []))
+        {
+            IdentityInputs = witnessInput,
+            SettingsFiles = witnessInput is not null && settings is not null
+                ? Array.AsReadOnly(settings.ToArray()) : null
+        };
 
         void Add(BuildIdentityProblemKind kind, string field)
         {
@@ -347,6 +363,11 @@ internal static class BuildArtifactCapture
                 problems.Add(problem);
         }
     }
+
+    // Reuse the existing SG-13 bytes when exporting a complete settings witness.
+    // The export validates record fields and budgets before calling this helper.
+    internal static string? SettingsDigest(IReadOnlyList<BuildArtifactFileEvidence> files) =>
+        AggregateFiles(files, "settings", []);
 
     private static string? AggregateFiles(IReadOnlyList<BuildArtifactFileEvidence>? files, string section,
         List<BuildIdentityProblem> problems)
