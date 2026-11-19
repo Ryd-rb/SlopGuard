@@ -5,6 +5,10 @@
 
 pub mod passive;
 pub mod command;
+pub mod selection_audit;
+
+#[cfg(test)]
+mod selection_tests;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, value::RawValue};
@@ -15,6 +19,7 @@ use slophawk_probe_replay::{
     parse_results,
 };
 use std::collections::HashSet;
+use selection_audit::SelectionAudit;
 
 pub const SOURCE_LIMIT: usize = 8 * 1024 * 1024;
 pub const BATCH_SIZE: usize = 2048;
@@ -241,6 +246,8 @@ pub struct SearchOutcome {
     pub replay_report: Option<String>,
     pub replay_changes: Vec<ReplayChange>,
     pub publication: Publication,
+    /// Present only for the opt-in live diverse search, never read-only planning.
+    pub selection_audit: Option<SelectionAudit>,
 }
 
 impl SearchOutcome {
@@ -264,6 +271,7 @@ struct SearchState {
     compared: usize,
     unsupported: usize,
     candidate: Option<String>,
+    selection_audit: Option<SelectionAudit>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -294,10 +302,18 @@ pub fn search_with_selection(catalog: &ContractCases, per_operation: usize,
             .map(|q| (q.operation.clone(), 0)).collect(),
         selected: Vec::new(), matched: Vec::new(), seen: HashSet::new(),
         remaining, compared: 0, unsupported: 0, candidate: None,
+        selection_audit: (selection == CaseSelection::DiverseV1).then(SelectionAudit::new),
     };
     pass(catalog, per_operation.min(64), 0, &[], peer, &mut state, selection)?;
     if per_operation > 64 && !state.remaining.is_empty() {
         pass(catalog, per_operation - 64, 1, hints, peer, &mut state, selection)?;
+    } else if per_operation > 64 {
+        if let Some(audit) = &mut state.selection_audit {
+            for (operation, _) in catalog.parameter_counts() {
+                audit.skip_pass(operation, 1, per_operation - 64,
+                    ((per_operation - 64) * 4).min(8192));
+            }
+        }
     }
     let mut witnesses: Vec<Witness> = state.selected.iter().map(|(_, witness)| witness.clone()).collect();
     witnesses.extend(state.matched.iter().filter(|(op, _)|
@@ -309,6 +325,9 @@ pub fn search_with_selection(catalog: &ContractCases, per_operation: usize,
         let cases: Vec<_> = witnesses.iter().map(|w| w.case.clone()).collect();
         let replay = peer.check(&cases)?;
         validate_observation(&cases, &replay, &mut state.candidate)?;
+        if let Some(audit) = &mut state.selection_audit {
+            audit.record_replay(&cases, &replay)?;
+        }
         let mut stable_cases = Vec::new();
         let mut stable_observed = Vec::new();
         let mut changes = Vec::new();
@@ -339,7 +358,8 @@ pub fn search_with_selection(catalog: &ContractCases, per_operation: usize,
     }).collect();
     Ok(SearchOutcome { qualification, operations, compared: state.compared,
         unsupported: state.unsupported, observed_discrepancies: state.selected.len(),
-        replay_unsupported, replay_report, replay_changes, publication })
+        replay_unsupported, replay_report, replay_changes, publication,
+        selection_audit: state.selection_audit })
 }
 
 fn pass(catalog: &ContractCases, limit: usize, seed: i32, hints: &[(String, Vec<i64>)],
@@ -349,44 +369,66 @@ fn pass(catalog: &ContractCases, limit: usize, seed: i32, hints: &[(String, Vec<
     // one-operation filter avoids the Rust planner's 65536 total-plan cap
     // without changing any per-rule RNG draw, interleave or operation order.
     for (operation, _) in catalog.parameter_counts() {
-        if !state.remaining.contains(operation) { continue; }
-        let only = HashSet::from([operation.clone()]);
         let pool_limit = match selection {
             CaseSelection::Legacy => limit,
             CaseSelection::DiverseV1 => (limit * 4).min(8192),
         };
+        if !state.remaining.contains(operation) {
+            if let Some(audit) = &mut state.selection_audit {
+                audit.skip_pass(operation, seed, limit, pool_limit);
+            }
+            continue;
+        }
+        let only = HashSet::from([operation.clone()]);
         let generated = catalog.generate(pool_limit, seed, Some(&only), seed != 0, hints)
             .map_err(|error| error.to_string())?;
         let selected = if selection == CaseSelection::DiverseV1 {
-            let pool = generated.into_iter().filter_map(|test| {
+            let pool = generated.iter().filter_map(|test| {
                 let key = (test.operation.clone(), test.args.clone());
                 (!state.seen.contains(&key)).then_some(ProbeInput {
-                    operation: test.operation, args: test.args,
+                    operation: test.operation.clone(), args: test.args.clone(),
                 })
             }).collect::<Vec<_>>();
-            catalog.select_diverse(&pool, limit).map_err(|error| error.to_string())?
+            let selected = catalog.select_diverse(&pool, limit).map_err(|error| error.to_string())?;
+            if let Some(audit) = &mut state.selection_audit {
+                audit.nominate(operation, seed, limit, pool_limit, &generated,
+                    generated.len() - pool.len(), &selected)?;
+            }
+            selected
         } else {
             generated
         };
         for test in selected {
             batch.push(test);
             if batch.len() == BATCH_SIZE {
-                flush(&mut batch, peer, state)?;
+                flush(&mut batch, peer, state, seed)?;
             }
         }
     }
-    flush(&mut batch, peer, state)
+    flush(&mut batch, peer, state, seed)
 }
 
 fn flush(batch: &mut Vec<ProbeExpectation>, peer: &mut impl CheckPeer,
-    state: &mut SearchState) -> Result<()> {
-    let to_check: Vec<ProbeExpectation> = batch.drain(..)
-        .filter(|test| state.remaining.contains(&test.operation)
-            && state.seen.insert((test.operation.clone(), test.args.clone())))
-        .collect();
+    state: &mut SearchState, pass: i32) -> Result<()> {
+    let mut to_check = Vec::new();
+    for test in batch.drain(..) {
+        // Preserve the original short-circuit admission order: an operation
+        // stopped by a prior batch never enters the cross-pass seen set.
+        let after_finding = !state.remaining.contains(&test.operation);
+        if after_finding || !state.seen.insert((test.operation.clone(), test.args.clone())) {
+            if let Some(audit) = &mut state.selection_audit {
+                audit.skip_case(pass, &test.operation, after_finding);
+            }
+        } else {
+            to_check.push(test);
+        }
+    }
     if to_check.is_empty() { return Ok(()); }
     let receipt = peer.check(&to_check)?;
     validate_observation(&to_check, &receipt, &mut state.candidate)?;
+    if let Some(audit) = &mut state.selection_audit {
+        audit.record_batch(pass, &to_check, &receipt)?;
+    }
     state.compared += receipt.result.compared;
     state.unsupported += receipt.result.unsupported;
     for (index, (test, actual)) in to_check.iter().zip(&receipt.observed).enumerate() {

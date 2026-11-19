@@ -12,7 +12,7 @@ slophawk-contracts-probes contracts qualify rules.json published.json
 slophawk-contracts-probes probes plan seeds.json count [seed [scales.json]]
 slophawk-contracts-probes probes compare inputs.json candidate.json reference.json
 slophawk-contracts-probes probes methods candidate.dll reference.dll
-slophawk-contracts-probes check-contracts candidate.dll rules.json published.json workspace [per-operation [run-verb [prepare-verb]]]
+slophawk-contracts-probes check-contracts [--diverse] candidate.dll rules.json published.json workspace [per-operation [run-verb [prepare-verb]]]
 ```
 
 Exit 0 is qualified/clean, exit 1 is qualification/search findings, replay changes or
@@ -90,6 +90,92 @@ at a time to avoid the single-call ceiling while preserving per-operation RNG
 state and concatenated ordered batches. Inputs beyond those ceilings fail
 closed with an explicit error; none are silently sampled. The Rust foreground
 engine remains opt-in until the owner executes differential qualifications.
+
+## Diverse live allocation audit
+
+With `check-contracts --diverse`, Summary and Review include the same optional
+`SelectionAudit` object, with `Format: "slophawk-contract-selection-audit-v1"`.
+`CaseSelection: "diverse-v1"`, the outer document formats, default budget 512,
+the 1..=8192 budget range, seeds, candidate order, and execution authorization
+are unchanged. Legacy searches omit the new object. An older diverse receipt
+without it has **unavailable accounting**, not zero work. The small stdout
+receipt continues to link to Summary and Review rather than copying the audit.
+
+`GeneratorBasis: "emitted-legal-nonpublished-cases"` counts only cases returned
+by `ContractCases::generate`. That producer already removes published inputs,
+duplicate proposals, invalid domains and unavailable expectations. Its internal
+attempt/rejection counts are not exposed. A completed empty generator is not
+proof that the domain has no other legal inputs. Published anchors can influence
+selection features but never count as new executions or observed coverage.
+
+`ExecutionBasis: "validated-observations"` means the peer returned an observation
+whose ordered inputs, counts, findings and candidate identity passed validation.
+It does not prove a particular target body or branch ran, and it excludes failed
+or incomplete adapter attempts. No input-partition or program coverage metric
+is produced. Missing or invalid observation evidence remains an error.
+
+`Passes` is ordered by pass, then qualified-operation order. Pass 0 reserves
+`min(perOperation, 64)` calls; pass 1, when configured, reserves the remaining
+`perOperation - 64`. Each generated pool has cap `min(4 * Budget, 8192)`.
+Only qualified operations receive audit rows; qualification errors remain in
+the existing `Operations`/qualification records.
+
+| Field | Unit and meaning |
+| --- | --- |
+| `Operation`, `Pass`, `Budget`, `PoolLimit` | Operation, seed/pass 0 or 1, reserved search calls, and emitted pool cap. |
+| `Generation` | `completed` means bounded generation returned, even when empty; `skipped-after-finding` means no pool was requested for a stopped operation. |
+| `Nominated` | Legal, distinct, nonpublished rows emitted in this pass, before excluding prior executions. The same input can be nominated again in another pass. |
+| `PreviouslyExecuted`, `Eligible` | Emitted rows already seen in a validated initial batch, including unsupported rows; the remaining pool supplied to the selector. |
+| `Selected`, `NotSelected` | Shortlisted rows and eligible rows not shortlisted within this pass's quota. Selection alone is not an observation. |
+| `SkippedAfterFinding`, `SkippedDuplicate` | Selected rows dropped at flush because an earlier batch found that operation, or because the exact request was already admitted. The finding reason takes precedence. |
+| `Executed`, `Compared`, `Unsupported` | Validated initial observations; non-null supported comparisons; null unsupported observations. All returned rows in a batch count, including rows after its first mismatch. |
+| `UnusedBudget` | Reserved calls minus validated initial observations. Unused slots are not transferred to another operation or pass. |
+| `NominatedInputsSha256`, `SelectedInputsSha256` | Ordered input identities. Completed empty vectors hash `[]`; skipped generation has null digests. |
+
+Every completed pass record satisfies these conservation rules:
+
+```text
+Nominated = PreviouslyExecuted + Eligible
+Eligible = Selected + NotSelected
+Selected = Executed + SkippedAfterFinding + SkippedDuplicate
+Executed = Compared + Unsupported
+Budget = Executed + UnusedBudget
+```
+
+`Batches` holds one record per validated initial peer call, with `Pass`, `Run`,
+`Report`, `InputsSha256`, `Executed`, `Compared` and `Unsupported`. Read the
+report's sibling `requests.json`, `observed.json` and `identity.json` to audit
+the ordered actual cases and independent expectations in `report.json`.
+`Replay` is null when no supported witness exists; otherwise it records the
+separate witness call using the same observation fields. It is not charged to
+the search quota or included again in initial `Compared`. Promotion relocates
+its `Report` while preserving `Run`. For a stable subset, it still identifies
+the full original replay, not the subset's new run. Existing `ReplayChanges`,
+`ReplayUnsupported`, published findings and retest indices remain authoritative.
+
+Input digests are uppercase SHA-256 of UTF-8 compact JSON from `inputs_json`:
+ordered objects with `Operation` followed by `Args`, without expectations.
+They identify stages, not recoverable input lists or tamper-proof seals.
+Reconstructing an omitted nomination/shortlist requires the exact generator,
+rules, examples and hints; a digest alone cannot supply those inputs. The
+existing rule/published hashes bind the loaded snapshot, not a later file edit.
+The audit does not authorize new execution or extend `check-review` coverage.
+
+The live limits imply at most 128 pass records, 256 initial batch records and
+one replay record, independent of how many nominations are discarded. At the
+maximum budget, at most 540672 rows are emitted across both passes and 524288
+initial requests can receive observations; replay adds at most 64 witnesses.
+Generator attempts, guided-source preparation and oracle work have separate
+existing caps. Hashing adds work proportional to serialized input bytes and
+temporarily retains one generated pool while selecting. Names and paths still
+contribute variable bytes; no new hard Summary/Review byte limit is introduced.
+
+`diversify_cases` and CLI/MCP `contract_diversity` planning remain read-only
+over caller-supplied evidence, with their existing caps and result schema.
+They do not expose this live audit or claim adapter execution. The selector's
+same-pool prefix property remains limited: at budget two, a diversity choice
+can omit the only failing second pool entry in favor of a harmless boundary.
+The regression fixture in the contracts crate records this fixed-budget limit.
 
 ## Integration prerequisites and static provenance
 

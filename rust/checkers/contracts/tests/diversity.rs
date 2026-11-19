@@ -355,3 +355,20 @@ fn a_shared_wrong_oracle_can_agree_and_preserve_translation() {
     assert!(independent.qualification()[0].error.is_some());
     assert!(independent.select_diverse(&pool, 2).unwrap().is_empty());
 }
+
+#[test]
+fn diversity_at_a_fixed_budget_can_omit_a_unique_failing_input() {
+    let rule = IntegerContract::new("Below", &["x"], "true", "x < 10 ? 1 : 0", "below.md");
+    let catalog = ContractCases::new(&[rule], &[known("Below", &[0], 1)]).unwrap();
+    let pool = [input("Below", &[1]), input("Below", &[2]), input("Below", &[10])];
+    let diverse = catalog.select_diverse(&pool, 2).unwrap();
+    assert_eq!(rows(&diverse), rows(&[known("Below", &[1], 1), known("Below", &[10], 0)]));
+    // Independent oracle: 1 and 2 are below ten; 10 is not. A candidate that
+    // incorrectly returns zero only at x=2 fools this diverse two-case sample,
+    // while the first two pool entries expose it. This is a selection limit,
+    // not a claim that the fixed budget preserves every baseline witness.
+    let candidate = |x: i64| if x < 10 && x != 2 { 1 } else { 0 };
+    assert_eq!((candidate(1), candidate(2), candidate(10)), (1, 0, 0));
+    assert!(diverse.iter().all(|case| case.expected.raw_json() == candidate(case.args[0]).to_string()));
+    assert_ne!(candidate(2), 1);
+}

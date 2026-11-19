@@ -1,5 +1,6 @@
 //! Shared foreground entry point for contract search and its evidence.
 use crate::passive::{self, positive_count, read_limited};
+use crate::selection_audit::SelectionAudit;
 use crate::{
     CheckPeer, FORMAT, Observation, Publication, Result, SearchOutcome, inputs_json,
     operations_json, qualifications_json, qualify, raw, read_literal_hints, replay_changes_json,
@@ -260,6 +261,8 @@ struct Summary<'a> {
     PerOperation: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     CaseSelection: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    SelectionAudit: Option<&'a SelectionAudit>,
     ElapsedMilliseconds: u128,
     Unsupported: usize,
     Findings: usize,
@@ -287,6 +290,8 @@ struct Review<'a> {
     Operations: &'a Value,
     Result: Option<&'a RawValue>,
     ReplayRequests: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    SelectionAudit: Option<&'a SelectionAudit>,
 }
 
 fn check_contracts(
@@ -383,6 +388,14 @@ fn check_contracts(
         run_verb.as_deref(),
         prepare_verb.as_deref(),
     )?;
+    let mut selection_audit = outcome.selection_audit.clone();
+    if let Some(replay) = selection_audit.as_mut().and_then(|audit| audit.replay.as_mut()) {
+        // Promotion moves the replay directory. A subset keeps the original
+        // replay report; never relabel it with the subset's new run identity.
+        if let Some(report) = &evidence.replay_report {
+            replay.report = report.clone();
+        }
+    }
     let summary_path = search_path.join("summary.json");
     let summary_string = summary_path.to_string_lossy().into_owned();
     let review_path = search_path.join("review.json");
@@ -413,6 +426,7 @@ fn check_contracts(
         Compared: outcome.compared,
         PerOperation: per_operation,
         CaseSelection: (selection == CaseSelection::DiverseV1).then_some("diverse-v1"),
+        SelectionAudit: selection_audit.as_ref(),
         ElapsedMilliseconds: started.elapsed().as_millis(),
         Unsupported: outcome.unsupported,
         Findings: findings.len(),
@@ -440,6 +454,7 @@ fn check_contracts(
         Operations: &summary.Operations,
         Result: result.as_deref(),
         ReplayRequests: &replay_requests,
+        SelectionAudit: selection_audit.as_ref(),
     };
     publish_json(
         &review_path,

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SlopHawk.Core;
@@ -31,11 +32,13 @@ public sealed class ForegroundEvidenceTests
         var finding = Assert.Single(stable.GetProperty("Result").GetProperty("Findings").EnumerateArray());
         Assert.Equal("steady", finding.GetProperty("Input").GetProperty("Operation").GetString());
         var summary = workspace.Read(result.Json.GetProperty("Summary").GetString()!);
+        Assert.False(summary.TryGetProperty("SelectionAudit", out _));
         Assert.Equal(3, summary.GetProperty("ReplayChanges").GetArrayLength());
         Assert.True(File.Exists(summary.GetProperty("ReplayReport").GetString()));
         var reviewPath = result.Json.GetProperty("Review").GetString()!;
         Assert.Equal(reviewPath, summary.GetProperty("Review").GetString());
         var review = workspace.Read(reviewPath);
+        Assert.False(review.TryGetProperty("SelectionAudit", out _));
         Assert.Equal("slophawk-contract-review-v1", review.GetProperty("Format").GetString());
         Assert.Equal(stable.GetProperty("Run").GetString(), review.GetProperty("Run").GetString());
         Assert.Equal(stable.GetProperty("Candidate").GetString(), review.GetProperty("Candidate").GetString());
@@ -47,6 +50,147 @@ public sealed class ForegroundEvidenceTests
         Assert.Equal(requestsPath, review.GetProperty("ReplayRequests").GetString());
         var request = Assert.Single(workspace.Read(requestsPath).EnumerateArray());
         Assert.True(JsonElement.DeepEquals(finding.GetProperty("Input"), request));
+    }
+
+    [NativeCliFact]
+    public async Task DiverseContractSearchAuditsExecutedCasesAndSeparateReplay()
+    {
+        using var workspace = new TestWorkspace();
+        var rules = workspace.Write("rules.json", new[]
+        {
+            new IntegerContract("sample", ["x"], "x >= 0", "x", "rules.md")
+        });
+        var examples = workspace.Write("examples.json", new[] { Example("sample", 5, 5) });
+
+        var result = await Run("check-contracts", "--diverse", FixtureAssembly, rules, examples,
+            workspace.Path, "3", "probe-batch");
+
+        Assert.True(result.ExitCode == 0, result.Error);
+        Assert.False(result.Json.TryGetProperty("SelectionAudit", out _));
+        var summary = workspace.Read(result.Json.GetProperty("Summary").GetString()!);
+        var review = workspace.Read(result.Json.GetProperty("Review").GetString()!);
+        var audit = AssertSelectionAudit(summary, review);
+        var pass = Assert.Single(audit.GetProperty("Passes").EnumerateArray());
+        Assert.Equal("sample", pass.GetProperty("Operation").GetString());
+        Assert.Equal(0, Count(pass, "Pass"));
+        Assert.Equal(3, Count(pass, "Budget"));
+        Assert.Equal(12, Count(pass, "PoolLimit"));
+        Assert.Equal("completed", pass.GetProperty("Generation").GetString());
+        Assert.InRange(Count(pass, "Nominated"), 3, 12);
+        Assert.Equal(0, Count(pass, "PreviouslyExecuted"));
+        Assert.Equal(3, Count(pass, "Selected"));
+        Assert.Equal(0, Count(pass, "SkippedAfterFinding"));
+        Assert.Equal(0, Count(pass, "SkippedDuplicate"));
+        Assert.Equal(3, Count(pass, "Executed"));
+        Assert.Equal(3, Count(pass, "Compared"));
+        Assert.Equal(0, Count(pass, "Unsupported"));
+        Assert.Equal(0, Count(pass, "UnusedBudget"));
+
+        var initial = Assert.Single(audit.GetProperty("Batches").EnumerateArray());
+        Assert.Equal(0, Count(initial, "Pass"));
+        Assert.Equal(3, Count(initial, "Executed"));
+        Assert.Equal(pass.GetProperty("SelectedInputsSha256").GetString(),
+            initial.GetProperty("InputsSha256").GetString());
+        var initialRequests = AssertAuditedBatch(workspace, initial, "sample", unsupported: false);
+        var replay = audit.GetProperty("Replay");
+        Assert.Equal(1, Count(replay, "Executed"));
+        Assert.Equal(1, Count(replay, "Compared"));
+        Assert.Equal(0, Count(replay, "Unsupported"));
+        Assert.NotEqual(initial.GetProperty("Run").GetString(), replay.GetProperty("Run").GetString());
+        Assert.Equal(result.Json.GetProperty("Run").GetString(), replay.GetProperty("Run").GetString());
+        Assert.Equal(result.Json.GetProperty("Report").GetString(), replay.GetProperty("Report").GetString());
+        Assert.Equal(summary.GetProperty("ReplayReport").GetString(), replay.GetProperty("Report").GetString());
+        var replayRequests = AssertAuditedBatch(workspace, replay, "sample", unsupported: false);
+        Assert.True(JsonElement.DeepEquals(initialRequests[0], Assert.Single(replayRequests)));
+        // Initial allocation and the separately confirmed witness have different budgets.
+        Assert.Equal(3, Count(summary, "Compared"));
+        Assert.Equal(3, Count(review, "Compared"));
+        Assert.Equal(1, Count(review.GetProperty("Result"), "Compared"));
+        Assert.Equal(0, Count(summary, "ObservedDiscrepancies"));
+        Assert.Equal(0, Count(summary, "Findings"));
+    }
+
+    [NativeCliFact]
+    public async Task DiverseUnsupportedObservationsSpendBudgetWithoutClaimingComparisons()
+    {
+        using var workspace = new TestWorkspace();
+        var rules = workspace.Write("rules.json", new[]
+        {
+            new IntegerContract("unsupported", ["x"], "x >= 0", "x", "rules.md")
+        });
+        var examples = workspace.Write("examples.json", new[] { Example("unsupported", 5, 5) });
+
+        var result = await Run("check-contracts", "--diverse", FixtureAssembly, rules, examples,
+            workspace.Path, "3", "probe-batch");
+
+        Assert.Equal(1, result.ExitCode);
+        var summary = workspace.Read(result.Json.GetProperty("Summary").GetString()!);
+        var review = workspace.Read(result.Json.GetProperty("Review").GetString()!);
+        var audit = AssertSelectionAudit(summary, review);
+        var pass = Assert.Single(audit.GetProperty("Passes").EnumerateArray());
+        Assert.Equal("unsupported", pass.GetProperty("Operation").GetString());
+        Assert.Equal("completed", pass.GetProperty("Generation").GetString());
+        Assert.Equal(3, Count(pass, "Budget"));
+        Assert.Equal(3, Count(pass, "Selected"));
+        Assert.Equal(3, Count(pass, "Executed"));
+        Assert.Equal(0, Count(pass, "Compared"));
+        Assert.Equal(3, Count(pass, "Unsupported"));
+        Assert.Equal(0, Count(pass, "UnusedBudget"));
+        var initial = Assert.Single(audit.GetProperty("Batches").EnumerateArray());
+        Assert.Equal(3, Count(initial, "Executed"));
+        Assert.Equal(0, Count(initial, "Compared"));
+        Assert.Equal(3, Count(initial, "Unsupported"));
+        AssertAuditedBatch(workspace, initial, "unsupported", unsupported: true);
+        Assert.Equal(JsonValueKind.Null, audit.GetProperty("Replay").ValueKind);
+        Assert.Equal(JsonValueKind.Null, result.Json.GetProperty("Report").ValueKind);
+        Assert.Equal(JsonValueKind.Null, result.Json.GetProperty("Run").ValueKind);
+        Assert.Equal(JsonValueKind.Null, summary.GetProperty("ReplayReport").ValueKind);
+        Assert.Equal(JsonValueKind.Null, review.GetProperty("Result").ValueKind);
+        Assert.Equal(0, Count(summary, "Compared"));
+        Assert.Equal(3, Count(summary, "Unsupported"));
+        Assert.Equal(0, Count(summary, "ReplayUnsupported"));
+        Assert.Equal(0, Count(summary, "Findings"));
+    }
+
+    [NativeCliFact]
+    public async Task DiversePublishedSingletonDoesNotClaimGeneratedOrExecutedCoverage()
+    {
+        using var workspace = new TestWorkspace();
+        var rules = workspace.Write("rules.json", new[]
+        {
+            new IntegerContract("sample", ["x"], "x == 5", "x", "rules.md")
+        });
+        var examples = workspace.Write("examples.json", new[] { Example("sample", 5, 5) });
+
+        var result = await Run("check-contracts", "--diverse", FixtureAssembly, rules, examples,
+            workspace.Path, "3", "probe-batch");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(0, Count(result.Json, "Unqualified"));
+        var summary = workspace.Read(result.Json.GetProperty("Summary").GetString()!);
+        var review = workspace.Read(result.Json.GetProperty("Review").GetString()!);
+        var audit = AssertSelectionAudit(summary, review);
+        var pass = Assert.Single(audit.GetProperty("Passes").EnumerateArray());
+        Assert.Equal("sample", pass.GetProperty("Operation").GetString());
+        Assert.Equal("completed", pass.GetProperty("Generation").GetString());
+        Assert.Equal(3, Count(pass, "Budget"));
+        Assert.Equal(12, Count(pass, "PoolLimit"));
+        foreach (var counter in new[] { "Nominated", "PreviouslyExecuted", "Eligible", "Selected",
+            "NotSelected", "SkippedAfterFinding", "SkippedDuplicate", "Executed", "Compared", "Unsupported" })
+            Assert.Equal(0, Count(pass, counter));
+        Assert.Equal(3, Count(pass, "UnusedBudget"));
+        var emptyInputsSha256 = Convert.ToHexString(SHA256.HashData("[]"u8));
+        Assert.Equal(emptyInputsSha256, pass.GetProperty("NominatedInputsSha256").GetString());
+        Assert.Equal(emptyInputsSha256, pass.GetProperty("SelectedInputsSha256").GetString());
+        Assert.Empty(audit.GetProperty("Batches").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, audit.GetProperty("Replay").ValueKind);
+        Assert.Equal(JsonValueKind.Null, result.Json.GetProperty("Report").ValueKind);
+        Assert.Equal(JsonValueKind.Null, result.Json.GetProperty("Run").ValueKind);
+        Assert.Equal(JsonValueKind.Null, summary.GetProperty("ReplayReport").ValueKind);
+        Assert.Equal(JsonValueKind.Null, review.GetProperty("Result").ValueKind);
+        Assert.Equal(0, Count(summary, "Compared"));
+        Assert.Equal(0, Count(summary, "Unsupported"));
+        Assert.Equal(0, Count(Assert.Single(summary.GetProperty("Operations").EnumerateArray()), "Compared"));
     }
 
     [NativeCliFact]
@@ -202,6 +346,74 @@ public sealed class ForegroundEvidenceTests
     }
 
     private static string FixtureAssembly => typeof(Commands).Assembly.Location;
+
+    private static int Count(JsonElement value, string name) => value.GetProperty(name).GetInt32();
+
+    private static JsonElement AssertSelectionAudit(JsonElement summary, JsonElement review)
+    {
+        Assert.Equal("diverse-v1", summary.GetProperty("CaseSelection").GetString());
+        var audit = summary.GetProperty("SelectionAudit");
+        Assert.True(JsonElement.DeepEquals(audit, review.GetProperty("SelectionAudit")));
+        Assert.Equal("slophawk-contract-selection-audit-v1", audit.GetProperty("Format").GetString());
+        Assert.Equal("emitted-legal-nonpublished-cases", audit.GetProperty("GeneratorBasis").GetString());
+        Assert.Equal("validated-observations", audit.GetProperty("ExecutionBasis").GetString());
+        foreach (var pass in audit.GetProperty("Passes").EnumerateArray())
+        {
+            Assert.Equal(Count(pass, "Nominated"), Count(pass, "PreviouslyExecuted") + Count(pass, "Eligible"));
+            Assert.Equal(Count(pass, "Eligible"), Count(pass, "Selected") + Count(pass, "NotSelected"));
+            Assert.Equal(Count(pass, "Selected"), Count(pass, "Executed")
+                + Count(pass, "SkippedAfterFinding") + Count(pass, "SkippedDuplicate"));
+            Assert.Equal(Count(pass, "Budget"), Count(pass, "Executed") + Count(pass, "UnusedBudget"));
+            Assert.Equal(Count(pass, "Executed"), Count(pass, "Compared") + Count(pass, "Unsupported"));
+            Assert.Matches("^[0-9A-F]{64}$", pass.GetProperty("NominatedInputsSha256").GetString()!);
+            Assert.Matches("^[0-9A-F]{64}$", pass.GetProperty("SelectedInputsSha256").GetString()!);
+        }
+        return audit;
+    }
+
+    private static JsonElement[] AssertAuditedBatch(TestWorkspace workspace, JsonElement batch,
+        string operation, bool unsupported)
+    {
+        var reportPath = batch.GetProperty("Report").GetString()!;
+        Assert.True(File.Exists(reportPath));
+        var directory = Path.GetDirectoryName(reportPath)!;
+        var requestsPath = Path.Combine(directory, "requests.json");
+        var observedPath = Path.Combine(directory, "observed.json");
+        var identityPath = Path.Combine(directory, "identity.json");
+        Assert.True(File.Exists(requestsPath));
+        Assert.True(File.Exists(observedPath));
+        Assert.True(File.Exists(identityPath));
+        var report = workspace.Read(reportPath);
+        var requests = workspace.Read(requestsPath).EnumerateArray().ToArray();
+        var observed = workspace.Read(observedPath).EnumerateArray().ToArray();
+        var expected = report.GetProperty("Expected").EnumerateArray().ToArray();
+        var identity = workspace.Read(identityPath);
+        Assert.Equal(batch.GetProperty("Run").GetString(), report.GetProperty("Run").GetString());
+        Assert.Equal(batch.GetProperty("Run").GetString(), identity.GetProperty("Run").GetString());
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(requestsPath))),
+            batch.GetProperty("InputsSha256").GetString());
+        Assert.Equal(identity.GetProperty("RequestsSha256").GetString(), batch.GetProperty("InputsSha256").GetString());
+        Assert.Equal(Count(batch, "Executed"), requests.Length);
+        Assert.Equal(requests.Length, observed.Length);
+        Assert.Equal(requests.Length, expected.Length);
+        Assert.Equal(requests.Length, Count(report.GetProperty("Result"), "Cases"));
+        Assert.Equal(Count(batch, "Compared"), Count(report.GetProperty("Result"), "Compared"));
+        Assert.Equal(Count(batch, "Unsupported"), Count(report.GetProperty("Result"), "Unsupported"));
+        Assert.Empty(report.GetProperty("Result").GetProperty("Findings").EnumerateArray());
+        for (var index = 0; index < requests.Length; index++)
+        {
+            Assert.Equal(operation, requests[index].GetProperty("Operation").GetString());
+            var argument = Assert.Single(requests[index].GetProperty("Args").EnumerateArray()).GetInt64();
+            Assert.InRange(argument, 0L, long.MaxValue);
+            Assert.NotEqual(5L, argument); // The published anchor never spends the new-case budget.
+            Assert.Equal(argument, expected[index].GetInt64()); // Public identity rule, independent of the adapter.
+            if (unsupported)
+                Assert.Equal(JsonValueKind.Null, observed[index].ValueKind);
+            else
+                Assert.Equal(argument, observed[index].GetInt64());
+        }
+        return requests;
+    }
 
     private static ProbeExpectation Example(string operation, long argument, long expected) =>
         new(operation, [argument], JsonSerializer.SerializeToElement(expected));
