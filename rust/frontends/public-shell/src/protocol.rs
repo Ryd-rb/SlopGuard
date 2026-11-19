@@ -10,6 +10,30 @@ pub const HELLO: u8 = 5;
 pub const VERSIONED_REQUEST: u8 = 6;
 pub const MAX_REPLY_BYTES: usize = 8 * 1024 * 1024 + 4096;
 
+/// An observation of the live checker profile and the daemon-owned receipt.
+/// The receipt digest covers the whole durable record, including its report.
+/// This is an additive schema-v2 field, not a grant or a source-scan substitute.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckerFence {
+    pub version: u8,
+    pub profile_sha256: String,
+    pub receipt_sha256: String,
+}
+
+fn checker_fence(value: &Value) -> Result<Option<CheckerFence>> {
+    let Some(value) = value.get("checkerFence").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let fence: CheckerFence = serde_json::from_value(value.clone())
+        .map_err(|error| failure("invalid_checker_fence", error))?;
+    if fence.version != 1 || [&fence.profile_sha256, &fence.receipt_sha256]
+        .iter().any(|digest| digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err(failure("invalid_checker_fence", "Unsupported or malformed checker receipt fence."));
+    }
+    Ok(Some(fence))
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Command { Status = 1, Results = 2, Recheck = 3, Stop = 4, CheckerCatalog = 5 }
@@ -110,8 +134,11 @@ impl<T: Transport> DaemonClient<T> {
 
     fn current_results(&self) -> Result<DaemonReply> {
         // A report is current only if its publication fence matches two fresh
-        // daemon status observations. A changed revision between replies is a
-        // stale read, never a successful current finding projection.
+        // daemon status observations. Checker evidence also needs the exact
+        // receipt and live profile observed by the results producer. Neither
+        // changes to those inputs nor receipt completion must advance the
+        // source revision. Do not retry or turn a failed checker read into an
+        // apparently successful empty finding set.
         let before = self.send_versioned(Command::Status)?;
         if !before.ok { return Ok(before); }
         let report = self.send_versioned(Command::Results)?;
@@ -133,6 +160,20 @@ impl<T: Transport> DaemonClient<T> {
             payload.get("producer").and_then(Value::as_str) != Some("SlopHawk") ||
             payload.get("schemaVersion").and_then(Value::as_u64) != Some(REPORT_SCHEMA) {
             return Err(failure("stale_revision", "The report is not a current schema-v2 SlopHawk projection."));
+        }
+        if let Some(checks) = payload.get("checkerReport").filter(|value| !value.is_null()) {
+            if !checks.is_object() {
+                return Err(failure("invalid_reply", "The checker report must be an object."));
+            }
+            let expected = checker_fence(payload)?.ok_or_else(|| failure(
+                "checker_fence_unavailable",
+                "The daemon cannot attest this checker receipt; use a matching build with checker fences.",
+            ))?;
+            let before = checker_fence(&first)?;
+            let after = checker_fence(&second)?;
+            if before.as_ref() != Some(&expected) || after.as_ref() != Some(&expected) {
+                return Err(failure("stale_checker_receipt", "The checker receipt or profile changed during the read."));
+            }
         }
         Ok(report)
     }

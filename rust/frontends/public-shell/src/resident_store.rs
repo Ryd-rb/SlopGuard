@@ -262,6 +262,7 @@ impl Workspace {
             "lastError":self.error,"fileCount":ready.then(||self.snapshot.tables[1].rows.len()),
             "partial":ready.then_some(false),"recordingError":null,
             "testScheduler":self.tests.status(),
+            "checkerFence":self.scheduler.read_fence(&self.marker.root_identity),
             "executionProfile":{"path":self.identity.state_directory.join("execution.json"),"rootIdentity":self.identity.root_identity},
             "projectEvaluation":null,"pendingTestIntents":{"detailedCount":detail.len(),
                 "oldestRevision":detail.first().and_then(|row|integer(&row[0])).or(first_fallback),
@@ -282,8 +283,9 @@ impl Workspace {
             return None;
         }
         let mut report: Value = serde_json::from_slice(expected).ok()?;
-        if let Some(checks) = self.scheduler.current_report(&self.root, &self.marker.root_identity, self.snapshot.revision) {
+        if let Some((checks, fence)) = self.scheduler.current_report(&self.root, &self.marker.root_identity, self.snapshot.revision) {
             report["checkerReport"] = checks.clone();
+            report["checkerFence"] = json!(fence);
         }
         Some(report)
     }
