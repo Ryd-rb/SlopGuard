@@ -172,6 +172,7 @@ pub enum CloneIndexError {
     DuplicateBlockId(String),
     InvalidSpan(String),
     InvalidToken(String),
+    InvalidLayout(String),
 }
 
 impl fmt::Display for CloneIndexError {

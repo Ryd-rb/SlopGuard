@@ -4,12 +4,14 @@ use crate::providers::Projection;
 use serde::Serialize;
 use slophawk_clone_index::{
     CloneMatchLocation, TokenCloneIndex,
-    near_miss::{NEAR_MISS_RULE_VERSION, NearMissLimits, NearMissOptions},
+    near_miss::{NEAR_MISS_RULE_VERSION, PYTHON_NEAR_MISS_RULE_VERSION, NearMissLayout,
+        NearMissGapReason, NearMissLimits, NearMissOptions, TokenLayout},
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 type Locations = BTreeMap<(Language, String, String), ByteSpan>;
+type PythonLayouts = BTreeMap<(String, String), Vec<slophawk_python_syntax_provider::TokenLayout>>;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +74,7 @@ pub(crate) fn collect(
     projections: &mut [Projection],
     indices: &BTreeMap<Language, TokenCloneIndex>,
     locations: &Locations,
+    python_layouts: &PythonLayouts,
     failed_batch: bool,
     cancel: &AtomicBool,
 ) -> Result<Vec<Query>, String> {
@@ -91,7 +94,11 @@ pub(crate) fn collect(
         }
         let mut row = Query {
             language,
-            rule_version: NEAR_MISS_RULE_VERSION,
+            rule_version: if language == Language::Python {
+                PYTHON_NEAR_MISS_RULE_VERSION
+            } else {
+                NEAR_MISS_RULE_VERSION
+            },
             status: Status::Unsupported,
             reason: None,
             gaps: Vec::new(),
@@ -101,13 +108,49 @@ pub(crate) fn collect(
         };
         if failed_batch {
             row.reason = Some("failed_batch");
-        } else if language == Language::Python {
-            row.reason = Some("layout_aware_alignment_required");
         } else if let Some(index) = indices.get(&language) {
-            let result = index
-                .query_near_misses(options, limits)
-                .map_err(|e| e.to_string())?;
-            if result.is_truncated() {
+            let result = if language == Language::Python {
+                // Borrow the producer's independently verified spans. This adds
+                // one small entry per projected block, like the existing byte
+                // location map; token/layout conversion still follows admission.
+                let spans: BTreeMap<_, _> = projections.iter()
+                    .filter(|projection| projection.report.language == language)
+                    .flat_map(|projection| {
+                        let document = projection.report.document_id.as_str();
+                        projection.blocks.iter().map(move |block|
+                            ((document, block.block_id.as_str()), block.span))
+                    }).collect();
+                index.query_near_misses_with_layout(options, limits, |location| {
+                    // The sidecar and indexed span came from the same verified
+                    // projection. Bind to its digest, not a caller's old receipt.
+                    // Lookup/conversion runs only after core token/byte admission.
+                    let projection = projections.iter().find(|projection|
+                        projection.report.language == language
+                            && projection.report.document_id == location.document_id)?;
+                    let layout = python_layouts.get(&(
+                        location.document_id.clone(), location.block_id.clone(),
+                    ))?;
+                    Some(NearMissLayout {
+                        document_version: projection.report.source_sha256.clone(),
+                        span: *spans.get(&(
+                            location.document_id.as_str(), location.block_id.as_str(),
+                        ))?,
+                        tokens: layout.iter().map(|token| TokenLayout {
+                            indent_depth: token.indent_depth,
+                            starts_logical_line: token.starts_logical_line,
+                        }).collect(),
+                    })
+                })
+            } else {
+                index.query_near_misses(options, limits)
+            }.map_err(|e| e.to_string())?;
+            if language == Language::Python && result.statistics.admitted_blocks == 0
+                && result.statistics.unsupported_layout_blocks > 0 {
+                row.reason = Some("unqualified_statement_layout");
+                if result.gaps.iter().any(|gap| gap.reason != NearMissGapReason::UnsupportedLayout) {
+                    row.status = Status::Partial;
+                }
+            } else if result.is_truncated() {
                 row.status = Status::Partial;
             } else if result.statistics.admitted_blocks == 0 {
                 row.reason = Some("no_eligible_blocks");
@@ -143,8 +186,12 @@ pub(crate) fn collect(
                 .iter_mut()
                 .find(|rule| rule.id == NEAR)
             {
-                rule.id = NEAR_MISS_RULE_VERSION.into();
-                rule.scope = "bounded, same-language whole-block token alignment".into();
+                rule.id = row.rule_version.into();
+                rule.scope = if language == Language::Python {
+                    "bounded whole-block token alignment with Python suite and logical-line evidence"
+                } else {
+                    "bounded, same-language whole-block token alignment"
+                }.into();
                 rule.status = if projection.blocks.is_empty() {
                     Status::Unsupported
                 } else if row.status == Status::Complete
@@ -156,7 +203,11 @@ pub(crate) fn collect(
                 };
                 rule.reason = row
                     .reason
-                    .unwrap_or("insertions and deletions over admitted token blocks")
+                    .unwrap_or(if language == Language::Python {
+                        "same suite structure; edits within paired logical lines or pure whole-line insertions/deletions"
+                    } else {
+                        "insertions and deletions over admitted token blocks"
+                    })
                     .into();
             }
         }

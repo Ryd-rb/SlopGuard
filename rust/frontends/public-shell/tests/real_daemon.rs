@@ -197,7 +197,9 @@ fn near_miss_profile_is_opt_in_and_publishes_current_matches_to_cli_and_mcp() {
     let source = "fn compute(x: i32) -> i32 { let y = x + 1; y + 2 }";
     fs::write(fixture.root.join("First.rs"), source).unwrap();
     fs::write(fixture.root.join("Second.rs"), source.replace("+ 2", "+ 3")).unwrap();
-    fs::write(fixture.root.join("Empty.py"), "# A valid source with no clone tokens.\n").unwrap();
+    let python_source = "def f(value):\n    total = value + 1\n    total = total * 2\n    return total + 3\n";
+    fs::write(fixture.root.join("First.py"), python_source).unwrap();
+    fs::write(fixture.root.join("Second.py"), python_source.replace("+ 3", "+ 4")).unwrap();
     fixture.request("start");
     let ready = fixture.await_state("status", |status| status["state"] == "ready");
     let execution = &ready["executionProfile"];
@@ -236,7 +238,15 @@ fn near_miss_profile_is_opt_in_and_publishes_current_matches_to_cli_and_mcp() {
     let end = bytes["end"].as_u64().unwrap() as usize;
     assert!(source[start..end].starts_with('{'));
     let python = rows.iter().find(|row| row["language"] == "python").unwrap();
-    assert_eq!(python["reason"], "layout_aware_alignment_required");
+    assert_eq!(python["ruleVersion"], "sg10.python-layout-near-misses.v1");
+    assert_eq!(python["status"], "complete");
+    let python_pairs = python["pairs"].as_array().unwrap();
+    assert_eq!(python_pairs.len(), 1, "{python}");
+    assert_eq!(python_pairs[0]["editDistance"], 2);
+    let bytes = &python_pairs[0]["left"]["bytes"];
+    let start = bytes["start"].as_u64().unwrap() as usize;
+    let end = bytes["end"].as_u64().unwrap() as usize;
+    assert_eq!(&python_source[start..end], python_source.trim_end());
     assert_eq!(tool_result(&fixture.mcp(), 3)["payload"]["checkerReport"], *report);
 
     registration["nearMissClones"] = json!(false);

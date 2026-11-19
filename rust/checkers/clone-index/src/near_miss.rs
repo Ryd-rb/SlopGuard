@@ -4,13 +4,32 @@
 //! Confirmation uses insertion/deletion distance (a replacement costs two).
 //! No persistent state or v1 query budget is changed by this module.
 
+mod layout;
+
 use super::{
     BlockKey, CloneIndexError, CloneIndexSettings, CloneMatchLocation, CloneTokenKind,
-    IndexedBlock, RULE_VERSION, TokenCloneIndex, block_identity, ordinal_cmp,
+    CloneSourceSpan, IndexedBlock, RULE_VERSION, TokenCloneIndex, block_identity, ordinal_cmp,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const NEAR_MISS_RULE_VERSION: &str = "sg10.token-near-misses.v1";
+pub const PYTHON_NEAR_MISS_RULE_VERSION: &str = "sg10.python-layout-near-misses.v1";
+
+/// Existing provider facts, kept separate from substantive token text/scoring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TokenLayout {
+    pub indent_depth: u32,
+    pub starts_logical_line: bool,
+}
+
+/// Evidence for exactly one indexed source version and whole-block span.
+/// The caller remains responsible for the parser and original-byte provenance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NearMissLayout {
+    pub document_version: String,
+    pub span: CloneSourceSpan,
+    pub tokens: Vec<TokenLayout>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NearMissOptions {
@@ -43,6 +62,7 @@ pub struct NearMissLimits {
     pub maximum_posting_visits: usize,
     pub maximum_candidate_pairs: usize,
     /// Includes boundary cells and initialization of each active DP row.
+    /// Layout queries share this cap across lexical, logical-line and token DPs.
     pub maximum_alignment_cells: u64,
     pub maximum_output_pairs: usize,
 }
@@ -75,13 +95,14 @@ pub enum NearMissGapReason {
     CandidatePairLimit,
     AlignmentCellLimit,
     OutputPairLimit,
+    UnsupportedLayout,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NearMissGap {
     pub reason: NearMissGapReason,
-    /// Exact block/bucket count for OversizedBlock, MetadataByteLimit, BlockLimit
-    /// and BoilerplatePostingLimit;
+    /// Exact block/bucket count for OversizedBlock, MetadataByteLimit, BlockLimit,
+    /// BoilerplatePostingLimit and UnsupportedLayout;
     /// otherwise one encountered frontier, not the total number of missed pairs.
     pub affected_count: usize,
 }
@@ -93,6 +114,10 @@ pub enum NearMissUnsupported {
     RenamingInvariantAcrossEdits,
     SubBlockSourceLocations,
     LanguageOrContextPartitioning,
+    SuiteInsertionOrDeletion,
+    MixedLogicalLineAndTokenEdits,
+    HistoricalStatementIdentity,
+    InlineOrUnqualifiedStatementLayout,
 }
 
 const UNSUPPORTED: &[NearMissUnsupported] = &[
@@ -101,6 +126,18 @@ const UNSUPPORTED: &[NearMissUnsupported] = &[
     NearMissUnsupported::RenamingInvariantAcrossEdits,
     NearMissUnsupported::SubBlockSourceLocations,
     NearMissUnsupported::LanguageOrContextPartitioning,
+];
+
+const LAYOUT_UNSUPPORTED: &[NearMissUnsupported] = &[
+    NearMissUnsupported::SemanticEquivalence,
+    NearMissUnsupported::ProviderClassificationValidation,
+    NearMissUnsupported::RenamingInvariantAcrossEdits,
+    NearMissUnsupported::SubBlockSourceLocations,
+    NearMissUnsupported::LanguageOrContextPartitioning,
+    NearMissUnsupported::SuiteInsertionOrDeletion,
+    NearMissUnsupported::MixedLogicalLineAndTokenEdits,
+    NearMissUnsupported::HistoricalStatementIdentity,
+    NearMissUnsupported::InlineOrUnqualifiedStatementLayout,
 ];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -112,6 +149,7 @@ pub struct NearMissStatistics {
     pub below_minimum_blocks: usize,
     pub oversized_blocks: usize,
     pub metadata_limited_blocks: usize,
+    pub unsupported_layout_blocks: usize,
     pub admitted_blocks: usize,
     pub preprocessed_tokens: usize,
     pub preprocessed_token_bytes: usize,
@@ -121,6 +159,7 @@ pub struct NearMissStatistics {
     pub overlapping_pairs_skipped: usize,
     pub length_rejected_pairs: usize,
     pub distance_rejected_pairs: usize,
+    pub layout_rejected_pairs: usize,
     pub v1_pairs_skipped: usize,
     pub verified_pairs: usize,
     pub alignment_cells: u64,
@@ -134,7 +173,8 @@ pub struct NearMissPair {
     pub right: CloneMatchLocation,
     pub edit_distance: usize,
     pub normalized_matched_tokens: usize,
-    /// Greatest exact count among minimum-distance normalized alignments.
+    /// Greatest exact count among admitted minimum-distance normalized alignments.
+    /// For the layout query these must also obey its logical-line/suite relation.
     pub exact_matched_tokens: usize,
     pub score: f64,
 }
@@ -176,6 +216,7 @@ struct Prepared<'a> {
     block: &'a IndexedBlock,
     sequence: Vec<TokenIds>,
     prefix: Vec<usize>,
+    layout: Option<layout::Layout>,
 }
 
 #[derive(Default)]
@@ -206,6 +247,39 @@ impl TokenCloneIndex {
         options: NearMissOptions,
         limits: NearMissLimits,
     ) -> Result<NearMissQueryResult, CloneIndexError> {
+        self.query_near_misses_impl(options, limits, None)
+    }
+
+    /// Opt-in Python layout relation over the same candidate and token budgets.
+    /// Lookup runs once per size-admitted block, after token/byte admission. Missing,
+    /// stale or malformed evidence fails the query; it never falls back to v1.
+    /// Whole logical-line gaps require a pure insertion/deletion relation;
+    /// otherwise edits must stay within corresponding lines. Suite-opening
+    /// ancestry/order is fixed. Layout may not add edits to the lexical optimum.
+    /// Inline suites, semicolon statements and unqualified colon-bearing lines
+    /// withhold the block with an UnsupportedLayout coverage gap.
+    /// An arbitrary caller-supplied lookup must itself be bounded and trustworthy.
+    pub fn query_near_misses_with_layout(
+        &self,
+        options: NearMissOptions,
+        limits: NearMissLimits,
+        mut layout_for: impl FnMut(&CloneMatchLocation) -> Option<NearMissLayout>,
+    ) -> Result<NearMissQueryResult, CloneIndexError> {
+        self.query_near_misses_impl(options, limits, Some(&mut layout_for))
+    }
+
+    fn query_near_misses_impl(
+        &self,
+        options: NearMissOptions,
+        limits: NearMissLimits,
+        mut layout_for: Option<&mut dyn FnMut(&CloneMatchLocation) -> Option<NearMissLayout>>,
+    ) -> Result<NearMissQueryResult, CloneIndexError> {
+        let layout_enabled = layout_for.is_some();
+        let rule_version = if layout_enabled {
+            PYTHON_NEAR_MISS_RULE_VERSION
+        } else {
+            NEAR_MISS_RULE_VERSION
+        };
         if !(1..=100).contains(&options.minimum_similarity_percent) || options.maximum_edits == 0 {
             return Err(CloneIndexError::InvalidSettings);
         }
@@ -281,6 +355,9 @@ impl TokenCloneIndex {
             gap(&mut gaps, NearMissGapReason::BlockLimit, unselected);
         }
         let mut atoms = BTreeMap::new();
+        // Exact interning makes suite-shape comparison constant work per pair.
+        // No hashes or absolute logical-line ordinals are used as evidence.
+        let mut layout_shapes = BTreeMap::new();
         let mut prepared = Vec::new();
         for key in selected {
             let block = &self.blocks[key];
@@ -303,6 +380,28 @@ impl TokenCloneIndex {
                 gap(&mut gaps, NearMissGapReason::TokenByteLimit, 1);
                 break;
             }
+            // Even a structurally unavailable block consumes preprocessing
+            // budgets. Otherwise repeated unsupported layouts could bypass T.
+            statistics.preprocessed_tokens += block.exact.len();
+            statistics.preprocessed_token_bytes += bytes;
+            let layout = if let Some(lookup) = layout_for.as_mut() {
+                let evidence = lookup(&block.location).ok_or_else(|| {
+                    CloneIndexError::InvalidLayout("missing admitted block layout".into())
+                })?;
+                if evidence.document_version != block.location.document_version {
+                    return Err(CloneIndexError::InvalidLayout("stale document version".into()));
+                }
+                if evidence.span != block.location.span || evidence.tokens.len() != block.exact.len() {
+                    return Err(CloneIndexError::InvalidLayout("layout span or token count mismatch".into()));
+                }
+                let Some(layout) = layout::prepare(&evidence.tokens, block, &mut layout_shapes)? else {
+                    statistics.unsupported_layout_blocks += 1;
+                    continue;
+                };
+                Some(layout)
+            } else {
+                None
+            };
             // All token-text work follows whole-block token/byte admission.
             let mut sequence = Vec::with_capacity(block.exact.len());
             for (exact, normalized) in block.exact.iter().zip(&block.normalized) {
@@ -317,19 +416,20 @@ impl TokenCloneIndex {
                     exact: intern(&mut atoms, exact_atom),
                 });
             }
-            let m = sequence.len();
             let mut prefix: Vec<_> = sequence.iter().map(|token| token.normalized).collect();
             prefix.sort_unstable();
-            statistics.preprocessed_tokens += m;
-            statistics.preprocessed_token_bytes += bytes;
             prepared.push(Prepared {
                 key,
                 block,
                 sequence,
                 prefix,
+                layout,
             });
         }
         statistics.admitted_blocks = prepared.len();
+        if statistics.unsupported_layout_blocks > 0 {
+            gap(&mut gaps, NearMissGapReason::UnsupportedLayout, statistics.unsupported_layout_blocks);
+        }
         // Rank rare atoms first within this admitted snapshot. Frequencies are
         // rebuilt on every query; no old/new token orders can become mixed.
         let mut frequency = vec![0usize; atoms.len()];
@@ -355,6 +455,7 @@ impl TokenCloneIndex {
         }
         // No token-text comparison or hashing is needed beyond this point.
         drop(atoms);
+        drop(layout_shapes);
 
         let mut postings: BTreeMap<(usize, usize), Posting> = BTreeMap::new();
         for (number, block) in prepared.iter().enumerate() {
@@ -433,7 +534,7 @@ impl TokenCloneIndex {
                 limits.maximum_alignment_cells,
                 &mut statistics.alignment_cells,
             );
-            let cell = match aligned {
+            let mut cell = match aligned {
                 Alignment::Exhausted => {
                     gap(&mut gaps, NearMissGapReason::AlignmentCellLimit, 1);
                     break;
@@ -445,11 +546,34 @@ impl TokenCloneIndex {
                 }
                 Alignment::Within(cell) => cell,
             };
-            statistics.verified_pairs += 1;
             if cell.distance == 0 {
+                statistics.verified_pairs += 1;
                 statistics.v1_pairs_skipped += 1;
                 continue;
             }
+            if let (Some(left_layout), Some(right_layout)) = (&left.layout, &right.layout) {
+                match layout::align_layout(
+                    &left.sequence,
+                    &right.sequence,
+                    left_layout,
+                    right_layout,
+                    cell.distance,
+                    limits.maximum_alignment_cells,
+                    &mut statistics.alignment_cells,
+                ) {
+                    Alignment::Exhausted => {
+                        gap(&mut gaps, NearMissGapReason::AlignmentCellLimit, 1);
+                        break;
+                    }
+                    Alignment::OverDistance => {
+                        statistics.verified_pairs += 1;
+                        statistics.layout_rejected_pairs += 1;
+                        continue;
+                    }
+                    Alignment::Within(qualified) => cell = qualified,
+                }
+            }
+            statistics.verified_pairs += 1;
             if pairs.len() == limits.maximum_output_pairs {
                 gap(&mut gaps, NearMissGapReason::OutputPairLimit, 1);
                 break;
@@ -457,7 +581,7 @@ impl TokenCloneIndex {
             let matched = (total - cell.distance) / 2;
             pairs.push(NearMissPair {
                 pair_id: format!(
-                    "{NEAR_MISS_RULE_VERSION}:{}/{}",
+                    "{rule_version}:{}/{}",
                     block_identity(left.key),
                     block_identity(right.key),
                 ),
@@ -479,11 +603,11 @@ impl TokenCloneIndex {
         });
         gaps.sort_by_key(|item| item.reason);
         Ok(NearMissQueryResult {
-            rule_version: NEAR_MISS_RULE_VERSION,
+            rule_version,
             normalization_rule_version: RULE_VERSION,
             pairs,
             gaps,
-            unsupported: UNSUPPORTED,
+            unsupported: if layout_enabled { LAYOUT_UNSUPPORTED } else { UNSUPPORTED },
             statistics,
             index_settings: self.settings,
             applied_options: options,
