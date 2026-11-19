@@ -94,7 +94,9 @@ internal static class SquaredDeltaOverflow
 
         var types = model.Value;
         if (types.GetTypeInfo(from).Type?.SpecialType != SpecialType.System_Int32 ||
-            types.GetTypeInfo(to).Type?.SpecialType != SpecialType.System_Int32)
+            types.GetTypeInfo(to).Type?.SpecialType != SpecialType.System_Int32 ||
+            (types.GetSymbolInfo(from).Symbol is not IParameterSymbol &&
+             types.GetSymbolInfo(to).Symbol is not IParameterSymbol))
             return false;
         symbol = types.GetDeclaredSymbol(variable!);
         return symbol is not null;

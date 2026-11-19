@@ -26,7 +26,7 @@ Provider contracts are based on their own documentation. [Sonar C# analyzer pack
 
 Run the built Roslyn worker with `dotnet <worker.dll> --source-audit-v1 --root <checkout> --manifest <manifest.json>`. The manifest contains a `files` array of relative C# paths and an optional `defines` array for that scan. The worker parses each listed file, records its SHA-256 and status, and reports source-local findings with physical line and column numbers. It processes up to 10,000 files, with an 8 MiB per-file and 256 MiB total source budget. Include every supported source path in the manifest for a repository-wide pass and use a separate manifest for a different preprocessor configuration.
 
-The squared-delta rule identifies a straight-line sum of two squared `long` differences derived from `int` values. A preceding exit guard that bounds the absolute value of both differences to `int.MaxValue` or less proves the sum fits. A reported expression is a candidate for contract review. The source audit does not evaluate project references, caller-specific bounds, or branches disabled by the selected defines.
+The squared-delta rule identifies a straight-line sum of two squared `long` differences between `int` values. It requires each difference to use at least one method parameter, so calculations on entirely local data do not inherit the assumption of full-range input. A preceding exit guard that bounds the absolute value of both differences to `int.MaxValue` or less proves the sum fits. A reported expression is a candidate for contract review. The source audit does not evaluate project references, caller-specific bounds, or branches disabled by the selected defines.
 
 ## Duplication detection
 

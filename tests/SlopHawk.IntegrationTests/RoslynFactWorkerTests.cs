@@ -83,6 +83,15 @@ public sealed class RoslynFactWorkerTests
                     long result = dx * dx + dy * dy;
                     return result;
                 }
+
+                long LocalFixture()
+                {
+                    int a = 12, b = 4, c = 8, d = 4;
+                    long dx = (long)a - b;
+                    long dy = (long)c - d;
+                    long result = dx * dx + dy * dy;
+                    return result;
+                }
             }
             """;
         var workspace = Directory.CreateTempSubdirectory("slophawk-source-audit-");
