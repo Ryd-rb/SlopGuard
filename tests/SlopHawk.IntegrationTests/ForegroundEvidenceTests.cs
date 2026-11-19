@@ -53,6 +53,41 @@ public sealed class ForegroundEvidenceTests
     }
 
     [NativeCliFact]
+    public async Task BoundaryPairsReplayOverflowAndAcceptTheWideCalculation()
+    {
+        using var workspace = new TestWorkspace();
+        string[] names = ["narrow-span", "wide-span"];
+        const string domain = "lo >= -2147483648 && hi <= 2147483647 && lo < hi";
+        var endpoints = new Dictionary<string, long[]>
+        {
+            ["lo"] = [int.MinValue, int.MaxValue],
+            ["hi"] = [int.MinValue, int.MaxValue]
+        };
+        var rules = workspace.Write("rules.json", names.Select(name =>
+            new IntegerContract(name, ["lo", "hi"], domain, "hi - lo", "interval.md", Basis: endpoints)).ToArray());
+        var examples = workspace.Write("examples.json", names.Select(name =>
+            new ProbeExpectation(name, [0, 10], JsonSerializer.SerializeToElement(10))).ToArray());
+
+        var result = await Run("check-contracts", "--boundary-pairs", FixtureAssembly, rules, examples,
+            workspace.Path, "2", "probe-batch");
+
+        Assert.True(result.ExitCode == 1, result.Error);
+        Assert.Equal(4, Count(result.Json, "Compared"));
+        Assert.Equal(0, Count(result.Json, "Unsupported"));
+        Assert.Equal(0, Count(result.Json, "ReplayChanges"));
+        var summary = workspace.Read(result.Json.GetProperty("Summary").GetString()!);
+        Assert.Equal("boundary-pairs-v1", summary.GetProperty("CaseSelection").GetString());
+        var review = workspace.Read(result.Json.GetProperty("Review").GetString()!);
+        var finding = Assert.Single(review.GetProperty("Result").GetProperty("Findings").EnumerateArray());
+        var input = finding.GetProperty("Input");
+        Assert.Equal("narrow-span", input.GetProperty("Operation").GetString());
+        Assert.Equal(new long[] { int.MinValue, int.MaxValue },
+            input.GetProperty("Args").EnumerateArray().Select(arg => arg.GetInt64()).ToArray());
+        Assert.Equal(-1, finding.GetProperty("Candidate").GetInt64());
+        Assert.Equal(4_294_967_295L, finding.GetProperty("Reference").GetInt64());
+    }
+
+    [NativeCliFact]
     public async Task DiverseContractSearchAuditsExecutedCasesAndSeparateReplay()
     {
         using var workspace = new TestWorkspace();

@@ -1,4 +1,5 @@
 //! Public-rule qualification, interpreted expectations and ordered seeded generation.
+mod boundary_pairs;
 mod diversity;
 
 use crate::expression::{self, Comparison, Expr, Name};

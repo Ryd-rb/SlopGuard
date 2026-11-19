@@ -21,9 +21,14 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub fn run(args: &[String]) -> Result<u8> {
     let parts = args.iter().map(String::as_str).collect::<Vec<_>>();
     let (parts, selection) = match parts.as_slice() {
-        ["check-contracts", "--diverse", rest @ ..] => {
+        ["check-contracts", mode @ ("--diverse" | "--boundary-pairs"), rest @ ..] => {
             let command = std::iter::once("check-contracts").chain(rest.iter().copied()).collect::<Vec<_>>();
-            (command, CaseSelection::DiverseV1)
+            let selection = if *mode == "--diverse" {
+                CaseSelection::DiverseV1
+            } else {
+                CaseSelection::BoundaryPairsV1
+            };
+            (command, selection)
         }
         _ => (parts, CaseSelection::Legacy),
     };
@@ -41,7 +46,7 @@ pub fn run(args: &[String]) -> Result<u8> {
             check_contracts(Path::new(assembly), Path::new(rules), Path::new(published),
                 Path::new(workspace), count, run_verb, prepare_verb, selection)
         }
-        _ => Err("Usage: contracts qualify <rules.json> <published.json> | probes plan <seeds.json> <count> [seed [scales.json]] | probes compare <inputs.json> <candidate.json> <reference.json> | probes methods <candidate.dll> <reference.dll> | check-contracts [--diverse] <assembly.dll> <rules.json> <published.json> <workspace> [per-operation [run-verb [prepare-verb]]]".into()),
+        _ => Err("Usage: contracts qualify <rules.json> <published.json> | probes plan <seeds.json> <count> [seed [scales.json]] | probes compare <inputs.json> <candidate.json> <reference.json> | probes methods <candidate.dll> <reference.dll> | check-contracts [--diverse | --boundary-pairs] <assembly.dll> <rules.json> <published.json> <workspace> [per-operation [run-verb [prepare-verb]]]".into()),
     }
 }
 
@@ -425,7 +430,11 @@ fn check_contracts(
         Run: &evidence.run,
         Compared: outcome.compared,
         PerOperation: per_operation,
-        CaseSelection: (selection == CaseSelection::DiverseV1).then_some("diverse-v1"),
+        CaseSelection: match selection {
+            CaseSelection::Legacy => None,
+            CaseSelection::DiverseV1 => Some("diverse-v1"),
+            CaseSelection::BoundaryPairsV1 => Some("boundary-pairs-v1"),
+        },
         SelectionAudit: selection_audit.as_ref(),
         ElapsedMilliseconds: started.elapsed().as_millis(),
         Unsupported: outcome.unsupported,

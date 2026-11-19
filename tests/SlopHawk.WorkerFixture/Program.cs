@@ -21,6 +21,8 @@ internal static class Program
                     "changes" => requests.Length > 4 ? 2 : 3,
                     "disappears" => requests.Length > 4 ? 2 : 1,
                     "new-difference" => requests.Length > 4 ? 1 : 2,
+                    "narrow-span" => unchecked((int)request.Args[1] - (int)request.Args[0]),
+                    "wide-span" => request.Args[1] - request.Args[0],
                     _ => request.Args[0]
                 })));
                 return 0;

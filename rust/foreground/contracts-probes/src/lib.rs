@@ -278,6 +278,7 @@ struct SearchState {
 pub enum CaseSelection {
     Legacy,
     DiverseV1,
+    BoundaryPairsV1,
 }
 
 /// Search and replay are kept separate even for a clean first result. In
@@ -370,7 +371,7 @@ fn pass(catalog: &ContractCases, limit: usize, seed: i32, hints: &[(String, Vec<
     // without changing any per-rule RNG draw, interleave or operation order.
     for (operation, _) in catalog.parameter_counts() {
         let pool_limit = match selection {
-            CaseSelection::Legacy => limit,
+            CaseSelection::Legacy | CaseSelection::BoundaryPairsV1 => limit,
             CaseSelection::DiverseV1 => (limit * 4).min(8192),
         };
         if !state.remaining.contains(operation) {
@@ -395,6 +396,14 @@ fn pass(catalog: &ContractCases, limit: usize, seed: i32, hints: &[(String, Vec<
                     generated.len() - pool.len(), &selected)?;
             }
             selected
+        } else if selection == CaseSelection::BoundaryPairsV1 && seed == 0 {
+            let mut boundary_cases = catalog.boundary_pair_cases(operation, limit.div_ceil(2));
+            let mut seen: HashSet<_> = boundary_cases.iter().map(|case| case.args.clone()).collect();
+            let remaining = limit - boundary_cases.len();
+            boundary_cases.extend(generated.into_iter()
+                .filter(|test| seen.insert(test.args.clone()))
+                .take(remaining));
+            boundary_cases
         } else {
             generated
         };

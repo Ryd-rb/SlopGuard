@@ -25,6 +25,35 @@ fn values(cases: &[ProbeExpectation]) -> Vec<(String, Vec<i64>, String)> {
 }
 
 #[test]
+fn boundary_pairs_keep_anchor_fields_and_exclude_invalid_or_duplicate_tuples() {
+    let mut rule = IntegerContract::new(
+        "Window",
+        &["start", "end", "offset"],
+        "start < end && start + offset >= 0",
+        "end - start + offset",
+        "window.md",
+    );
+    rule.basis = vec![
+        ("start".into(), vec![100, -100]),
+        ("end".into(), vec![-100, 100]),
+    ];
+    let catalog = ContractCases::new(
+        &[rule],
+        &[
+            known("Window", &[1, 2, 0], 1),
+            known("Window", &[1, 2, 100], 101),
+            known("Window", &[2, 3, 100], 101),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        values(&catalog.boundary_pair_cases("Window", 8)),
+        [("Window".into(), vec![-100, 100, 100], "300".into())]
+    );
+    assert!(catalog.boundary_pair_cases("Window", 0).is_empty());
+}
+
+#[test]
 fn periodic_projection_reaches_a_coupled_branch_from_an_ordinary_input() {
     let rule = IntegerContract::new(
         "Carry",
